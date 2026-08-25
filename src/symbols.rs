@@ -1,0 +1,288 @@
+//! Builds `textDocument/documentSymbol` output from a parsed [`UntypedProcessSpecification`].
+//!
+//! `merc_syntax::Traverse` doesn't apply here — it only covers expression-level node types and
+//! is deliberately not used to walk the specification's top-level declarations (sorts, maps,
+//! equations, actions, processes, …); those are walked by hand below, one flat loop per field.
+//!
+//! Note: `ActDecl`, `ProcDecl`, `EqnDecl`, and `EqnSpec` are not re-exported from the
+//! `merc_syntax` crate root (only their `*Id` index types and a handful of sibling types are),
+//! so those four kinds are handled inline in [`document_symbols`] via type inference rather than
+//! through named helper functions the way `SortDecl` and `IdDecl<Id>` (which *are* exported) are
+//! below.
+
+use merc_syntax::IdDecl;
+use merc_syntax::ProcessExpr;
+use merc_syntax::Span;
+use merc_syntax::SortDecl;
+use merc_syntax::UntypedProcessSpecification;
+use tower_lsp::lsp_types::DocumentSymbol;
+use tower_lsp::lsp_types::Range;
+use tower_lsp::lsp_types::SymbolKind;
+
+use crate::convert::LineIndex;
+use crate::convert::is_identifier_byte;
+
+/// Builds the full, hierarchical outline for `spec`, ordered by source position.
+///
+/// Source order has to be reconstructed explicitly: the grammar allows the specification's
+/// top-level blocks (`sort`, `map`, `eqn`, `act`, `proc`, …) to appear in any order and to
+/// repeat, but the AST groups everything by kind.
+pub fn document_symbols(text: &str, line_index: &LineIndex, spec: &UntypedProcessSpecification) -> Vec<DocumentSymbol> {
+    let mut symbols = Vec::new();
+
+    for decl in &spec.data_specification.sort_declarations {
+        symbols.push(sort_symbol(text, line_index, decl));
+    }
+    
+    for decl in &spec.data_specification.constructor_declarations {
+        symbols.push(id_decl_symbol(text, line_index, decl, SymbolKind::CONSTRUCTOR));
+    }
+
+    for decl in &spec.data_specification.map_declarations {
+        symbols.push(id_decl_symbol(text, line_index, decl, SymbolKind::FUNCTION));
+    }
+
+    for eqn_spec in &spec.data_specification.equation_declarations {
+        // `EqnSpec` has no `span` field of its own, so its outline range is synthesized as the
+        // min-start/max-end over its children's spans. The (grammar-legal) empty block is
+        // skipped, since there is then nothing to point the range at.
+        let spans = eqn_spec
+            .variables
+            .iter()
+            .map(|decl| &decl.span)
+            .chain(eqn_spec.equations.iter().map(|eqn| &eqn.span));
+        let span = spans.fold(None::<Span>, |acc, span| match acc {
+            Some(acc) => Some(Span {
+                start: acc.start.min(span.start),
+                end: acc.end.max(span.end),
+            }),
+            None => Some(span.clone()),
+        });
+        let Some(span) = span else { continue };
+        let range = line_index.range(text, &span);
+
+        let mut children: Vec<DocumentSymbol> = eqn_spec
+            .variables
+            .iter()
+            .map(|decl| id_decl_symbol(text, line_index, decl, SymbolKind::VARIABLE))
+            .collect();
+        children.extend(eqn_spec.equations.iter().map(|eqn| {
+            let range = line_index.range(text, &eqn.span);
+            build_symbol(eqn.lhs.to_string(), Some(eqn.to_string()), SymbolKind::FIELD, range, range, None)
+        }));
+
+        symbols.push(build_symbol("eqn".to_string(), None, SymbolKind::NAMESPACE, range, range, Some(children)));
+    }
+    for decl in &spec.global_variables {
+        symbols.push(id_decl_symbol(text, line_index, decl, SymbolKind::VARIABLE));
+    }
+    for decl in &spec.action_declarations {
+        let detail = if decl.args.is_empty() {
+            None
+        } else {
+            Some(decl.args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" # "))
+        };
+        symbols.push(make_symbol(
+            decl.identifier.clone(),
+            detail,
+            SymbolKind::EVENT,
+            text,
+            line_index,
+            &decl.span,
+            &decl.identifier,
+            None,
+        ));
+    }
+    for decl in &spec.process_declarations {
+        let children: Vec<DocumentSymbol> = decl
+            .params
+            .iter()
+            .map(|param| id_decl_symbol(text, line_index, param, SymbolKind::VARIABLE))
+            .collect();
+        let detail = if decl.params.is_empty() {
+            None
+        } else {
+            Some(decl.params.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))
+        };
+        symbols.push(make_symbol(
+            decl.identifier.clone(),
+            detail,
+            SymbolKind::FUNCTION,
+            text,
+            line_index,
+            &decl.span,
+            &decl.identifier,
+            Some(children),
+        ));
+    }
+    if let Some(init) = &spec.init {
+        symbols.push(init_symbol(text, line_index, init));
+    }
+
+    symbols.sort_by_key(|symbol| (symbol.range.start.line, symbol.range.start.character));
+    symbols
+}
+
+fn sort_symbol(text: &str, line_index: &LineIndex, decl: &SortDecl) -> DocumentSymbol {
+    make_symbol(
+        decl.identifier.clone(),
+        decl.expr.as_ref().map(|expr| expr.to_string()),
+        SymbolKind::STRUCT,
+        text,
+        line_index,
+        &decl.span,
+        &decl.identifier,
+        None,
+    )
+}
+
+fn id_decl_symbol<Id>(text: &str, line_index: &LineIndex, decl: &IdDecl<Id>, kind: SymbolKind) -> DocumentSymbol {
+    make_symbol(
+        decl.identifier.clone(),
+        Some(decl.sort.to_string()),
+        kind,
+        text,
+        line_index,
+        &decl.span,
+        &decl.identifier,
+        None,
+    )
+}
+
+fn init_symbol(text: &str, line_index: &LineIndex, init: &ProcessExpr) -> DocumentSymbol {
+    let range = line_index.range(text, &init.span);
+    build_symbol("init".to_string(), Some(init.to_string()), SymbolKind::OBJECT, range, range, None)
+}
+
+/// Builds a symbol whose `selection_range` is narrowed to just the `identifier` word within
+/// `span`, falling back to `span` itself if the identifier can't be located (e.g. a synthetic
+/// span). This also disambiguates grouped declarations like `sort A, B, C;`, which the grammar
+/// gives byte-identical spans to.
+#[allow(clippy::too_many_arguments)]
+fn make_symbol(
+    name: String,
+    detail: Option<String>,
+    kind: SymbolKind,
+    text: &str,
+    line_index: &LineIndex,
+    span: &Span,
+    identifier: &str,
+    children: Option<Vec<DocumentSymbol>>,
+) -> DocumentSymbol {
+    let range = line_index.range(text, span);
+    let selection_range = find_identifier(text, span, identifier)
+        .map(|identifier_span| line_index.range(text, &identifier_span))
+        .unwrap_or(range);
+    build_symbol(name, detail, kind, range, selection_range, children)
+}
+
+fn build_symbol(
+    name: String,
+    detail: Option<String>,
+    kind: SymbolKind,
+    range: Range,
+    selection_range: Range,
+    children: Option<Vec<DocumentSymbol>>,
+) -> DocumentSymbol {
+    #[allow(deprecated)]
+    DocumentSymbol {
+        name,
+        detail,
+        kind,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range,
+        children,
+    }
+}
+
+/// Finds the first word-boundary-delimited occurrence of `identifier` within `text[span]`.
+fn find_identifier(text: &str, span: &Span, identifier: &str) -> Option<Span> {
+    if identifier.is_empty() {
+        return None;
+    }
+    let start = span.start.min(text.len());
+    let end = span.end.min(text.len());
+    let haystack = text.get(start..end)?;
+    let bytes = haystack.as_bytes();
+
+    let mut search_from = 0;
+    while let Some(relative) = haystack[search_from..].find(identifier) {
+        let match_start = search_from + relative;
+        let match_end = match_start + identifier.len();
+        let before_ok = match_start == 0 || !is_identifier_byte(bytes[match_start - 1]);
+        let after_ok = match_end >= bytes.len() || !is_identifier_byte(bytes[match_end]);
+        if before_ok && after_ok {
+            return Some(Span {
+                start: start + match_start,
+                end: start + match_end,
+            });
+        }
+        search_from = match_start + 1;
+        if search_from >= haystack.len() {
+            break;
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::ParseOutcome;
+    use crate::parse::parse;
+
+    async fn symbols_for(text: &str) -> Vec<DocumentSymbol> {
+        let outcome = parse(text.to_string()).await;
+        let line_index = LineIndex::new(text);
+        match outcome {
+            ParseOutcome::Ok(spec) => document_symbols(text, &line_index, &spec),
+            _ => panic!("fixture failed to parse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn grouped_sort_declarations_get_distinct_selection_ranges() {
+        let text = "sort A, B, C;\ninit delta;";
+        let symbols = symbols_for(text).await;
+        let sorts: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::STRUCT).collect();
+        assert_eq!(sorts.len(), 3);
+
+        // `Range`/`Position` don't derive `Hash`, so compare their fields as a tuple instead.
+        let ranges: std::collections::HashSet<_> = sorts
+            .iter()
+            .map(|s| {
+                let r = s.selection_range;
+                (r.start.line, r.start.character, r.end.line, r.end.character)
+            })
+            .collect();
+        assert_eq!(ranges.len(), 3, "each grouped declaration should select only its own identifier");
+    }
+
+    #[tokio::test]
+    async fn eqn_block_range_covers_its_children() {
+        let text = "sort D;\nvar x: D;\neqn x = x;\ninit delta;";
+        let symbols = symbols_for(text).await;
+        let eqn = symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::NAMESPACE)
+            .expect("expected an eqn container symbol");
+        let children = eqn.children.as_ref().expect("eqn container should have children");
+        assert!(!children.is_empty());
+        for child in children {
+            assert!(eqn.range.start <= child.range.start);
+            assert!(eqn.range.end >= child.range.end);
+        }
+    }
+
+    #[tokio::test]
+    async fn symbols_are_ordered_by_source_position() {
+        let text = "act a;\nsort D;\ninit a;";
+        let symbols = symbols_for(text).await;
+        let starts: Vec<_> = symbols.iter().map(|s| s.range.start).collect();
+        let mut sorted = starts.clone();
+        sorted.sort();
+        assert_eq!(starts, sorted);
+    }
+}
