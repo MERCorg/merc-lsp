@@ -1,0 +1,3 @@
+# Ignore the Rust target directory, which contains build artifacts.
+/target/
+
