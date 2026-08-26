@@ -2,9 +2,9 @@
 //! and the UTF-16-code-unit based [`Position`]/[`Range`] types used by the Language Server
 //! Protocol.
 
+use lsp_types::Position;
+use lsp_types::Range;
 use merc_syntax::Span;
-use tower_lsp::lsp_types::Position;
-use tower_lsp::lsp_types::Range;
 
 /// Whether `byte` can occur inside an mCRL2 identifier. Used to find word
 /// boundaries when narrowing a declaration's span down to just its identifier,

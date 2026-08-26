@@ -61,7 +61,7 @@ fn parse_catching_panics(text: &str) -> ParseOutcome {
 }
 
 /// Best-effort extraction of a human-readable message from a caught panic payload.
-fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = panic.downcast_ref::<&str>() {
         message.to_string()
     } else if let Some(message) = panic.downcast_ref::<String>() {

@@ -1,19 +1,26 @@
-//! Converts a document's [`ParseOutcome`] into LSP [`Diagnostic`]s.
+//! Converts a document's [`ParseOutcome`] and [`TypecheckOutcome`] into LSP [`Diagnostic`]s.
 
 use merc_syntax::Rule;
 use merc_syntax::Span;
+use merc_typecheck::WellTypedError;
 use merc_utilities::MercError;
+use lsp_types::Diagnostic;
+use lsp_types::DiagnosticSeverity;
+use lsp_types::Range;
 use pest::error::Error as PestError;
 use pest::error::InputLocation;
-use tower_lsp::lsp_types::Diagnostic;
-use tower_lsp::lsp_types::DiagnosticSeverity;
-use tower_lsp::lsp_types::Range;
 
 use crate::convert::LineIndex;
 use crate::convert::is_identifier_byte;
 use crate::parse::ParseOutcome;
+use crate::typecheck::TypecheckOutcome;
 
 const SOURCE: &str = "merc-lsp";
+
+/// Distinct `source` for type-checking diagnostics (see [`type_diagnostics`]), so that only
+/// checking the data-specification subtree (PLAN.md §4 — no whole-specification typecheck entry
+/// point exists upstream yet) doesn't silently read to a user as "no type errors".
+const TYPE_SOURCE: &str = "merc-lsp:types";
 
 /// Builds the full diagnostics list for a document from its latest parse
 /// outcome.
@@ -24,7 +31,34 @@ pub fn diagnostics(text: &str, line_index: &LineIndex, outcome: &ParseOutcome) -
     match outcome {
         ParseOutcome::Ok(_) => Vec::new(),
         ParseOutcome::ParseError(error) => vec![parse_error_diagnostic(text, line_index, error)],
-        ParseOutcome::Internal(message) => vec![internal_diagnostic(message)],
+        ParseOutcome::Internal(message) => vec![internal_diagnostic(message, SOURCE)],
+    }
+}
+
+/// Builds the type-checking diagnostics list for a document's data specification, from the
+/// result of typechecking it (only attempted once parsing has already succeeded — see
+/// [`crate::typecheck`]).
+///
+/// Returns an empty vector for [`TypecheckOutcome::Ok`], for the same reason [`diagnostics`]
+/// does for [`ParseOutcome::Ok`].
+pub fn type_diagnostics(text: &str, line_index: &LineIndex, outcome: &TypecheckOutcome) -> Vec<Diagnostic> {
+    match outcome {
+        TypecheckOutcome::Ok => Vec::new(),
+        TypecheckOutcome::Error(error) => vec![well_typed_diagnostic(text, line_index, error)],
+        TypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
+    }
+}
+
+fn well_typed_diagnostic(text: &str, line_index: &LineIndex, error: &WellTypedError) -> Diagnostic {
+    // Every variant but `WellTypedError::Custom` (an opaque wrapped error with no location of
+    // its own) carries a span.
+    let range = error.span().map(|span| line_index.range(text, span)).unwrap_or_default();
+    Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some(TYPE_SOURCE.to_string()),
+        message: error.to_string(),
+        ..Diagnostic::default()
     }
 }
 
@@ -55,11 +89,11 @@ fn parse_error_diagnostic(text: &str, line_index: &LineIndex, error: &MercError)
     }
 }
 
-fn internal_diagnostic(message: &str) -> Diagnostic {
+fn internal_diagnostic(message: &str, source: &str) -> Diagnostic {
     Diagnostic {
         range: Range::default(),
         severity: Some(DiagnosticSeverity::ERROR),
-        source: Some(SOURCE.to_string()),
+        source: Some(source.to_string()),
         message: message.to_string(),
         ..Diagnostic::default()
     }
@@ -118,5 +152,34 @@ mod tests {
         // one. Assert the range actually lands past the start of the file.
         assert!(diag.range.start.line > 0 || diag.range.start.character > 0);
         assert!(!diag.message.contains("-->"), "message should not contain pest's caret block");
+    }
+
+    async fn data_specification_for(text: &str) -> merc_syntax::UntypedDataSpecification {
+        match parse(text.to_string()).await {
+            ParseOutcome::Ok(spec) => spec.data_specification.clone(),
+            _ => panic!("fixture failed to parse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn well_typed_specification_yields_no_type_diagnostics() {
+        let text = "sort D;\ncons c: D;\ninit delta;";
+        let outcome = crate::typecheck::typecheck(data_specification_for(text).await).await;
+        let line_index = LineIndex::new(text);
+        assert!(type_diagnostics(text, &line_index, &outcome).is_empty());
+    }
+
+    #[tokio::test]
+    async fn ill_typed_specification_produces_a_located_type_diagnostic_with_a_distinct_source() {
+        let text = "map f: Bool;\neqn f = undeclared;";
+        let outcome = crate::typecheck::typecheck(data_specification_for(text).await).await;
+        let line_index = LineIndex::new(text);
+        let diags = type_diagnostics(text, &line_index, &outcome);
+
+        assert_eq!(diags.len(), 1);
+        let diag = &diags[0];
+        assert_eq!(diag.source.as_deref(), Some(TYPE_SOURCE));
+        assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
+        assert!(diag.range.start.line > 0 || diag.range.start.character > 0, "should be a located diagnostic");
     }
 }

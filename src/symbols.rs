@@ -10,14 +10,14 @@
 //! through named helper functions the way `SortDecl` and `IdDecl<Id>` (which *are* exported) are
 //! below.
 
+use lsp_types::DocumentSymbol;
+use lsp_types::Range;
+use lsp_types::SymbolKind;
 use merc_syntax::IdDecl;
 use merc_syntax::ProcessExpr;
 use merc_syntax::Span;
 use merc_syntax::SortDecl;
 use merc_syntax::UntypedProcessSpecification;
-use tower_lsp::lsp_types::DocumentSymbol;
-use tower_lsp::lsp_types::Range;
-use tower_lsp::lsp_types::SymbolKind;
 
 use crate::convert::LineIndex;
 use crate::convert::is_identifier_byte;
