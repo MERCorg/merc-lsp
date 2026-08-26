@@ -1,3 +1,6 @@
 # Ignore the Rust target directory, which contains build artifacts.
 /target/
 
+# Local editor settings (e.g. merc-lsp.serverPath pointing at a local build).
+/.vscode/
+
