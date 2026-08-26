@@ -1,0 +1,80 @@
+{
+	"name": "merc-lsp-client",
+	"displayName": "mCRL2 Language Support",
+	"description": "Language support for mCRL2 specifications, backed by the merc-lsp language server",
+	"author": "Maurice Laveauxn",
+	"license": "BSL-1.0",
+	"version": "1.0.0",
+	"publisher": "MERCorg",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/MERCorg/merc-lsp"
+	},
+	"categories": [
+		"Programming Languages",
+		"Linters"
+	],
+	"engines": {
+		"vscode": "^1.91.0"
+	},
+	"main": "./out/extension.js",
+	"contributes": {
+		"languages": [
+			{
+				"id": "mcrl2",
+				"aliases": [
+					"mCRL2",
+					"mcrl2"
+				],
+				"extensions": [
+					".mcrl2"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "mcrl2",
+				"scopeName": "source.mcrl2",
+				"path": "./syntaxes/mcrl2.tmLanguage.json"
+			}
+		],
+		"configuration": {
+			"type": "object",
+			"title": "mCRL2",
+			"properties": {
+				"merc-lsp.serverPath": {
+					"type": "string",
+					"default": "",
+					"description": "Path to the merc-lsp executable. Leave empty to use the binary bundled with this extension, falling back to a `merc-lsp` found on your PATH."
+				},
+				"merc-lsp.trace.server": {
+					"type": "string",
+					"enum": [
+						"off",
+						"messages",
+						"verbose"
+					],
+					"default": "off",
+					"description": "Traces the communication between VS Code and the merc-lsp language server."
+				}
+			}
+		}
+	},
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -w -p ./",
+		"package": "vsce package"
+	},
+	"dependencies": {
+		"vscode-languageclient": "^10.0"
+	},
+	"devDependencies": {
+		"@types/node": "^26.3",
+		"@types/vscode": "^1.134.0",
+		"@vscode/test-electron": "^3.1",
+		"@vscode/vsce": "^3.2",
+		"typescript": "^5.7"
+	}
+}
