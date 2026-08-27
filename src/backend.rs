@@ -17,6 +17,9 @@ use lsp_types::InitializeResult;
 use lsp_types::LogMessageParams;
 use lsp_types::MessageType;
 use lsp_types::PublishDiagnosticsParams;
+use lsp_types::SemanticTokens;
+use lsp_types::SemanticTokensParams;
+use lsp_types::SemanticTokensResult;
 use lsp_types::ServerInfo;
 use lsp_types::Url;
 use lsp_types::notification;
@@ -27,6 +30,7 @@ use crate::document::Document;
 use crate::document::DocumentStore;
 use crate::parse;
 use crate::parse::ParseOutcome;
+use crate::semantic_tokens;
 use crate::symbols;
 use crate::typecheck;
 
@@ -68,6 +72,10 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         .request::<request::DocumentSymbolRequest, _>(|state, params| {
             let documents = state.documents.clone();
             async move { Ok(document_symbol(&documents, params)) }
+        })
+        .request::<request::SemanticTokensFullRequest, _>(|state, params| {
+            let documents = state.documents.clone();
+            async move { Ok(semantic_tokens_full(&documents, params)) }
         })
         .notification::<notification::Initialized>(|state, _| {
             if let Err(error) = state.client.notify::<notification::LogMessage>(LogMessageParams {
@@ -126,6 +134,17 @@ fn document_symbol(documents: &DocumentStore, params: DocumentSymbolParams) -> O
     };
     let symbols = symbols::document_symbols(&document.text, &document.line_index, spec);
     Some(DocumentSymbolResponse::Nested(symbols))
+}
+
+fn semantic_tokens_full(documents: &DocumentStore, params: SemanticTokensParams) -> Option<SemanticTokensResult> {
+    let document = documents.get(&params.text_document.uri)?;
+    // No parse, no tokens, so nothing to report.
+    let ParseOutcome::Ok(spec) = &document.parsed else {
+        return None;
+    };
+    
+    let data = semantic_tokens::semantic_tokens(&document.text, &document.line_index, spec);
+    Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data }))
 }
 
 /// Clones out of `state` whatever [`on_change`] needs and spawns it, so parsing can `.await`

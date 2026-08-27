@@ -16,6 +16,7 @@ mod convert;
 mod diagnostics;
 mod document;
 mod parse;
+mod semantic_tokens;
 mod symbols;
 mod typecheck;
 

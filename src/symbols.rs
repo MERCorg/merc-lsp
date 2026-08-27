@@ -82,16 +82,7 @@ pub fn document_symbols(text: &str, line_index: &LineIndex, spec: &UntypedProces
         } else {
             Some(decl.args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" # "))
         };
-        symbols.push(make_symbol(
-            decl.identifier.clone(),
-            detail,
-            SymbolKind::EVENT,
-            text,
-            line_index,
-            &decl.span,
-            &decl.identifier,
-            None,
-        ));
+        symbols.push(symbol_at(decl.identifier.clone(), detail, SymbolKind::EVENT, text, line_index, &decl.span, None));
     }
     for decl in &spec.process_declarations {
         let children: Vec<DocumentSymbol> = decl
@@ -104,16 +95,7 @@ pub fn document_symbols(text: &str, line_index: &LineIndex, spec: &UntypedProces
         } else {
             Some(decl.params.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))
         };
-        symbols.push(make_symbol(
-            decl.identifier.clone(),
-            detail,
-            SymbolKind::FUNCTION,
-            text,
-            line_index,
-            &decl.span,
-            &decl.identifier,
-            Some(children),
-        ));
+        symbols.push(symbol_at(decl.identifier.clone(), detail, SymbolKind::FUNCTION, text, line_index, &decl.span, Some(children)));
     }
     if let Some(init) = &spec.init {
         symbols.push(init_symbol(text, line_index, init));
@@ -124,29 +106,11 @@ pub fn document_symbols(text: &str, line_index: &LineIndex, spec: &UntypedProces
 }
 
 fn sort_symbol(text: &str, line_index: &LineIndex, decl: &SortDecl) -> DocumentSymbol {
-    make_symbol(
-        decl.identifier.clone(),
-        decl.expr.as_ref().map(|expr| expr.to_string()),
-        SymbolKind::STRUCT,
-        text,
-        line_index,
-        &decl.span,
-        &decl.identifier,
-        None,
-    )
+    symbol_at(decl.identifier.clone(), decl.expr.as_ref().map(|expr| expr.to_string()), SymbolKind::STRUCT, text, line_index, &decl.span, None)
 }
 
 fn id_decl_symbol<Id>(text: &str, line_index: &LineIndex, decl: &IdDecl<Id>, kind: SymbolKind) -> DocumentSymbol {
-    make_symbol(
-        decl.identifier.clone(),
-        Some(decl.sort.to_string()),
-        kind,
-        text,
-        line_index,
-        &decl.span,
-        &decl.identifier,
-        None,
-    )
+    symbol_at(decl.identifier.clone(), Some(decl.sort.to_string()), kind, text, line_index, &decl.span, None)
 }
 
 fn init_symbol(text: &str, line_index: &LineIndex, init: &ProcessExpr) -> DocumentSymbol {
@@ -154,26 +118,22 @@ fn init_symbol(text: &str, line_index: &LineIndex, init: &ProcessExpr) -> Docume
     build_symbol("init".to_string(), Some(init.to_string()), SymbolKind::OBJECT, range, range, None)
 }
 
-/// Builds a symbol whose `selection_range` is narrowed to just the `identifier` word within
-/// `span`, falling back to `span` itself if the identifier can't be located (e.g. a synthetic
-/// span). This also disambiguates grouped declarations like `sort A, B, C;`, which the grammar
-/// gives byte-identical spans to.
-#[allow(clippy::too_many_arguments)]
-fn make_symbol(
+/// Builds a symbol whose `range` and `selection_range` are both exactly `span` — for a
+/// declaration kind (`SortDecl`, `ActDecl`, `IdDecl`) whose span `merc_syntax` now gives
+/// precisely the identifier itself (previously the whole group in `sort A, B, C;` and its
+/// `cons`/`map`/`var`/`glob`/`act` siblings all shared one span, byte-identical for every
+/// sibling — see [`find_identifier`]'s doc comment for how that used to be worked around).
+fn symbol_at(
     name: String,
     detail: Option<String>,
     kind: SymbolKind,
     text: &str,
     line_index: &LineIndex,
     span: &Span,
-    identifier: &str,
     children: Option<Vec<DocumentSymbol>>,
 ) -> DocumentSymbol {
     let range = line_index.range(text, span);
-    let selection_range = find_identifier(text, span, identifier)
-        .map(|identifier_span| line_index.range(text, &identifier_span))
-        .unwrap_or(range);
-    build_symbol(name, detail, kind, range, selection_range, children)
+    build_symbol(name, detail, kind, range, range, children)
 }
 
 fn build_symbol(
@@ -198,7 +158,12 @@ fn build_symbol(
 }
 
 /// Finds the first word-boundary-delimited occurrence of `identifier` within `text[span]`.
-fn find_identifier(text: &str, span: &Span, identifier: &str) -> Option<Span> {
+///
+/// `pub(crate)`: this module no longer needs it directly — every declaration kind here now gets
+/// a precise identifier-only span straight from `merc_syntax` (see [`symbol_at`]). It's kept for
+/// [`crate::semantic_tokens`], which still uses it to narrow a process/action instantiation's
+/// span (`P(x = 1)`, `a(1)`) down to just the name — that one's still whole-construct.
+pub(crate) fn find_identifier(text: &str, span: &Span, identifier: &str) -> Option<Span> {
     if identifier.is_empty() {
         return None;
     }
