@@ -28,3 +28,13 @@ env_logger = "0.11"
 tokio = { version = "1.53", features = ["io-util", "time"] }
 serde_json = "1"
 indoc = "2"
+
+# Points the git dependencies above at the local `~/merc` checkout (branch `feature/lsp-support`)
+# instead of the published/pinned revision, for developing against upstream changes that haven't
+# landed on `main` yet — the whole-process type checker, `TypingInfo`, and the precise
+# per-identifier declaration/`Assignment` spans this crate's `symbols`/`semantic_tokens` now rely
+# on. Remove once that branch merges and `Cargo.lock` is updated to pin the merged revision.
+[patch."https://github.com/MERCorg/merc"]
+merc_syntax = { git = "https://github.com/mlaveaux/merc", branch = "feature/lsp-support" }
+merc_typecheck = { git = "https://github.com/mlaveaux/merc", branch = "feature/lsp-support" }
+merc_utilities = { git = "https://github.com/mlaveaux/merc", branch = "feature/lsp-support" }

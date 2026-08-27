@@ -100,7 +100,7 @@ pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcess
             walk_sort_expression(expr, &mut builder);
         }
     }
-    
+
     for decl in &spec.data_specification.constructor_declarations {
         builder.push(&decl.span, TokenKind::EnumMember, true);
         walk_sort_expression(&decl.sort, &mut builder);
@@ -361,7 +361,7 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, builder: &mut Bu
                 for assignment in assignments {
                     // The parameter name in `x = e` — a *use* of an existing process parameter,
                     // not a new binding, hence no `MODIFIER_DECLARATION`.
-                    builder.push(&assignment.span, TokenKind::Parameter, false);
+                    builder.push(&assignment.expr.span, TokenKind::Parameter, false);
                     walk_data_expr(&assignment.expr, symbols, builder);
                 }
             }
