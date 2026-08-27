@@ -24,6 +24,9 @@ use lsp_types::InitializeResult;
 use lsp_types::InitializedParams;
 use lsp_types::OneOf;
 use lsp_types::PublishDiagnosticsParams;
+use lsp_types::SemanticTokensParams;
+use lsp_types::SemanticTokensResult;
+use lsp_types::SemanticTokensServerCapabilities;
 use lsp_types::TextDocumentContentChangeEvent;
 use lsp_types::TextDocumentIdentifier;
 use lsp_types::TextDocumentItem;
@@ -114,6 +117,17 @@ async fn initialize_advertises_document_symbol_support() {
     assert_eq!(result.capabilities.document_symbol_provider, Some(OneOf::Left(true)));
     // Phase 1 deliberately does not advertise capabilities it doesn't implement.
     assert!(result.capabilities.definition_provider.is_none());
+}
+
+#[tokio::test]
+async fn initialize_advertises_semantic_tokens_support() {
+    let (_server, result, _rx) = start().await;
+    let Some(SemanticTokensServerCapabilities::SemanticTokensOptions(options)) =
+        result.capabilities.semantic_tokens_provider
+    else {
+        panic!("expected plain semanticTokens options, got {:?}", result.capabilities.semantic_tokens_provider);
+    };
+    assert!(!options.legend.token_types.is_empty());
 }
 
 #[tokio::test]
@@ -214,4 +228,31 @@ async fn document_symbol_returns_the_outline() {
     assert!(names.contains(&"D"), "expected the 'D' sort in the outline, got {names:?}");
     assert!(names.contains(&"a"), "expected the 'a' action in the outline, got {names:?}");
     assert!(names.contains(&"init"), "expected the 'init' entry in the outline, got {names:?}");
+}
+
+#[tokio::test]
+async fn semantic_tokens_full_returns_tokens_for_a_parsed_document() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("tokens.mcrl2");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), "sort D;\nact a;\ninit a;"))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let response = server
+        .request::<request::SemanticTokensFullRequest>(SemanticTokensParams {
+            text_document: TextDocumentIdentifier { uri: document_uri },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .expect("semanticTokens/full should succeed");
+
+    let Some(SemanticTokensResult::Tokens(tokens)) = response else {
+        panic!("expected a semanticTokens/full response, got {response:?}");
+    };
+    // `D` (a sort declaration) and `a` (an action instantiation in `init a;`) should each yield a
+    // token; the exact classification is `semantic_tokens.rs`'s own unit tests' job.
+    assert!(tokens.data.len() >= 2, "expected at least a sort and an action token, got {:?}", tokens.data);
 }
