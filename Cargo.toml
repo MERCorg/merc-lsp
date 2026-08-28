@@ -26,8 +26,8 @@ env_logger = "0.11"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["io-util", "time"] }
-serde_json = "1"
-indoc = "2"
+serde_json = "1.0"
+indoc = "2.0"
 
 # Points the git dependencies above at the local `~/merc` checkout (branch `feature/lsp-support`)
 # instead of the published/pinned revision, for developing against upstream changes that haven't

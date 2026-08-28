@@ -48,6 +48,7 @@ use merc_syntax::Traverse;
 use merc_syntax::UntypedProcessSpecification;
 
 use crate::convert::LineIndex;
+use crate::convert::is_identifier_byte;
 use crate::symbols::find_identifier;
 
 /// A token's semantic type, as an index into the legend returned by [`legend`] — the two must be
@@ -56,19 +57,29 @@ use crate::symbols::find_identifier;
 enum TokenKind {
     Type = 0,
     Variable = 1,
-    Function = 2,
-    Method = 3,
-    Event = 4,
-    EnumMember = 5,
+    /// A process reference, whether a `proc` declaration itself or an instantiation of one — see
+    /// [`SymbolTable::classify_action`]. Deliberately kept a distinct token type from
+    /// [`TokenKind::Event`], so a theme colors a process instantiation differently from an action
+    /// instantiation even though both can parse as the same [`ProcessExprKind::Action`] shape
+    /// (see the module docs above).
+    Method = 2,
+    /// An action declaration or instantiation — see [`SymbolTable::classify_action`]. Kept a
+    /// separate token type from [`TokenKind::Method`] specifically so actions and processes don't
+    /// end up the same color.
+    Event = 3,
+    EnumMember = 4,
     /// A `proc` declaration's own parameter, or a reference to one (the `x` in `P(x = e)`) —
     /// distinct from [`TokenKind::Variable`], which covers every *bound* variable (`sum`/`dist`/
     /// `forall`/`exists`/`lambda`/comprehension) and `var`/`glob` declaration instead.
-    Parameter = 6,
+    Parameter = 5,
+    /// A reserved mCRL2 word (`sort`, `proc`, `sum`, `true`, …) — see [`tag_keywords`].
+    Keyword = 6,
 }
 
 const MODIFIER_DECLARATION: u32 = 1 << 0;
 /// Marks a system-defined sort (`Bool`, `Nat`, …, and the parameterized `List`/`Set`/`Bag`/
-/// `FSet`/`FBag`) — mCRL2's own reserved sort names.
+/// `FSet`/`FBag`) — mCRL2's own reserved sort names, as distinct from a user's own `sort`
+/// declaration, via the standard [`SemanticTokenModifier::DEFAULT_LIBRARY`]. See
 /// [`walk_sort_expression`].
 const MODIFIER_DEFAULT_LIBRARY: u32 = 1 << 1;
 
@@ -79,11 +90,11 @@ pub fn legend() -> SemanticTokensLegend {
         token_types: vec![
             SemanticTokenType::TYPE,
             SemanticTokenType::VARIABLE,
-            SemanticTokenType::FUNCTION,
             SemanticTokenType::METHOD,
             SemanticTokenType::EVENT,
             SemanticTokenType::ENUM_MEMBER,
             SemanticTokenType::PARAMETER,
+            SemanticTokenType::KEYWORD,
         ],
         token_modifiers: vec![SemanticTokenModifier::DECLARATION, SemanticTokenModifier::DEFAULT_LIBRARY],
     }
@@ -107,7 +118,9 @@ pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcess
     }
 
     for decl in &spec.data_specification.map_declarations {
-        builder.push(&decl.span, TokenKind::Function, true);
+        // Deliberately no `builder.push` for the mapping's own name, at declaration or at any
+        // use site below (see `SymbolTable::classify_data_id`): mappings are left uncolored, so
+        // they read as plain text rather than competing for a color with constructors/processes.
         walk_sort_expression(&decl.sort, &mut builder);
     }
 
@@ -150,6 +163,8 @@ pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcess
         walk_process_expr(init, &symbols, &mut builder);
     }
 
+    tag_keywords(text, &mut builder);
+
     builder.finish()
 }
 
@@ -183,17 +198,19 @@ impl<'a> SymbolTable<'a> {
         }
     }
 
-    /// Classifies a [`DataExprKind::Id`] occurrence.
-    fn classify_data_id(&self, name: &str) -> TokenKind {
+    /// Classifies a [`DataExprKind::Id`] occurrence, or `None` if it names a mapping — mappings
+    /// are deliberately left uncolored (see [`semantic_tokens`]'s map-declaration loop), so a use
+    /// site has to stay uncolored too rather than fall back to some other kind.
+    fn classify_data_id(&self, name: &str) -> Option<TokenKind> {
         if self.constructors.contains(name) {
-            TokenKind::EnumMember
+            Some(TokenKind::EnumMember)
         } else if self.maps.contains(name) {
-            TokenKind::Function
+            None
         } else {
             // Not declared as a map or constructor: a bound or free variable. This is also the
             // fallback for a name that isn't declared at all — flagging that is a diagnostics
             // concern (type checking), not this pass's job.
-            TokenKind::Variable
+            Some(TokenKind::Variable)
         }
     }
 
@@ -331,7 +348,9 @@ fn walk_data_expr(expr: &DataExpr, symbols: &SymbolTable, builder: &mut Builder)
     expr.visit::<(), _>(|node| {
         match &node.node {
             DataExprKind::Id(name) => {
-                builder.push(&node.span, symbols.classify_data_id(name), false);
+                if let Some(kind) = symbols.classify_data_id(name) {
+                    builder.push(&node.span, kind, false);
+                }
             }
             DataExprKind::SetBagComp { variable, .. } => {
                 builder.push(&variable.span, TokenKind::Variable, true);
@@ -361,7 +380,7 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, builder: &mut Bu
                 for assignment in assignments {
                     // The parameter name in `x = e` — a *use* of an existing process parameter,
                     // not a new binding, hence no `MODIFIER_DECLARATION`.
-                    builder.push(&assignment.expr.span, TokenKind::Parameter, false);
+                    builder.push(&assignment.span, TokenKind::Parameter, false);
                     walk_data_expr(&assignment.expr, symbols, builder);
                 }
             }
@@ -394,6 +413,69 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, builder: &mut Bu
         }
         ControlFlow::Continue(())
     });
+}
+
+/// Every word-like mCRL2 keyword relevant to a process/data specification, for [`tag_keywords`].
+/// Built-in sort names (`Bool`, `List`, …) are deliberately not here: [`walk_sort_expression`]
+/// already tags those, more precisely (node by node, off the AST, not a blind text scan).
+///
+/// `true`/`false`/`delta`/`tau` are genuinely reserved — the grammar rejects them as the prefix
+/// of a longer identifier (`DataExprTrue = { "true" ~ !Id }` and siblings; see `merc_syntax`'s
+/// own `keywords_are_not_prefix_of_identifiers` test) — so a word-boundary match of one of these
+/// can never actually be a user identifier. The rest (`sort`, `map`, `proc`, …) only ever appear
+/// as unambiguous block-introducing prefixes in the grammar and have no such guard, so in
+/// principle nothing stops a spec from declaring, say, a map literally named `sort`; in practice
+/// this essentially never happens, and accepting that rather than leaving every structural
+/// keyword uncolored is the better trade.
+const KEYWORDS: &[&str] = &[
+    "sort", "cons", "map", "glob", "act", "proc", "init", "var", "eqn", "struct", "whr",
+    "forall", "exists", "lambda", "sum", "dist", "val", "true", "false", "delta", "tau",
+    "hide", "block", "allow", "comm", "rename",
+];
+
+/// Tags every occurrence of a reserved mCRL2 keyword (see [`KEYWORDS`]) as [`TokenKind::Keyword`].
+///
+/// Unlike every other pass in this module, this is a blind scan over the raw source text, not
+/// the AST — deliberately: a general-purpose LSP server can't assume its client has (or even
+/// *can* have) a TextMate grammar to fall back on for something as basic as keyword coloring —
+/// that format is a VS Code-family convention, not a universal one, and plenty of LSP clients
+/// (Neovim, Helix, Emacs' `eglot`, …) have no such fallback at all. So the server colors keywords
+/// itself, the same way it colors everything else. Word-boundary matching (via
+/// [`is_identifier_byte`]) keeps this from matching a keyword-shaped substring of a longer
+/// identifier (`sortable` does not contain the keyword `sort`), and `%`-comments — mCRL2's only
+/// comment syntax, running to end of line, with no escape mechanism that could hide a literal `%`
+/// inside anything else — are skipped explicitly, since nothing else marks their extent for a
+/// text-only pass to lean on.
+fn tag_keywords(text: &str, builder: &mut Builder) {
+    let bytes = text.as_bytes();
+    let mut in_comment = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if in_comment {
+            in_comment = byte != b'\n';
+            i += 1;
+            continue;
+        }
+        if byte == b'%' {
+            in_comment = true;
+            i += 1;
+            continue;
+        }
+        if !is_identifier_byte(byte) {
+            i += 1;
+            continue;
+        }
+
+        let word_start = i;
+        while i < bytes.len() && is_identifier_byte(bytes[i]) {
+            i += 1;
+        }
+        let word = &text[word_start..i];
+        if KEYWORDS.contains(&word) {
+            builder.push(&Span { start: word_start, end: i }, TokenKind::Keyword, false);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -434,25 +516,26 @@ mod tests {
         let positions = absolute(&tokens);
 
         let event_start = text.find("a(f(b))").unwrap();
-        let function_start = text.find("f(b)").unwrap();
+        let mapping_start = text.find("f(b)").unwrap();
         let method_start = text.rfind("P(true)").unwrap();
 
         let line_index = LineIndex::new(text);
         let event_pos = line_index.position(text, event_start);
-        let function_pos = line_index.position(text, function_start);
+        let mapping_pos = line_index.position(text, mapping_start);
         let method_pos = line_index.position(text, method_start);
 
+        // `a` (an action) and `P` (a process) get distinct, differently-colored token kinds even
+        // though both parse as the same `ProcessExprKind::Action` shape.
         assert!(
             positions
                 .iter()
                 .any(|&(l, c, len, ty, _)| l == event_pos.line && c == event_pos.character && len == 1 && ty == TokenKind::Event as u32)
         );
-        assert!(positions.iter().any(|&(l, c, _, ty, _)| l == function_pos.line
-            && c == function_pos.character
-            && ty == TokenKind::Function as u32));
         assert!(positions.iter().any(|&(l, c, _, ty, _)| l == method_pos.line
             && c == method_pos.character
             && ty == TokenKind::Method as u32));
+        // `f` (a mapping) is deliberately left uncolored: no token starts at its use site.
+        assert!(!positions.iter().any(|&(l, c, ..)| l == mapping_pos.line && c == mapping_pos.character));
     }
 
     #[tokio::test]
