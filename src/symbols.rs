@@ -4,11 +4,10 @@
 //! is deliberately not used to walk the specification's top-level declarations (sorts, maps,
 //! equations, actions, processes, …); those are walked by hand below, one flat loop per field.
 //!
-//! Note: `ActDecl`, `ProcDecl`, `EqnDecl`, and `EqnSpec` are not re-exported from the
-//! `merc_syntax` crate root (only their `*Id` index types and a handful of sibling types are),
-//! so those four kinds are handled inline in [`document_symbols`] via type inference rather than
-//! through named helper functions the way `SortDecl` and `IdDecl<Id>` (which *are* exported) are
-//! below.
+//! `ActDecl`/`ProcDecl`/`EqnDecl`/`EqnSpec` are handled inline in [`document_symbols`] via type
+//! inference rather than through named helper functions the way `SortDecl`/`IdDecl<Id>` are
+//! below — purely a style choice at this point (all four are `merc_syntax` crate-root
+//! re-exports too), not forced by anything.
 
 use lsp_types::DocumentSymbol;
 use lsp_types::Range;
@@ -43,9 +42,12 @@ pub fn document_symbols(text: &str, line_index: &LineIndex, spec: &UntypedProces
     }
 
     for eqn_spec in &spec.data_specification.equation_declarations {
-        // `EqnSpec` has no `span` field of its own, so its outline range is synthesized as the
-        // min-start/max-end over its children's spans. The (grammar-legal) empty block is
-        // skipped, since there is then nothing to point the range at.
+        // `EqnSpec.span` exists but can absorb trailing whitespace past its own `;` (see its doc
+        // comment upstream), which would make an empty-looking gap in the outline read as part of
+        // this block's range — synthesizing the min-start/max-end over its children's spans
+        // instead stays exactly as tight as what's actually being shown as children below. The
+        // (grammar-legal) empty block is skipped, since there is then nothing to point the range
+        // at either way.
         let spans = eqn_spec
             .variables
             .iter()

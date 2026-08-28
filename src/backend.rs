@@ -13,7 +13,12 @@ use async_lsp::router::Router;
 use lsp_types::Diagnostic;
 use lsp_types::DocumentSymbolParams;
 use lsp_types::DocumentSymbolResponse;
+use lsp_types::GotoDefinitionParams;
+use lsp_types::GotoDefinitionResponse;
+use lsp_types::Hover;
+use lsp_types::HoverParams;
 use lsp_types::InitializeResult;
+use lsp_types::Location;
 use lsp_types::LogMessageParams;
 use lsp_types::MessageType;
 use lsp_types::PublishDiagnosticsParams;
@@ -28,6 +33,8 @@ use lsp_types::request;
 use crate::capabilities::server_capabilities;
 use crate::document::Document;
 use crate::document::DocumentStore;
+use crate::goto_definition;
+use crate::hover;
 use crate::parse;
 use crate::parse::ParseOutcome;
 use crate::semantic_tokens;
@@ -76,6 +83,14 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         .request::<request::SemanticTokensFullRequest, _>(|state, params| {
             let documents = state.documents.clone();
             async move { Ok(semantic_tokens_full(&documents, params)) }
+        })
+        .request::<request::HoverRequest, _>(|state, params| {
+            let documents = state.documents.clone();
+            async move { Ok(hover_request(&documents, params)) }
+        })
+        .request::<request::GotoDefinition, _>(|state, params| {
+            let documents = state.documents.clone();
+            async move { Ok(goto_definition_request(&documents, params)) }
         })
         .notification::<notification::Initialized>(|state, _| {
             if let Err(error) = state.client.notify::<notification::LogMessage>(LogMessageParams {
@@ -147,6 +162,22 @@ fn semantic_tokens_full(documents: &DocumentStore, params: SemanticTokensParams)
     Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data }))
 }
 
+fn hover_request(documents: &DocumentStore, params: HoverParams) -> Option<Hover> {
+    let uri = &params.text_document_position_params.text_document.uri;
+    let document = documents.get(uri)?;
+    let data_specification = document.checked_data_specification()?;
+    hover::hover(&document.text, &document.line_index, data_specification, params.text_document_position_params.position)
+}
+
+fn goto_definition_request(documents: &DocumentStore, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
+    let uri = params.text_document_position_params.text_document.uri.clone();
+    let document = documents.get(&uri)?;
+    let data_specification = document.checked_data_specification()?;
+    let position = params.text_document_position_params.position;
+    let range = goto_definition::definition_range(&document.text, &document.line_index, data_specification, position)?;
+    Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
+}
+
 /// Clones out of `state` whatever [`on_change`] needs and spawns it, so parsing can `.await`
 /// past this (synchronous) notification handler's borrow of `state`.
 fn spawn_on_change(state: &mut Backend, uri: Url, text: String, version: i32) {
@@ -161,10 +192,11 @@ fn spawn_on_change(state: &mut Backend, uri: Url, text: String, version: i32) {
 async fn on_change(client: ClientSocket, documents: Arc<DocumentStore>, uri: Url, text: String, version: i32) {
     let outcome = parse::parse(text.clone()).await;
 
-    // Only meaningful once parsing succeeded — see `crate::typecheck`'s module docs for why this
-    // is scoped to the data-specification subtree only.
+    // Only meaningful once parsing succeeded. Cloned (rather than moved) out of `outcome`: the
+    // original stays in `outcome` below, since `symbols`/`semantic_tokens` need the raw AST
+    // regardless of whether type checking succeeds.
     let typechecked = match &outcome {
-        ParseOutcome::Ok(spec) => Some(typecheck::typecheck(spec.data_specification.clone()).await),
+        ParseOutcome::Ok(spec) => Some(typecheck::typecheck((**spec).clone()).await),
         ParseOutcome::ParseError(_) | ParseOutcome::Internal(_) => None,
     };
 

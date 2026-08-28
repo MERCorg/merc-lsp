@@ -428,7 +428,7 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, builder: &mut Bu
 /// this essentially never happens, and accepting that rather than leaving every structural
 /// keyword uncolored is the better trade.
 const KEYWORDS: &[&str] = &[
-    "sort", "cons", "map", "glob", "act", "proc", "init", "var", "eqn", "struct", "whr",
+    "sort", "cons", "map", "glob", "act", "proc", "init", "var", "eqn", "struct", "whr", "end",
     "forall", "exists", "lambda", "sum", "dist", "val", "true", "false", "delta", "tau",
     "hide", "block", "allow", "comm", "rename",
 ];
@@ -656,5 +656,23 @@ mod tests {
             && c == param_pos.character
             && ty == TokenKind::Parameter as u32
             && modifiers == MODIFIER_DECLARATION));
+    }
+
+    #[tokio::test]
+    async fn sort_alias_declaration_token_does_not_overlap_its_own_definition() {
+        // Regression test: `SortDecl`'s alias form (`sort L = List(Nat);`) used to keep the whole
+        // `L = List(Nat);` as its span upstream, which not only mis-highlighted `sort_symbol`'s
+        // outline entry but produced two overlapping semantic tokens here — the (wrongly wide)
+        // declaration token and the `List`/`Nat` tokens `walk_sort_expression` pushes for the
+        // definition nested inside it.
+        let text = "sort L = List(Nat);";
+        let tokens = tokens_for(text).await;
+        let positions = absolute(&tokens);
+        for window in positions.windows(2) {
+            let [(l1, c1, len1, ..), (l2, c2, ..)] = window else { unreachable!() };
+            if l1 == l2 {
+                assert!(c1 + len1 <= *c2, "tokens on the same line must not overlap: {window:?}");
+            }
+        }
     }
 }

@@ -1,5 +1,6 @@
 //! Builds the server's advertised [`ServerCapabilities`] in one place.
 
+use lsp_types::HoverProviderCapability;
 use lsp_types::OneOf;
 use lsp_types::SemanticTokensFullOptions;
 use lsp_types::SemanticTokensOptions;
@@ -24,6 +25,10 @@ pub fn server_capabilities() -> ServerCapabilities {
                 ..SemanticTokensOptions::default()
             },
         )),
+        // Both built on the checked data specification's `TypingInfo` — see `hover`/
+        // `goto_definition`.
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     }
 }
