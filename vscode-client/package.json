@@ -39,6 +39,21 @@
 				"path": "./syntaxes/mcrl2.tmLanguage.json"
 			}
 		],
+		"semanticTokenScopes": [
+			{
+				"language": "mcrl2",
+				"scopes": {
+					"type": ["entity.name.type"],
+					"type.defaultLibrary": ["support.type"],
+					"variable": ["variable.other"],
+					"method": ["entity.name.function"],
+					"event": ["entity.name.tag"],
+					"enumMember": ["variable.other.enummember"],
+					"parameter": ["variable.parameter"],
+					"keyword": ["keyword.control"]
+				}
+			}
+		],
 		"configuration": {
 			"type": "object",
 			"title": "mCRL2",
