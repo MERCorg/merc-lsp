@@ -19,10 +19,17 @@ use lsp_types::DidChangeTextDocumentParams;
 use lsp_types::DidOpenTextDocumentParams;
 use lsp_types::DocumentSymbolParams;
 use lsp_types::DocumentSymbolResponse;
+use lsp_types::GotoDefinitionParams;
+use lsp_types::GotoDefinitionResponse;
+use lsp_types::Hover;
+use lsp_types::HoverContents;
+use lsp_types::HoverParams;
+use lsp_types::HoverProviderCapability;
 use lsp_types::InitializeParams;
 use lsp_types::InitializeResult;
 use lsp_types::InitializedParams;
 use lsp_types::OneOf;
+use lsp_types::Position;
 use lsp_types::PublishDiagnosticsParams;
 use lsp_types::SemanticTokensParams;
 use lsp_types::SemanticTokensResult;
@@ -30,6 +37,7 @@ use lsp_types::SemanticTokensServerCapabilities;
 use lsp_types::TextDocumentContentChangeEvent;
 use lsp_types::TextDocumentIdentifier;
 use lsp_types::TextDocumentItem;
+use lsp_types::TextDocumentPositionParams;
 use lsp_types::Url;
 use lsp_types::VersionedTextDocumentIdentifier;
 use lsp_types::notification;
@@ -115,8 +123,13 @@ fn did_open(uri: Url, text: &str) -> DidOpenTextDocumentParams {
 async fn initialize_advertises_document_symbol_support() {
     let (_server, result, _rx) = start().await;
     assert_eq!(result.capabilities.document_symbol_provider, Some(OneOf::Left(true)));
-    // Phase 1 deliberately does not advertise capabilities it doesn't implement.
-    assert!(result.capabilities.definition_provider.is_none());
+}
+
+#[tokio::test]
+async fn initialize_advertises_hover_and_goto_definition_support() {
+    let (_server, result, _rx) = start().await;
+    assert_eq!(result.capabilities.hover_provider, Some(HoverProviderCapability::Simple(true)));
+    assert_eq!(result.capabilities.definition_provider, Some(OneOf::Left(true)));
 }
 
 #[tokio::test]
@@ -255,4 +268,73 @@ async fn semantic_tokens_full_returns_tokens_for_a_parsed_document() {
     // `D` (a sort declaration) and `a` (an action instantiation in `init a;`) should each yield a
     // token; the exact classification is `semantic_tokens.rs`'s own unit tests' job.
     assert!(tokens.data.len() >= 2, "expected at least a sort and an action token, got {:?}", tokens.data);
+}
+
+/// mCRL2 text used by the hover/goto-definition tests below: a mapping `f` used once in its own
+/// defining equation, so a position inside `f(x)` on the `eqn` line resolves through
+/// `DataSpecification::typing_info` to `f`'s declaration on the `map` line.
+const WITH_A_MAPPING: &str = "sort D;\ncons c: D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = x;\ninit delta;";
+
+fn position_of(text: &str, needle: &str) -> Position {
+    let offset = text.find(needle).expect("needle should occur in the fixture text");
+    let prefix = &text[..offset];
+    let line = prefix.matches('\n').count() as u32;
+    let character = prefix.rsplit('\n').next().expect("split always yields at least one piece").len() as u32;
+    Position { line, character }
+}
+
+#[tokio::test]
+async fn hover_reports_a_mapping_uses_sort() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("hover.mcrl2");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), WITH_A_MAPPING))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let response = server
+        .request::<request::HoverRequest>(HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: document_uri },
+                position: position_of(WITH_A_MAPPING, "f(x) = x"),
+            },
+            work_done_progress_params: Default::default(),
+        })
+        .await
+        .expect("hover should succeed");
+
+    let Some(Hover { contents: HoverContents::Markup(content), .. }) = response else {
+        panic!("expected markup hover content, got {response:?}");
+    };
+    assert!(content.value.contains('f'), "expected hover text to mention 'f', got {}", content.value);
+}
+
+#[tokio::test]
+async fn goto_definition_jumps_from_a_mapping_use_to_its_declaration() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("goto-definition.mcrl2");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), WITH_A_MAPPING))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let response = server
+        .request::<request::GotoDefinition>(GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: document_uri.clone() },
+                position: position_of(WITH_A_MAPPING, "f(x) = x"),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .expect("goto-definition should succeed");
+
+    let Some(GotoDefinitionResponse::Scalar(location)) = response else {
+        panic!("expected a scalar goto-definition response, got {response:?}");
+    };
+    assert_eq!(location.uri, document_uri);
+    assert_eq!(location.range.start, position_of(WITH_A_MAPPING, "f: D -> D"));
 }

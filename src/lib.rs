@@ -15,6 +15,8 @@ mod capabilities;
 mod convert;
 mod diagnostics;
 mod document;
+mod goto_definition;
+mod hover;
 mod parse;
 mod semantic_tokens;
 mod symbols;

@@ -2,7 +2,7 @@
 
 use merc_syntax::Rule;
 use merc_syntax::Span;
-use merc_typecheck::WellTypedError;
+use merc_typecheck::ProcessError;
 use merc_utilities::MercError;
 use lsp_types::Diagnostic;
 use lsp_types::DiagnosticSeverity;
@@ -17,9 +17,11 @@ use crate::typecheck::TypecheckOutcome;
 
 const SOURCE: &str = "merc-lsp";
 
-/// Distinct `source` for type-checking diagnostics (see [`type_diagnostics`]), so that only
-/// checking the data-specification subtree (PLAN.md §4 — no whole-specification typecheck entry
-/// point exists upstream yet) doesn't silently read to a user as "no type errors".
+/// Distinct `source` for type-checking diagnostics (see [`type_diagnostics`]) — kept separate
+/// from parse diagnostics' `SOURCE` so a client can tell the two apart (e.g. to only clear one
+/// kind), and because communication sort-compatibility isn't checked yet (see the
+/// `merc_typecheck` crate README), so an empty set of these is not a full type-correctness
+/// guarantee.
 const TYPE_SOURCE: &str = "merc-lsp:types";
 
 /// Builds the full diagnostics list for a document from its latest parse
@@ -35,7 +37,7 @@ pub fn diagnostics(text: &str, line_index: &LineIndex, outcome: &ParseOutcome) -
     }
 }
 
-/// Builds the type-checking diagnostics list for a document's data specification, from the
+/// Builds the type-checking diagnostics list for a document's process specification, from the
 /// result of typechecking it (only attempted once parsing has already succeeded — see
 /// [`crate::typecheck`]).
 ///
@@ -43,15 +45,15 @@ pub fn diagnostics(text: &str, line_index: &LineIndex, outcome: &ParseOutcome) -
 /// does for [`ParseOutcome::Ok`].
 pub fn type_diagnostics(text: &str, line_index: &LineIndex, outcome: &TypecheckOutcome) -> Vec<Diagnostic> {
     match outcome {
-        TypecheckOutcome::Ok => Vec::new(),
-        TypecheckOutcome::Error(error) => vec![well_typed_diagnostic(text, line_index, error)],
+        TypecheckOutcome::Ok(_) => Vec::new(),
+        TypecheckOutcome::Error(error) => vec![process_error_diagnostic(text, line_index, error)],
         TypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
     }
 }
 
-fn well_typed_diagnostic(text: &str, line_index: &LineIndex, error: &WellTypedError) -> Diagnostic {
-    // Every variant but `WellTypedError::Custom` (an opaque wrapped error with no location of
-    // its own) carries a span.
+fn process_error_diagnostic(text: &str, line_index: &LineIndex, error: &ProcessError) -> Diagnostic {
+    // Every variant but a `WellTyped(WellTypedError::Custom(..))` (an opaque wrapped error with
+    // no location of its own) carries a span.
     let range = error.span().map(|span| line_index.range(text, span)).unwrap_or_default();
     Diagnostic {
         range,
@@ -154,9 +156,9 @@ mod tests {
         assert!(!diag.message.contains("-->"), "message should not contain pest's caret block");
     }
 
-    async fn data_specification_for(text: &str) -> merc_syntax::UntypedDataSpecification {
+    async fn process_specification_for(text: &str) -> merc_syntax::UntypedProcessSpecification {
         match parse(text.to_string()).await {
-            ParseOutcome::Ok(spec) => spec.data_specification.clone(),
+            ParseOutcome::Ok(spec) => *spec,
             _ => panic!("fixture failed to parse"),
         }
     }
@@ -164,15 +166,15 @@ mod tests {
     #[tokio::test]
     async fn well_typed_specification_yields_no_type_diagnostics() {
         let text = "sort D;\ncons c: D;\ninit delta;";
-        let outcome = crate::typecheck::typecheck(data_specification_for(text).await).await;
+        let outcome = crate::typecheck::typecheck(process_specification_for(text).await).await;
         let line_index = LineIndex::new(text);
         assert!(type_diagnostics(text, &line_index, &outcome).is_empty());
     }
 
     #[tokio::test]
     async fn ill_typed_specification_produces_a_located_type_diagnostic_with_a_distinct_source() {
-        let text = "map f: Bool;\neqn f = undeclared;";
-        let outcome = crate::typecheck::typecheck(data_specification_for(text).await).await;
+        let text = "map f: Bool;\neqn f = undeclared;\ninit delta;";
+        let outcome = crate::typecheck::typecheck(process_specification_for(text).await).await;
         let line_index = LineIndex::new(text);
         let diags = type_diagnostics(text, &line_index, &outcome);
 
@@ -181,5 +183,19 @@ mod tests {
         assert_eq!(diag.source.as_deref(), Some(TYPE_SOURCE));
         assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
         assert!(diag.range.start.line > 0 || diag.range.start.character > 0, "should be a located diagnostic");
+    }
+
+    #[tokio::test]
+    async fn ill_typed_process_produces_a_located_type_diagnostic() {
+        // `a` is not declared as an action anywhere.
+        let text = "init a;";
+        let outcome = crate::typecheck::typecheck(process_specification_for(text).await).await;
+        let line_index = LineIndex::new(text);
+        let diags = type_diagnostics(text, &line_index, &outcome);
+
+        assert_eq!(diags.len(), 1);
+        let diag = &diags[0];
+        assert_eq!(diag.source.as_deref(), Some(TYPE_SOURCE));
+        assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
     }
 }
