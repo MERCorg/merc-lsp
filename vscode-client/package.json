@@ -30,6 +30,26 @@
 					".mcrl2"
 				],
 				"configuration": "./language-configuration.json"
+			},
+			{
+				"id": "mcrl2-pbes",
+				"aliases": [
+					"mCRL2 PBES"
+				],
+				"extensions": [
+					".pbes"
+				],
+				"configuration": "./language-configuration.json"
+			},
+			{
+				"id": "mcrl2-pres",
+				"aliases": [
+					"mCRL2 PRES"
+				],
+				"extensions": [
+					".pres"
+				],
+				"configuration": "./language-configuration.json"
 			}
 		],
 		"grammars": [
@@ -37,11 +57,47 @@
 				"language": "mcrl2",
 				"scopeName": "source.mcrl2",
 				"path": "./syntaxes/mcrl2.tmLanguage.json"
+			},
+			{
+				"language": "mcrl2-pbes",
+				"scopeName": "source.mcrl2",
+				"path": "./syntaxes/mcrl2.tmLanguage.json"
+			},
+			{
+				"language": "mcrl2-pres",
+				"scopeName": "source.mcrl2",
+				"path": "./syntaxes/mcrl2.tmLanguage.json"
 			}
 		],
 		"semanticTokenScopes": [
 			{
 				"language": "mcrl2",
+				"scopes": {
+					"type": ["entity.name.type"],
+					"type.defaultLibrary": ["support.type"],
+					"variable": ["variable.other"],
+					"method": ["entity.name.function"],
+					"event": ["entity.name.tag"],
+					"enumMember": ["variable.other.enummember"],
+					"parameter": ["variable.parameter"],
+					"keyword": ["keyword.control"]
+				}
+			},
+			{
+				"language": "mcrl2-pbes",
+				"scopes": {
+					"type": ["entity.name.type"],
+					"type.defaultLibrary": ["support.type"],
+					"variable": ["variable.other"],
+					"method": ["entity.name.function"],
+					"event": ["entity.name.tag"],
+					"enumMember": ["variable.other.enummember"],
+					"parameter": ["variable.parameter"],
+					"keyword": ["keyword.control"]
+				}
+			},
+			{
+				"language": "mcrl2-pres",
 				"scopes": {
 					"type": ["entity.name.type"],
 					"type.defaultLibrary": ["support.type"],

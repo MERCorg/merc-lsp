@@ -1,7 +1,24 @@
 # Overview
 
 `merc-lsp` is a Language Server (built on `async-lsp`) for mCRL2 specifications, plus a thin
-VS Code client that spawns it.
+VS Code client that spawns it. It understands three document kinds, picked by file extension:
+plain process specifications (`.mcrl2`), PBES (`.pbes`), and PRES (`.pres`).
+
+## Current status
+
+- **Diagnostics** — syntax errors for all three document kinds, plus whole-specification type
+  errors (data, actions, processes, `init`) for `.mcrl2`. Communication sort-compatibility isn't
+  checked yet, so "no diagnostics" isn't a full well-typedness guarantee.
+- **Document outline** (`textDocument/documentSymbol`) — for all three document kinds.
+- **Semantic tokens** — AST-driven highlighting for `.mcrl2` that resolves mCRL2's structural
+  ambiguities (e.g. `a(f)` as function application vs. action vs. process instantiation); not yet
+  scope-aware (a bound variable reads the same as a free one), and not yet implemented for
+  PBES/PRES.
+- **Hover** and **go-to-definition** — for `.mcrl2`, driven by the checked data specification's
+  typing info; currently limited to expression nodes inside `eqn` blocks and to identifiers with a
+  real declaration site (user-declared constructors/mappings).
+
+See `PLAN.md` for the detailed, up-to-date list of finished and open work.
 
 ## Building the server
 

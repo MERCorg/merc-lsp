@@ -1,0 +1,55 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "mCRL2",
+	"scopeName": "source.mcrl2",
+	"comment": "A minimal TextMate grammar covering keywords/comments/operators/numbers only — deliberately not a full parser (that's what merc-lsp's semantic tokens are for; see semantic_tokens.rs's module docs). This is purely the coloring fallback for clients/moments a TextMate grammar can reach that the LSP can't: before the language server has started, on a document that fails to parse, or in a client with no semantic tokens support at all. Shared by the mcrl2/mcrl2-pbes/mcrl2-pres language contributions in package.json — mCRL2, PBES, and PRES source share one lexical layer (comments, operators, identifiers, numbers) and almost all of the same keyword set; PBES/PRES only add a handful of their own ('pbes', 'pres', 'mu', 'nu').",
+	"patterns": [
+		{ "include": "#comments" },
+		{ "include": "#keywords" },
+		{ "include": "#constants" },
+		{ "include": "#numbers" },
+		{ "include": "#operators" }
+	],
+	"repository": {
+		"comments": {
+			"comment": "mCRL2's only comment syntax: '%' to end of line, no escape and no block form.",
+			"match": "%.*$",
+			"name": "comment.line.percentage.mcrl2"
+		},
+		"keywords": {
+			"patterns": [
+				{
+					"comment": "Structural/block-introducing keywords — shared by process specifications, PBES, and PRES. Word-bounded so e.g. 'sortable' isn't matched.",
+					"match": "\\b(sort|cons|map|glob|act|proc|init|var|eqn|struct|whr|end|forall|exists|lambda|sum|dist|val|hide|block|allow|comm|rename|pbes|pres|mu|nu)\\b",
+					"name": "keyword.control.mcrl2"
+				},
+				{
+					"comment": "Reserved literal/value keywords — see merc_syntax's `keywords_are_not_prefix_of_identifiers` test for why these (unlike the rest of this file) are true reserved words, not just conventionally-unclaimed identifiers.",
+					"match": "\\b(true|false|delta|tau)\\b",
+					"name": "constant.language.mcrl2"
+				}
+			]
+		},
+		"constants": {
+			"comment": "The built-in system sorts (Bool, Nat, Int, ...) get the same scope a user `sort` declaration's name would, distinguished by the LSP's own semantic tokens (a 'defaultLibrary' modifier) rather than here — a TextMate grammar has no notion of what's actually declared.",
+			"match": "\\b(Bool|Pos|Nat|Int|Real|List|Set|Bag|FSet|FBag)\\b",
+			"name": "support.type.mcrl2"
+		},
+		"numbers": {
+			"match": "\\b[0-9]+\\b",
+			"name": "constant.numeric.mcrl2"
+		},
+		"operators": {
+			"patterns": [
+				{
+					"match": "(->|<->|=>|==|!=|<=|>=|\\|\\||&&|::|\\.\\.|:=)",
+					"name": "keyword.operator.mcrl2"
+				},
+				{
+					"match": "[+\\-*/\\\\<>=!@#|&.:]",
+					"name": "keyword.operator.mcrl2"
+				}
+			]
+		}
+	}
+}
