@@ -128,12 +128,13 @@ fn widen_to_token_end(text: &str, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse::SpecKind;
     use crate::parse::parse;
 
     #[tokio::test]
     async fn ok_parse_yields_no_diagnostics() {
         let text = "sort D;\ninit delta;";
-        let outcome = parse(text.to_string()).await;
+        let outcome = parse(SpecKind::Process, text.to_string()).await;
         let line_index = LineIndex::new(text);
         assert!(diagnostics(text, &line_index, &outcome).is_empty());
     }
@@ -141,7 +142,7 @@ mod tests {
     #[tokio::test]
     async fn parse_error_downcasts_to_pest_error_with_a_located_range() {
         let text = "sort D\ninit delta;"; // missing ';' after 'sort D'
-        let outcome = parse(text.to_string()).await;
+        let outcome = parse(SpecKind::Process, text.to_string()).await;
         let line_index = LineIndex::new(text);
         let diags = diagnostics(text, &line_index, &outcome);
 
@@ -157,8 +158,8 @@ mod tests {
     }
 
     async fn process_specification_for(text: &str) -> merc_syntax::UntypedProcessSpecification {
-        match parse(text.to_string()).await {
-            ParseOutcome::Ok(spec) => *spec,
+        match parse(SpecKind::Process, text.to_string()).await {
+            ParseOutcome::Ok(crate::parse::Specification::Process(spec)) => *spec,
             _ => panic!("fixture failed to parse"),
         }
     }

@@ -482,13 +482,15 @@ fn tag_keywords(text: &str, builder: &mut Builder) {
 mod tests {
     use super::*;
     use crate::parse::ParseOutcome;
+    use crate::parse::SpecKind;
+    use crate::parse::Specification;
     use crate::parse::parse;
 
     async fn tokens_for(text: &str) -> Vec<SemanticToken> {
-        let outcome = parse(text.to_string()).await;
+        let outcome = parse(SpecKind::Process, text.to_string()).await;
         let line_index = LineIndex::new(text);
         match outcome {
-            ParseOutcome::Ok(spec) => semantic_tokens(text, &line_index, &spec),
+            ParseOutcome::Ok(Specification::Process(spec)) => semantic_tokens(text, &line_index, &spec),
             _ => panic!("fixture failed to parse"),
         }
     }

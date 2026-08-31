@@ -310,6 +310,65 @@ async fn hover_reports_a_mapping_uses_sort() {
     assert!(content.value.contains('f'), "expected hover text to mention 'f', got {}", content.value);
 }
 
+/// A `.pbes` document is routed to `UntypedPbes::parse` (via `SpecKind::from_uri`), not the plain
+/// mCRL2 process-specification grammar — a well-formed PBES should parse cleanly and publish no
+/// diagnostics.
+#[tokio::test]
+async fn did_open_with_well_formed_pbes_document_publishes_no_diagnostics() {
+    let (server, _result, mut rx) = start().await;
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(uri("well-formed.pbes"), "pbes mu X = true;\ninit X;"))
+        .expect("didOpen should be queued");
+
+    let diagnostics = next_diagnostics(&mut rx).await;
+    assert!(diagnostics.diagnostics.is_empty());
+}
+
+/// A `.pres` document routes to `UntypedPres::parse` the same way; a syntax error in it should
+/// still produce a located `merc-lsp` diagnostic, exactly like a malformed `.mcrl2` document does.
+#[tokio::test]
+async fn did_open_with_malformed_pres_document_publishes_a_located_diagnostic() {
+    let (server, _result, mut rx) = start().await;
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(uri("malformed.pres"), "pres mu X = 0\ninit X;")) // missing ';'
+        .expect("didOpen should be queued");
+
+    let diagnostics = next_diagnostics(&mut rx).await;
+    assert_eq!(diagnostics.diagnostics.len(), 1);
+    assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp"));
+}
+
+/// `textDocument/documentSymbol` also works for a `.pbes` document — its outline is built by
+/// `symbols::pbes_symbols`, not `symbols::document_symbols` (see `backend::document_symbol`).
+#[tokio::test]
+async fn document_symbol_returns_the_pbes_outline() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("pbes-outline.pbes");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), "pbes mu X(n: Bool) = true;\ninit X(true);"))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let response = server
+        .request::<request::DocumentSymbolRequest>(DocumentSymbolParams {
+            text_document: TextDocumentIdentifier { uri: document_uri },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .expect("documentSymbol should succeed");
+
+    let Some(DocumentSymbolResponse::Nested(symbols)) = response else {
+        panic!("expected a nested documentSymbol response, got {response:?}");
+    };
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"X"), "expected the 'X' equation in the outline, got {names:?}");
+    assert!(names.contains(&"init"), "expected the 'init' entry in the outline, got {names:?}");
+}
+
 #[tokio::test]
 async fn goto_definition_jumps_from_a_mapping_use_to_its_declaration() {
     let (server, _result, mut rx) = start().await;

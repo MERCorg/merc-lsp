@@ -90,9 +90,13 @@ export function activate(context: ExtensionContext) {
 	const serverOptions: ServerOptions = { run, debug: run };
 
 	const clientOptions: LanguageClientOptions = {
-		documentSelector: [{ scheme: 'file', language: 'mcrl2' }],
+		documentSelector: [
+			{ scheme: 'file', language: 'mcrl2' },
+			{ scheme: 'file', language: 'mcrl2-pbes' },
+			{ scheme: 'file', language: 'mcrl2-pres' }
+		],
 		synchronize: {
-			fileEvents: workspace.createFileSystemWatcher('**/*.mcrl2')
+			fileEvents: workspace.createFileSystemWatcher('**/*.{mcrl2,pbes,pres}')
 		}
 	};
 

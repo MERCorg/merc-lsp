@@ -37,6 +37,8 @@ use crate::goto_definition;
 use crate::hover;
 use crate::parse;
 use crate::parse::ParseOutcome;
+use crate::parse::SpecKind;
+use crate::parse::Specification;
 use crate::semantic_tokens;
 use crate::symbols;
 use crate::typecheck;
@@ -147,17 +149,23 @@ fn document_symbol(documents: &DocumentStore, params: DocumentSymbolParams) -> O
     let ParseOutcome::Ok(spec) = &document.parsed else {
         return None;
     };
-    let symbols = symbols::document_symbols(&document.text, &document.line_index, spec);
+    let symbols = match spec {
+        Specification::Process(spec) => symbols::document_symbols(&document.text, &document.line_index, spec),
+        Specification::Pbes(spec) => symbols::pbes_symbols(&document.text, &document.line_index, spec),
+        Specification::Pres(spec) => symbols::pres_symbols(&document.text, &document.line_index, spec),
+    };
     Some(DocumentSymbolResponse::Nested(symbols))
 }
 
 fn semantic_tokens_full(documents: &DocumentStore, params: SemanticTokensParams) -> Option<SemanticTokensResult> {
     let document = documents.get(&params.text_document.uri)?;
-    // No parse, no tokens, so nothing to report.
+    // No parse, no tokens, so nothing to report. Also nothing yet for PBES/PRES (see
+    // `parse::SpecKind`'s docs) — semantic tokens stay mCRL2-only for now.
     let ParseOutcome::Ok(spec) = &document.parsed else {
         return None;
     };
-    
+    let spec = spec.as_process()?;
+
     let data = semantic_tokens::semantic_tokens(&document.text, &document.line_index, spec);
     Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data }))
 }
@@ -186,17 +194,19 @@ fn spawn_on_change(state: &mut Backend, uri: Url, text: String, version: i32) {
     tokio::spawn(on_change(client, documents, uri, text, version));
 }
 
-/// Re-parses `text` at `version` for `uri`, type checks its data specification if parsing
-/// succeeded, stores the result, and publishes diagnostics for it. Used by `did_open` and
-/// `did_change` (via [`spawn_on_change`]).
+/// Re-parses `text` at `version` for `uri` (as whichever [`SpecKind`] its extension selects),
+/// type checks it if parsing succeeded *and* it's a plain process specification (PBES/PRES have
+/// no type checker upstream yet — see [`crate::parse`]'s docs), stores the result, and publishes
+/// diagnostics for it. Used by `did_open` and `did_change` (via [`spawn_on_change`]).
 async fn on_change(client: ClientSocket, documents: Arc<DocumentStore>, uri: Url, text: String, version: i32) {
-    let outcome = parse::parse(text.clone()).await;
+    let outcome = parse::parse(SpecKind::from_uri(&uri), text.clone()).await;
 
-    // Only meaningful once parsing succeeded. Cloned (rather than moved) out of `outcome`: the
-    // original stays in `outcome` below, since `symbols`/`semantic_tokens` need the raw AST
-    // regardless of whether type checking succeeds.
+    // Only meaningful once parsing succeeded, and only for a process specification. Cloned
+    // (rather than moved) out of `outcome`: the original stays in `outcome` below, since
+    // `symbols`/`semantic_tokens` need the raw AST regardless of whether type checking succeeds.
     let typechecked = match &outcome {
-        ParseOutcome::Ok(spec) => Some(typecheck::typecheck((**spec).clone()).await),
+        ParseOutcome::Ok(Specification::Process(spec)) => Some(typecheck::typecheck((**spec).clone()).await),
+        ParseOutcome::Ok(Specification::Pbes(_) | Specification::Pres(_)) => None,
         ParseOutcome::ParseError(_) | ParseOutcome::Internal(_) => None,
     };
 

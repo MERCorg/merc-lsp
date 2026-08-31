@@ -59,6 +59,10 @@ impl Document {
     /// working on the data-specification subtree alone while the rest of the document is still
     /// broken — so, for now, both features simply go quiet document-wide until the whole thing
     /// checks again.
+    ///
+    /// Always `None` for a PBES/PRES document: `merc_typecheck` has no type checker for either
+    /// kind yet, so `self.typechecked` is never populated for them in the first place (see
+    /// [`crate::backend::on_change`]).
     pub fn checked_data_specification(&self) -> Option<&DataSpecification> {
         match &self.typechecked {
             Some(TypecheckOutcome::Ok(spec)) => Some(spec.data_specification()),

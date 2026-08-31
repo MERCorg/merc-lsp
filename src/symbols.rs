@@ -1,4 +1,5 @@
-//! Builds `textDocument/documentSymbol` output from a parsed [`UntypedProcessSpecification`].
+//! Builds `textDocument/documentSymbol` output from a parsed [`UntypedProcessSpecification`],
+//! [`UntypedPbes`], or [`UntypedPres`].
 //!
 //! `merc_syntax::Traverse` doesn't apply here — it only covers expression-level node types and
 //! is deliberately not used to walk the specification's top-level declarations (sorts, maps,
@@ -8,14 +9,24 @@
 //! inference rather than through named helper functions the way `SortDecl`/`IdDecl<Id>` are
 //! below — purely a style choice at this point (all four are `merc_syntax` crate-root
 //! re-exports too), not forced by anything.
+//!
+//! [`pbes_symbols`]/[`pres_symbols`] share the data-specification part of the outline with
+//! [`document_symbols`] via [`data_specification_symbols`], then each add their own equations
+//! (`mu`/`nu`-tagged, named boolean/real formulas) and `init`, the latter now located via
+//! `PropVarInst::span` (upstream `merc_syntax` change) rather than a text search — see
+//! [`init_symbol`].
 
 use lsp_types::DocumentSymbol;
 use lsp_types::Range;
 use lsp_types::SymbolKind;
 use merc_syntax::IdDecl;
 use merc_syntax::ProcessExpr;
+use merc_syntax::PropVarInst;
 use merc_syntax::Span;
 use merc_syntax::SortDecl;
+use merc_syntax::UntypedDataSpecification;
+use merc_syntax::UntypedPbes;
+use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 
 use crate::convert::LineIndex;
@@ -27,21 +38,124 @@ use crate::convert::is_identifier_byte;
 /// top-level blocks (`sort`, `map`, `eqn`, `act`, `proc`, …) to appear in any order and to
 /// repeat, but the AST groups everything by kind.
 pub fn document_symbols(text: &str, line_index: &LineIndex, spec: &UntypedProcessSpecification) -> Vec<DocumentSymbol> {
+    let mut symbols = data_specification_symbols(text, line_index, &spec.data_specification);
+
+    for decl in &spec.global_variables {
+        symbols.push(id_decl_symbol(text, line_index, decl, SymbolKind::VARIABLE));
+    }
+    for decl in &spec.action_declarations {
+        let detail = if decl.args.is_empty() {
+            None
+        } else {
+            Some(decl.args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" # "))
+        };
+        symbols.push(symbol_at(decl.identifier.clone(), detail, SymbolKind::EVENT, text, line_index, &decl.span, None));
+    }
+    for decl in &spec.process_declarations {
+        let children: Vec<DocumentSymbol> = decl
+            .params
+            .iter()
+            .map(|param| id_decl_symbol(text, line_index, param, SymbolKind::VARIABLE))
+            .collect();
+        let detail = if decl.params.is_empty() {
+            None
+        } else {
+            Some(decl.params.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))
+        };
+        symbols.push(symbol_at(decl.identifier.clone(), detail, SymbolKind::FUNCTION, text, line_index, &decl.span, Some(children)));
+    }
+    if let Some(init) = &spec.init {
+        symbols.push(init_symbol(text, line_index, init));
+    }
+
+    symbols.sort_by_key(|symbol| (symbol.range.start.line, symbol.range.start.character));
+    symbols
+}
+
+/// Builds the outline for a parsed PBES: the shared data-specification part, its global
+/// variables, then one entry per named boolean equation (`mu`/`nu X(params) = formula;`, with
+/// each parameter as a child), and `init`.
+pub fn pbes_symbols(text: &str, line_index: &LineIndex, spec: &UntypedPbes) -> Vec<DocumentSymbol> {
+    let mut symbols = data_specification_symbols(text, line_index, &spec.data_specification);
+
+    for decl in &spec.global_variables {
+        symbols.push(id_decl_symbol(text, line_index, decl, SymbolKind::VARIABLE));
+    }
+    for eqn in &spec.equations {
+        let children: Vec<DocumentSymbol> = eqn
+            .variable
+            .parameters
+            .iter()
+            .map(|param| id_decl_symbol(text, line_index, param, SymbolKind::VARIABLE))
+            .collect();
+        let detail = Some(format!("{} {}", eqn.operator, eqn.formula));
+        symbols.push(symbol_at(
+            eqn.variable.identifier.clone(),
+            detail,
+            SymbolKind::FUNCTION,
+            text,
+            line_index,
+            &eqn.variable.span,
+            Some(children),
+        ));
+    }
+    symbols.push(pbes_init_symbol(text, line_index, &spec.init));
+
+    symbols.sort_by_key(|symbol| (symbol.range.start.line, symbol.range.start.character));
+    symbols
+}
+
+/// Builds the outline for a parsed PRES: same shape as [`pbes_symbols`], for a real (rather than
+/// boolean) equation system. Each equation's formula has no upstream `Display` impl yet (unlike
+/// [`merc_syntax::PbesExpr`]), so its detail only shows the fixed-point operator, not the
+/// right-hand side.
+pub fn pres_symbols(text: &str, line_index: &LineIndex, spec: &UntypedPres) -> Vec<DocumentSymbol> {
+    let mut symbols = data_specification_symbols(text, line_index, &spec.data_specification);
+
+    for decl in &spec.global_variables {
+        symbols.push(id_decl_symbol(text, line_index, decl, SymbolKind::VARIABLE));
+    }
+    for eqn in &spec.equations {
+        let children: Vec<DocumentSymbol> = eqn
+            .variable
+            .parameters
+            .iter()
+            .map(|param| id_decl_symbol(text, line_index, param, SymbolKind::VARIABLE))
+            .collect();
+        symbols.push(symbol_at(
+            eqn.variable.identifier.clone(),
+            Some(eqn.operator.to_string()),
+            SymbolKind::FUNCTION,
+            text,
+            line_index,
+            &eqn.variable.span,
+            Some(children),
+        ));
+    }
+    symbols.push(pbes_init_symbol(text, line_index, &spec.init));
+
+    symbols.sort_by_key(|symbol| (symbol.range.start.line, symbol.range.start.character));
+    symbols
+}
+
+/// The `sort`/`cons`/`map`/`eqn` part of the outline, shared by [`document_symbols`],
+/// [`pbes_symbols`], and [`pres_symbols`].
+fn data_specification_symbols(text: &str, line_index: &LineIndex, data: &UntypedDataSpecification) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
 
-    for decl in &spec.data_specification.sort_declarations {
+    for decl in &data.sort_declarations {
         symbols.push(sort_symbol(text, line_index, decl));
     }
-    
-    for decl in &spec.data_specification.constructor_declarations {
+
+    for decl in &data.constructor_declarations {
         symbols.push(id_decl_symbol(text, line_index, decl, SymbolKind::CONSTRUCTOR));
     }
 
-    for decl in &spec.data_specification.map_declarations {
+    for decl in &data.map_declarations {
         symbols.push(id_decl_symbol(text, line_index, decl, SymbolKind::FUNCTION));
     }
 
-    for eqn_spec in &spec.data_specification.equation_declarations {
+    for eqn_spec in &data.equation_declarations {
         // `EqnSpec.span` exists but can absorb trailing whitespace past its own `;` (see its doc
         // comment upstream), which would make an empty-looking gap in the outline read as part of
         // this block's range — synthesizing the min-start/max-end over its children's spans
@@ -75,35 +189,7 @@ pub fn document_symbols(text: &str, line_index: &LineIndex, spec: &UntypedProces
 
         symbols.push(build_symbol("eqn".to_string(), None, SymbolKind::NAMESPACE, range, range, Some(children)));
     }
-    for decl in &spec.global_variables {
-        symbols.push(id_decl_symbol(text, line_index, decl, SymbolKind::VARIABLE));
-    }
-    for decl in &spec.action_declarations {
-        let detail = if decl.args.is_empty() {
-            None
-        } else {
-            Some(decl.args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" # "))
-        };
-        symbols.push(symbol_at(decl.identifier.clone(), detail, SymbolKind::EVENT, text, line_index, &decl.span, None));
-    }
-    for decl in &spec.process_declarations {
-        let children: Vec<DocumentSymbol> = decl
-            .params
-            .iter()
-            .map(|param| id_decl_symbol(text, line_index, param, SymbolKind::VARIABLE))
-            .collect();
-        let detail = if decl.params.is_empty() {
-            None
-        } else {
-            Some(decl.params.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))
-        };
-        symbols.push(symbol_at(decl.identifier.clone(), detail, SymbolKind::FUNCTION, text, line_index, &decl.span, Some(children)));
-    }
-    if let Some(init) = &spec.init {
-        symbols.push(init_symbol(text, line_index, init));
-    }
 
-    symbols.sort_by_key(|symbol| (symbol.range.start.line, symbol.range.start.character));
     symbols
 }
 
@@ -116,6 +202,14 @@ fn id_decl_symbol<Id>(text: &str, line_index: &LineIndex, decl: &IdDecl<Id>, kin
 }
 
 fn init_symbol(text: &str, line_index: &LineIndex, init: &ProcessExpr) -> DocumentSymbol {
+    let range = line_index.range(text, &init.span);
+    build_symbol("init".to_string(), Some(init.to_string()), SymbolKind::OBJECT, range, range, None)
+}
+
+/// A PBES/PRES `init X(..);` symbol, located via `PropVarInst::span` (an upstream `merc_syntax`
+/// addition — it used to carry no `Span` at all, unlike every other node this module builds a
+/// symbol for, and had to be recovered with a text search over the whole document instead).
+fn pbes_init_symbol(text: &str, line_index: &LineIndex, init: &PropVarInst) -> DocumentSymbol {
     let range = line_index.range(text, &init.span);
     build_symbol("init".to_string(), Some(init.to_string()), SymbolKind::OBJECT, range, range, None)
 }
@@ -161,10 +255,9 @@ fn build_symbol(
 
 /// Finds the first word-boundary-delimited occurrence of `identifier` within `text[span]`.
 ///
-/// `pub(crate)`: this module no longer needs it directly — every declaration kind here now gets
-/// a precise identifier-only span straight from `merc_syntax` (see [`symbol_at`]). It's kept for
-/// [`crate::semantic_tokens`], which still uses it to narrow a process/action instantiation's
-/// span (`P(x = 1)`, `a(1)`) down to just the name — that one's still whole-construct.
+/// `pub(crate)`: used by [`crate::semantic_tokens`], which uses it to narrow a process/action
+/// instantiation's span (`P(x = 1)`, `a(1)`) down to just the name — that one's still
+/// whole-construct upstream, unlike the declaration-kind spans this module builds symbols from.
 pub(crate) fn find_identifier(text: &str, span: &Span, identifier: &str) -> Option<Span> {
     if identifier.is_empty() {
         return None;
@@ -198,13 +291,33 @@ pub(crate) fn find_identifier(text: &str, span: &Span, identifier: &str) -> Opti
 mod tests {
     use super::*;
     use crate::parse::ParseOutcome;
+    use crate::parse::SpecKind;
+    use crate::parse::Specification;
     use crate::parse::parse;
 
     async fn symbols_for(text: &str) -> Vec<DocumentSymbol> {
-        let outcome = parse(text.to_string()).await;
+        let outcome = parse(SpecKind::Process, text.to_string()).await;
         let line_index = LineIndex::new(text);
         match outcome {
-            ParseOutcome::Ok(spec) => document_symbols(text, &line_index, &spec),
+            ParseOutcome::Ok(Specification::Process(spec)) => document_symbols(text, &line_index, &spec),
+            _ => panic!("fixture failed to parse"),
+        }
+    }
+
+    async fn pbes_symbols_for(text: &str) -> Vec<DocumentSymbol> {
+        let outcome = parse(SpecKind::Pbes, text.to_string()).await;
+        let line_index = LineIndex::new(text);
+        match outcome {
+            ParseOutcome::Ok(Specification::Pbes(spec)) => pbes_symbols(text, &line_index, &spec),
+            _ => panic!("fixture failed to parse"),
+        }
+    }
+
+    async fn pres_symbols_for(text: &str) -> Vec<DocumentSymbol> {
+        let outcome = parse(SpecKind::Pres, text.to_string()).await;
+        let line_index = LineIndex::new(text);
+        match outcome {
+            ParseOutcome::Ok(Specification::Pres(spec)) => pres_symbols(text, &line_index, &spec),
             _ => panic!("fixture failed to parse"),
         }
     }
@@ -251,5 +364,57 @@ mod tests {
         let mut sorted = starts.clone();
         sorted.sort();
         assert_eq!(starts, sorted);
+    }
+
+    #[tokio::test]
+    async fn pbes_equation_and_init_are_located() {
+        let text = "pbes mu X(n: Bool) = true;\ninit X(n);".to_string();
+        let symbols = pbes_symbols_for(&text).await;
+
+        let equation = symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::FUNCTION)
+            .expect("expected the boolean equation as a symbol");
+        assert_eq!(equation.name, "X");
+        assert_eq!(equation.children.as_ref().map(Vec::len), Some(1), "the equation's parameter should be a child");
+
+        let init = symbols.iter().find(|s| s.name == "init").expect("expected an init symbol");
+        // `init` is located via `PropVarInst::span` (see `pbes_init_symbol`); confirm it points at
+        // the propositional variable instantiation itself (`X(n)`, after the `init ` keyword on
+        // line 1), not just somewhere past the start of the file.
+        assert_eq!((init.range.start.line, init.range.start.character), (1, "init ".len() as u32));
+    }
+
+    #[tokio::test]
+    async fn pres_equation_and_init_are_located() {
+        let text = "pres mu X(n: Bool) = 0;\ninit X(n);".to_string();
+        let symbols = pres_symbols_for(&text).await;
+
+        let equation = symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::FUNCTION)
+            .expect("expected the real equation as a symbol");
+        assert_eq!(equation.name, "X");
+        assert_eq!(equation.children.as_ref().map(Vec::len), Some(1), "the equation's parameter should be a child");
+
+        let init = symbols.iter().find(|s| s.name == "init").expect("expected an init symbol");
+        assert_eq!((init.range.start.line, init.range.start.character), (1, "init ".len() as u32));
+    }
+
+    #[tokio::test]
+    async fn pbes_init_is_located_precisely_even_with_a_leading_data_spec() {
+        // Regression test for the upstream grammar quirk where `PbesSpec`/`PresSpec`'s optional
+        // leading `DataSpec` reused the same `SOI`/`EOI`-wrapped rule `DataSpec::parse` itself
+        // uses, making a real data specification ahead of `pbes`/`pres` fail to parse whenever
+        // anything followed it (i.e. always) — fixed upstream by factoring the declarations out
+        // into `DataSpecBody`, embedded without its own `SOI`/`EOI`.
+        let text = "sort D;\ncons d: D;\npbes mu X(n: Bool) = true;\ninit X(n);".to_string();
+        let symbols = pbes_symbols_for(&text).await;
+
+        let sort = symbols.iter().find(|s| s.kind == SymbolKind::STRUCT).expect("expected the leading data spec's sort");
+        assert_eq!(sort.name, "D");
+
+        let init = symbols.iter().find(|s| s.name == "init").expect("expected an init symbol");
+        assert_eq!(init.range.start.line, 3);
     }
 }

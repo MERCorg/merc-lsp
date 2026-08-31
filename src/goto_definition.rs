@@ -36,13 +36,15 @@ pub fn definition_range(text: &str, line_index: &LineIndex, data_specification: 
 mod tests {
     use super::*;
     use crate::parse::ParseOutcome;
+    use crate::parse::SpecKind;
+    use crate::parse::Specification;
     use crate::parse::parse;
     use crate::typecheck::TypecheckOutcome;
     use crate::typecheck::typecheck;
 
     async fn checked_for(text: &str) -> DataSpecification {
-        let spec = match parse(text.to_string()).await {
-            ParseOutcome::Ok(spec) => *spec,
+        let spec = match parse(SpecKind::Process, text.to_string()).await {
+            ParseOutcome::Ok(Specification::Process(spec)) => *spec,
             _ => panic!("fixture failed to parse"),
         };
         match typecheck(spec).await {

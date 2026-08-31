@@ -70,11 +70,13 @@ fn typecheck_catching_panics(spec: UntypedProcessSpecification) -> TypecheckOutc
 mod tests {
     use super::*;
     use crate::parse::ParseOutcome;
+    use crate::parse::SpecKind;
+    use crate::parse::Specification;
     use crate::parse::parse;
 
     async fn process_specification_for(text: &str) -> UntypedProcessSpecification {
-        match parse(text.to_string()).await {
-            ParseOutcome::Ok(spec) => *spec,
+        match parse(SpecKind::Process, text.to_string()).await {
+            ParseOutcome::Ok(Specification::Process(spec)) => *spec,
             _ => panic!("fixture failed to parse"),
         }
     }

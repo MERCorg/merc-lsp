@@ -210,9 +210,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures",
@@ -238,9 +238,9 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "cpufeatures"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
+checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
 dependencies = [
  "libc",
 ]
@@ -870,7 +870,7 @@ dependencies = [
 [[package]]
 name = "merc_aterm"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "allocator-api2 0.4.0",
  "delegate",
@@ -896,7 +896,7 @@ dependencies = [
 [[package]]
 name = "merc_collections"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "bitvec",
  "delegate",
@@ -911,7 +911,7 @@ dependencies = [
 [[package]]
 name = "merc_data"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "ahash",
  "delegate",
@@ -926,7 +926,7 @@ dependencies = [
 [[package]]
 name = "merc_io"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "bitstream-io",
  "log",
@@ -942,7 +942,7 @@ dependencies = [
 [[package]]
 name = "merc_lts"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "bindgen",
  "bumpalo",
@@ -966,7 +966,7 @@ dependencies = [
 [[package]]
 name = "merc_macros"
 version = "2.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -976,7 +976,7 @@ dependencies = [
 [[package]]
 name = "merc_number"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "bitstream-io",
  "merc_utilities",
@@ -1008,7 +1008,7 @@ dependencies = [
 [[package]]
 name = "merc_reduction"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -1026,7 +1026,7 @@ dependencies = [
 [[package]]
 name = "merc_refinement"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -1044,7 +1044,7 @@ dependencies = [
 [[package]]
 name = "merc_sharedmutex"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "crossbeam-utils",
  "delegate",
@@ -1055,7 +1055,7 @@ dependencies = [
 [[package]]
 name = "merc_syntax"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "itertools 0.15.0",
  "log",
@@ -1072,7 +1072,7 @@ dependencies = [
 [[package]]
 name = "merc_typecheck"
 version = "2.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "ena",
  "indoc",
@@ -1088,7 +1088,7 @@ dependencies = [
 [[package]]
 name = "merc_unsafety"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "allocator-api2 0.4.0",
  "crossbeam-utils",
@@ -1109,7 +1109,7 @@ dependencies = [
 [[package]]
 name = "merc_utilities"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?branch=feature%2Flsp-support#24281ec3f9ccaa9f39fe72d80e4f86e84989de66"
+source = "git+https://github.com/mlaveaux/merc?rev=2a78d9f561f31a1609f3700f9ed788363eb2adc1#2a78d9f561f31a1609f3700f9ed788363eb2adc1"
 dependencies = [
  "crossbeam-utils",
  "env_logger",
