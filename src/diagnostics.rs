@@ -2,7 +2,6 @@
 
 use merc_syntax::Rule;
 use merc_syntax::Span;
-use merc_typecheck::ProcessError;
 use merc_utilities::MercError;
 use lsp_types::Diagnostic;
 use lsp_types::DiagnosticSeverity;
@@ -13,6 +12,7 @@ use pest::error::InputLocation;
 use crate::convert::LineIndex;
 use crate::convert::is_identifier_byte;
 use crate::parse::ParseOutcome;
+use crate::typecheck::PbesTypecheckOutcome;
 use crate::typecheck::TypecheckOutcome;
 
 const SOURCE: &str = "merc-lsp";
@@ -46,20 +46,32 @@ pub fn diagnostics(text: &str, line_index: &LineIndex, outcome: &ParseOutcome) -
 pub fn type_diagnostics(text: &str, line_index: &LineIndex, outcome: &TypecheckOutcome) -> Vec<Diagnostic> {
     match outcome {
         TypecheckOutcome::Ok(_) => Vec::new(),
-        TypecheckOutcome::Error(error) => vec![process_error_diagnostic(text, line_index, error)],
+        TypecheckOutcome::Error(error) => vec![error_diagnostic(text, line_index, error.span(), error.to_string())],
         TypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
     }
 }
 
-fn process_error_diagnostic(text: &str, line_index: &LineIndex, error: &ProcessError) -> Diagnostic {
-    // Every variant but a `WellTyped(WellTypedError::Custom(..))` (an opaque wrapped error with
-    // no location of its own) carries a span.
-    let range = error.span().map(|span| line_index.range(text, span)).unwrap_or_default();
+/// As [`type_diagnostics`], for a PBES document's [`PbesTypecheckOutcome`].
+pub fn pbes_type_diagnostics(text: &str, line_index: &LineIndex, outcome: &PbesTypecheckOutcome) -> Vec<Diagnostic> {
+    match outcome {
+        PbesTypecheckOutcome::Ok(_) => Vec::new(),
+        PbesTypecheckOutcome::Error(error) => vec![error_diagnostic(text, line_index, error.span(), error.to_string())],
+        PbesTypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
+    }
+}
+
+/// Builds a located type-error [`Diagnostic`], shared by [`type_diagnostics`] and
+/// [`pbes_type_diagnostics`] — `merc_typecheck::ProcessError`/`PbesError` have the same shape
+/// (`.span()`, `Display`) but no common trait upstream to abstract over directly. Every variant of
+/// either but a `WellTyped(WellTypedError::Custom(..))` (an opaque wrapped error with no location
+/// of its own) carries a span.
+fn error_diagnostic(text: &str, line_index: &LineIndex, span: Option<&Span>, message: String) -> Diagnostic {
+    let range = span.map(|span| line_index.range(text, span)).unwrap_or_default();
     Diagnostic {
         range,
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some(TYPE_SOURCE.to_string()),
-        message: error.to_string(),
+        message,
         ..Diagnostic::default()
     }
 }
