@@ -21,6 +21,7 @@ mod hover;
 mod inlay_hints;
 mod parse;
 mod semantic_tokens;
+mod sort_ref;
 mod symbols;
 mod typecheck;
 

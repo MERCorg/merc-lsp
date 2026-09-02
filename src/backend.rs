@@ -215,23 +215,32 @@ fn hover_request(documents: &DocumentStore, params: HoverParams) -> Option<Hover
     let typing_info = document.typing_info()?;
     let actions = document.checked_process_specification().map_or(&[][..], ProcessSpecification::action_declarations);
     let processes = document.checked_process_specification().map_or(&[][..], ProcessSpecification::process_declarations);
-    hover::hover(
-        &document.text,
-        &document.line_index,
-        &typing_info,
+    let spec = match &document.parsed {
+        ParseOutcome::Ok(spec) => Some(spec),
+        _ => None,
+    };
+    let ctx = hover::HoverContext {
+        text: &document.text,
+        line_index: &document.line_index,
+        typing_info: &typing_info,
         actions,
         processes,
-        Some(uri),
-        params.text_document_position_params.position,
-    )
+        spec,
+        doc_uri: Some(uri),
+    };
+    hover::hover(&ctx, params.text_document_position_params.position)
 }
 
 fn goto_definition_request(documents: &DocumentStore, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
     let uri = params.text_document_position_params.text_document.uri.clone();
     let mut document = documents.get_mut(&uri)?;
     let typing_info = document.typing_info()?;
+    let spec = match &document.parsed {
+        ParseOutcome::Ok(spec) => Some(spec),
+        _ => None,
+    };
     let position = params.text_document_position_params.position;
-    let range = goto_definition::definition_range(&document.text, &document.line_index, &typing_info, position)?;
+    let range = goto_definition::definition_range(&document.text, &document.line_index, &typing_info, spec, position)?;
     Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
 }
 

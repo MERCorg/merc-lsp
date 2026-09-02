@@ -1,13 +1,5 @@
 //! `textDocument/hover`: offset → [`TypedNode`] → hover text, built from a document's whole
 //! [`TypingInfo`] ([`crate::document::Document::typing_info`]).
-//!
-//! Covers every checked expression node — `eqn` blocks *and* process bodies (action arguments,
-//! process-instantiation arguments, conditions, time bounds, `dist` weights) — since
-//! `ProcessSpecification::typing_info` merges both. A sort declaration, an action/process
-//! declaration's own parameter list, and anything outside a checked expression still has no
-//! `TypedNode` to look up, so hovering one of those yields `None` rather than degraded hover. See
-//! [`crate::document::Document::checked_process_specification`] for the further caveat on *when* a
-//! checked specification is available at all.
 
 use lsp_types::Hover;
 use lsp_types::HoverContents;
@@ -17,55 +9,84 @@ use lsp_types::Position;
 use lsp_types::Url;
 use merc_syntax::ActDecl;
 use merc_syntax::ProcDecl;
+use merc_syntax::SortDecl;
+use merc_syntax::Span;
 use merc_typecheck::ResolvedName;
 use merc_typecheck::TypedNode;
 use merc_typecheck::TypingInfo;
 
 use crate::convert::LineIndex;
+use crate::parse::Specification;
+use crate::sort_ref;
 
-/// Builds hover content for `position`, or `None` when it isn't over a typed expression node, or
-/// `position` doesn't resolve to an offset in `text` at all.
+/// Everything [`hover`] needs that doesn't vary per request is added.
+/// `position` stays a separate argument to [`hover`] since it's the one input
+/// that actually differs across a burst of requests against the same document.
+pub struct HoverContext<'a> {
+    pub text: &'a str,
+    pub line_index: &'a LineIndex,
+    pub typing_info: &'a TypingInfo,
+    pub actions: &'a [ActDecl],
+    pub processes: &'a [ProcDecl],
+    pub spec: Option<&'a Specification>,
+    pub doc_uri: Option<&'a Url>,
+}
+
+/// Builds hover content for `position`, or `None` when it isn't over a typed expression node or a
+/// sort reference, or `position` doesn't resolve to an offset into `ctx.text` at all.
 ///
-/// `actions` is the document's `act` declarations (empty for a PBES, which has none) — an action
-/// reference has no data-expression sort of its own to show (see [`hover_markdown`]), so its
-/// declared argument sorts are looked up here instead, by matching `ResolvedName::Action`'s
-/// `declaration` span against each `ActDecl`'s own span. `processes` is the `proc` declarations
-/// (likewise empty for a PBES), used the same way for process parameter types.
-///
-/// When `doc_uri` is provided, hover text includes a "Go to definition" link pointing at the
+/// When `ctx.doc_uri` is provided, hover text includes a "Go to definition" link pointing at the
 /// declaration.
-pub fn hover(
-    text: &str,
-    line_index: &LineIndex,
-    typing_info: &TypingInfo,
-    actions: &[ActDecl],
-    processes: &[ProcDecl],
-    doc_uri: Option<&Url>,
-    position: Position,
-) -> Option<Hover> {
+pub fn hover(ctx: &HoverContext, position: Position) -> Option<Hover> {
+    let &HoverContext {
+        text,
+        line_index,
+        typing_info,
+        actions,
+        processes,
+        spec,
+        doc_uri,
+    } = ctx;
     let offset = line_index.offset(text, position)?;
-    let node = typing_info.at_offset(offset)?;
 
+    if let Some(node) = typing_info.at_offset(offset) {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: hover_markdown(node, actions, processes, doc_uri, line_index, text),
+            }),
+            range: Some(line_index.range(text, &node.span)),
+        });
+    }
+
+    let spec = spec?;
+    let found = sort_ref::sort_ref_at(spec, offset)?;
+    let decl = sort_ref::find_sort_declaration(spec, &found.name)?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: hover_markdown(node, actions, processes, doc_uri, line_index, text),
+            value: sort_hover_markdown(decl, doc_uri, line_index, text),
         }),
-        range: Some(line_index.range(text, &node.span)),
+        range: Some(line_index.range(text, &found.span)),
     })
 }
 
-/// Renders `node` as Markdown: an mCRL2-highlighted `name: Sort` code block (just `Sort` for a
-/// node with no resolved name — a literal or an operator's overall application, say; just `name`
-/// for a process reference, which has no data-expression sort to show — but with its parameter
-/// types if a `proc` declaration is found), followed by what kind of name it resolved to, when
-/// known. An optional "Go to definition" link is appended when `doc_uri` is available and the
-/// resolved name has a declaration span.
+/// Renders the sort declaration as Markdown.
+fn sort_hover_markdown(decl: &SortDecl, doc_uri: Option<&Url>, line_index: &LineIndex, text: &str) -> String {
+    let SortDecl { identifier, expr, span, .. } = decl;
+    let body = match expr {
+        Some(expr) => format!("sort {identifier} = {expr};"),
+        None => format!("sort {identifier};"),
+    };
+    let link = goto_def_link(span, doc_uri, line_index, text);
+    format!("```mcrl2\n{body}\n```\nsort{link}")
+}
+
+/// Renders `node` as Markdown. An optional "Go to definition" link is appended
+/// when `doc_uri` is available and the resolved name has a declaration span.
 ///
-/// An action reference is the one case with no `node.sort` (it isn't a data expression) that
-/// still has a sort worth showing: its declared argument sorts, found in `actions` by matching
-/// the resolved name's own `declaration` span — the winning overload, not just any declaration
-/// sharing its name (see [`ResolvedName::Action`]'s docs).
+/// Uses actions to look up the argument sorts for action references.
+/// [`ResolvedName::Action`]'s docs).
 fn hover_markdown(
     node: &TypedNode,
     actions: &[ActDecl],
@@ -74,24 +95,9 @@ fn hover_markdown(
     line_index: &LineIndex,
     text: &str,
 ) -> String {
-    let goto_def_link = |span: &merc_syntax::Span| -> String {
-        match doc_uri {
-            Some(uri) => {
-                let pos = line_index.position(text, span.start);
-                format!(
-                    "\n\n[Go to definition]({}#L{}:{})",
-                    uri.as_str(),
-                    pos.line + 1,
-                    pos.character + 1,
-                )
-            }
-            None => String::new(),
-        }
-    };
-
     if let Some(ResolvedName::Action { name, declaration }) = &node.name {
         let decl = declaration.as_ref().and_then(|span| actions.iter().find(|decl| &decl.span == span));
-        let link = declaration.as_ref().map_or(String::new(), &goto_def_link);
+        let link = declaration.as_ref().map_or(String::new(), |span| goto_def_link(span, doc_uri, line_index, text));
         return match decl.filter(|decl| !decl.args.is_empty()) {
             Some(decl) => {
                 let sorts = decl.args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" # ");
@@ -103,7 +109,7 @@ fn hover_markdown(
 
     if let Some(ResolvedName::Process { name, declaration }) = &node.name {
         let decl = declaration.as_ref().and_then(|span| processes.iter().find(|decl| &decl.span == span));
-        let link = declaration.as_ref().map_or(String::new(), goto_def_link);
+        let link = declaration.as_ref().map_or(String::new(), |span| goto_def_link(span, doc_uri, line_index, text));
         let kind = "process";
         return match decl.filter(|decl| !decl.params.is_empty()) {
             Some(decl) => {
@@ -125,15 +131,27 @@ fn hover_markdown(
     };
     match (named, &node.sort) {
         (Some((name, kind, decl)), Some(sort)) => {
-            let link = decl.as_ref().map_or(String::new(), goto_def_link);
+            let link = decl.as_ref().map_or(String::new(), |span| goto_def_link(span, doc_uri, line_index, text));
             format!("```mcrl2\n{name}: {sort}\n```\n{kind}{link}")
         }
         (Some((name, kind, decl)), None) => {
-            let link = decl.as_ref().map_or(String::new(), goto_def_link);
+            let link = decl.as_ref().map_or(String::new(), |span| goto_def_link(span, doc_uri, line_index, text));
             format!("```mcrl2\n{name}\n```\n{kind}{link}")
         }
         (None, Some(sort)) => format!("```mcrl2\n{sort}\n```"),
         (None, None) => String::new(),
+    }
+}
+
+/// A `\n\n[Go to definition](...)` Markdown link pointing at `span`'s start, or `""` when
+/// `doc_uri` is unavailable.
+fn goto_def_link(span: &Span, doc_uri: Option<&Url>, line_index: &LineIndex, text: &str) -> String {
+    match doc_uri {
+        Some(uri) => {
+            let pos = line_index.position(text, span.start);
+            format!("\n\n[Go to definition]({}#L{}:{})", uri.as_str(), pos.line + 1, pos.character + 1)
+        }
+        None => String::new(),
     }
 }
 
@@ -147,16 +165,18 @@ mod tests {
     use crate::typecheck::TypecheckOutcome;
     use crate::typecheck::typecheck;
 
-    async fn typing_info_for(text: &str) -> (TypingInfo, Vec<ActDecl>, Vec<ProcDecl>) {
+    async fn typing_info_for(text: &str) -> (TypingInfo, Vec<ActDecl>, Vec<ProcDecl>, Specification) {
         let spec = match parse(SpecKind::Process, text.to_string()).await {
             ParseOutcome::Ok(Specification::Process(spec)) => *spec,
             _ => panic!("fixture failed to parse"),
         };
+        let raw = Specification::Process(Box::new(spec.clone()));
         match typecheck(spec).await {
             TypecheckOutcome::Ok(mut checked) => (
                 checked.typing_info(),
                 checked.action_declarations().to_vec(),
                 checked.process_declarations().to_vec(),
+                raw,
             ),
             TypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
             TypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
@@ -166,13 +186,13 @@ mod tests {
     #[tokio::test]
     async fn hovers_a_mapping_use_with_its_sort() {
         let text = "sort D;\ncons c: D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = x;\ninit delta;";
-        let (typing_info, actions, processes) = typing_info_for(text).await;
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: None };
 
         let offset = text.find("f(x) = x").unwrap();
         let position = line_index.position(text, offset);
-        let hover = hover(text, &line_index, &typing_info, &actions, &processes, None, position)
-            .expect("expected hover content");
+        let hover = hover(&ctx, position).expect("expected hover content");
 
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
@@ -183,25 +203,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_hover_outside_any_typed_node() {
+    async fn no_hover_outside_any_typed_node_or_sort_reference() {
         let text = "sort D;\ninit delta;";
-        let (typing_info, actions, processes) = typing_info_for(text).await;
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: None };
 
         let position = line_index.position(text, 0);
-        assert!(hover(text, &line_index, &typing_info, &actions, &processes, None, position).is_none());
+        assert!(hover(&ctx, position).is_none());
     }
 
     #[tokio::test]
     async fn hovers_an_action_argument_with_its_declared_sort() {
         let text = "act a: Nat;\nproc P(n: Nat) = a(n);\ninit P(1);";
-        let (typing_info, actions, processes) = typing_info_for(text).await;
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: None };
 
         let offset = text.find("n);").unwrap();
         let position = line_index.position(text, offset);
-        let hover = hover(text, &line_index, &typing_info, &actions, &processes, None, position)
-            .expect("expected hover content");
+        let hover = hover(&ctx, position).expect("expected hover content");
 
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
@@ -213,13 +234,13 @@ mod tests {
     #[tokio::test]
     async fn hovers_an_action_reference_with_its_declared_sorts() {
         let text = "act a: Nat # Bool;\nproc P(n: Nat, b: Bool) = a(n, b);\ninit P(1, true);";
-        let (typing_info, actions, processes) = typing_info_for(text).await;
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: None };
 
         let offset = text.find("a(n, b)").unwrap();
         let position = line_index.position(text, offset);
-        let hover = hover(text, &line_index, &typing_info, &actions, &processes, None, position)
-            .expect("expected hover content");
+        let hover = hover(&ctx, position).expect("expected hover content");
 
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
@@ -231,13 +252,13 @@ mod tests {
     #[tokio::test]
     async fn hovers_a_niladic_action_reference_with_just_its_name() {
         let text = "act a;\ninit a;";
-        let (typing_info, actions, processes) = typing_info_for(text).await;
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: None };
 
         let offset = text.find("init a;").unwrap() + "init ".len();
         let position = line_index.position(text, offset);
-        let hover = hover(text, &line_index, &typing_info, &actions, &processes, None, position)
-            .expect("expected hover content");
+        let hover = hover(&ctx, position).expect("expected hover content");
 
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
@@ -249,13 +270,13 @@ mod tests {
     #[tokio::test]
     async fn hovers_a_process_reference_with_its_parameter_types() {
         let text = "proc P(n: Nat, b: Bool) = delta;\ninit P(1, true);";
-        let (typing_info, actions, processes) = typing_info_for(text).await;
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: None };
 
         let offset = text.find("P(1, true)").unwrap();
         let position = line_index.position(text, offset);
-        let hover = hover(text, &line_index, &typing_info, &actions, &processes, None, position)
-            .expect("expected hover content");
+        let hover = hover(&ctx, position).expect("expected hover content");
 
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
@@ -271,13 +292,13 @@ mod tests {
     #[tokio::test]
     async fn hovers_a_niladic_process_reference_with_just_its_name() {
         let text = "proc Q = delta;\ninit Q();";
-        let (typing_info, actions, processes) = typing_info_for(text).await;
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: None };
 
         let offset = text.find("Q()").unwrap();
         let position = line_index.position(text, offset);
-        let hover = hover(text, &line_index, &typing_info, &actions, &processes, None, position)
-            .expect("expected hover content");
+        let hover = hover(&ctx, position).expect("expected hover content");
 
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
@@ -289,14 +310,14 @@ mod tests {
     #[tokio::test]
     async fn action_hover_includes_go_to_definition_link() {
         let text = "act a: Nat;\nproc P(n: Nat) = a(n);\ninit P(1);";
-        let (typing_info, actions, processes) = typing_info_for(text).await;
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
         let uri = Url::parse("file:///test.mcrl2").unwrap();
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: Some(&uri) };
 
         let offset = text.find("a(n)").unwrap();
         let position = line_index.position(text, offset);
-        let hover = hover(text, &line_index, &typing_info, &actions, &processes, Some(&uri), position)
-            .expect("expected hover content");
+        let hover = hover(&ctx, position).expect("expected hover content");
 
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
@@ -311,14 +332,14 @@ mod tests {
     #[tokio::test]
     async fn process_hover_includes_go_to_definition_link() {
         let text = "proc P = delta;\ninit P();";
-        let (typing_info, actions, processes) = typing_info_for(text).await;
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
         let uri = Url::parse("file:///test.mcrl2").unwrap();
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: Some(&uri) };
 
         let offset = text.find("P()").unwrap();
         let position = line_index.position(text, offset);
-        let hover = hover(text, &line_index, &typing_info, &actions, &processes, Some(&uri), position)
-            .expect("expected hover content");
+        let hover = hover(&ctx, position).expect("expected hover content");
 
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
@@ -333,13 +354,13 @@ mod tests {
     #[tokio::test]
     async fn hover_without_doc_uri_has_no_go_to_definition_link() {
         let text = "act a: Nat;\nproc P(n: Nat) = a(n);\ninit P(1);";
-        let (typing_info, actions, processes) = typing_info_for(text).await;
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: None };
 
         let offset = text.find("a(n)").unwrap();
         let position = line_index.position(text, offset);
-        let hover = hover(text, &line_index, &typing_info, &actions, &processes, None, position)
-            .expect("expected hover content");
+        let hover = hover(&ctx, position).expect("expected hover content");
 
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
@@ -349,5 +370,65 @@ mod tests {
             "unexpected Go to definition link: {}",
             content.value
         );
+    }
+
+    #[tokio::test]
+    async fn hovers_a_sort_reference_with_its_declaration() {
+        let text = "sort D = struct c1(a: Bool) | c2;\nmap f: D -> D;\ninit delta;";
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
+        let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: None };
+
+        // The domain `D` in `map f: D -> D;`: not part of any checked `DataExpr`, so this only
+        // resolves via the sort-reference fallback.
+        let offset = text.find("f: D").unwrap() + "f: ".len();
+        let position = line_index.position(text, offset);
+        let hover = hover(&ctx, position).expect("expected hover content");
+
+        let HoverContents::Markup(content) = hover.contents else {
+            panic!("expected markup content");
+        };
+        assert!(
+            content.value.contains("sort D = struct c1(a : Bool) | c2;"),
+            "unexpected hover text: {}",
+            content.value
+        );
+        assert!(content.value.contains("\nsort"));
+    }
+
+    #[tokio::test]
+    async fn sort_reference_hover_includes_go_to_definition_link() {
+        let text = "sort D;\ncons c: D;\nmap f: D -> D;\ninit delta;";
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
+        let line_index = LineIndex::new(text);
+        let uri = Url::parse("file:///test.mcrl2").unwrap();
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: Some(&uri) };
+
+        let offset = text.rfind("D;").unwrap();
+        let position = line_index.position(text, offset);
+        let hover = hover(&ctx, position).expect("expected hover content");
+
+        let HoverContents::Markup(content) = hover.contents else {
+            panic!("expected markup content");
+        };
+        assert!(
+            content.value.contains("[Go to definition](file:///test.mcrl2#"),
+            "unexpected hover text: {}",
+            content.value
+        );
+    }
+
+    #[tokio::test]
+    async fn no_hover_for_a_built_in_sort_reference() {
+        // `Bool` parses straight to `SortExpressionKind::Simple`, never a named `Reference` — see
+        // `crate::sort_ref`'s module doc comment — so there is no declaration for this to find.
+        let text = "map f: Bool;\ninit delta;";
+        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
+        let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), doc_uri: None };
+
+        let offset = text.find("Bool").unwrap();
+        let position = line_index.position(text, offset);
+        assert!(hover(&ctx, position).is_none());
     }
 }

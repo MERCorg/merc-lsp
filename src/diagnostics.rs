@@ -17,11 +17,7 @@ use crate::typecheck::TypecheckOutcome;
 
 const SOURCE: &str = "merc-lsp";
 
-/// Distinct `source` for type-checking diagnostics (see [`type_diagnostics`]) — kept separate
-/// from parse diagnostics' `SOURCE` so a client can tell the two apart (e.g. to only clear one
-/// kind), and because communication sort-compatibility isn't checked yet (see the
-/// `merc_typecheck` crate README), so an empty set of these is not a full type-correctness
-/// guarantee.
+/// Distinct `source` for type-checking diagnostics (see [`type_diagnostics`]).
 const TYPE_SOURCE: &str = "merc-lsp:types";
 
 /// Builds the full diagnostics list for a document from its latest parse
@@ -38,8 +34,7 @@ pub fn diagnostics(text: &str, line_index: &LineIndex, outcome: &ParseOutcome) -
 }
 
 /// Builds the type-checking diagnostics list for a document's process specification, from the
-/// result of typechecking it (only attempted once parsing has already succeeded — see
-/// [`crate::typecheck`]).
+/// result of typechecking it. Only performed after a successful parse.
 ///
 /// Returns an empty vector for [`TypecheckOutcome::Ok`], for the same reason [`diagnostics`]
 /// does for [`ParseOutcome::Ok`].
@@ -61,10 +56,7 @@ pub fn pbes_type_diagnostics(text: &str, line_index: &LineIndex, outcome: &PbesT
 }
 
 /// Builds a located type-error [`Diagnostic`], shared by [`type_diagnostics`] and
-/// [`pbes_type_diagnostics`] — `merc_typecheck::ProcessError`/`PbesError` have the same shape
-/// (`.span()`, `Display`) but no common trait upstream to abstract over directly. Every variant of
-/// either but a `WellTyped(WellTypedError::Custom(..))` (an opaque wrapped error with no location
-/// of its own) carries a span.
+/// [`pbes_type_diagnostics`].
 fn error_diagnostic(text: &str, line_index: &LineIndex, span: Option<&Span>, message: String) -> Diagnostic {
     let range = span.map(|span| line_index.range(text, span)).unwrap_or_default();
     Diagnostic {
@@ -162,9 +154,7 @@ mod tests {
         let diag = &diags[0];
         assert_eq!(diag.source.as_deref(), Some(SOURCE));
         assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
-        // The most fragile assumption in the design: the downcast to `pest::error::Error<Rule>`
-        // must succeed, or this falls back to a 0:0 file-level diagnostic instead of a located
-        // one. Assert the range actually lands past the start of the file.
+        // The most fragile assumption in the design, the downcast must succeed.
         assert!(diag.range.start.line > 0 || diag.range.start.character > 0);
         assert!(!diag.message.contains("-->"), "message should not contain pest's caret block");
     }

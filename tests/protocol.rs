@@ -320,6 +320,35 @@ async fn hover_reports_a_mapping_uses_sort() {
 }
 
 #[tokio::test]
+async fn hover_reports_a_sort_references_declaration() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("hover-sort.mcrl2");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), WITH_A_MAPPING))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    // The domain `D` in `map f: D -> D;`: never part of any checked `DataExpr`, unlike the
+    // mapping use above, so this only resolves through `merc_lsp::sort_ref`'s fallback.
+    let response = server
+        .request::<request::HoverRequest>(HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: document_uri },
+                position: position_of(WITH_A_MAPPING, "D -> D"),
+            },
+            work_done_progress_params: Default::default(),
+        })
+        .await
+        .expect("hover should succeed");
+
+    let Some(Hover { contents: HoverContents::Markup(content), .. }) = response else {
+        panic!("expected markup hover content, got {response:?}");
+    };
+    assert!(content.value.contains("sort D;"), "expected hover text to show the sort declaration, got {}", content.value);
+}
+
+#[tokio::test]
 async fn completion_offers_declared_names_and_keywords() {
     let (server, _result, mut rx) = start().await;
     let document_uri = uri("completion.mcrl2");
@@ -519,4 +548,33 @@ async fn goto_definition_jumps_from_a_mapping_use_to_its_declaration() {
     };
     assert_eq!(location.uri, document_uri);
     assert_eq!(location.range.start, position_of(WITH_A_MAPPING, "f: D -> D"));
+}
+
+#[tokio::test]
+async fn goto_definition_jumps_from_a_sort_reference_to_its_declaration() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("goto-definition-sort.mcrl2");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), WITH_A_MAPPING))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let response = server
+        .request::<request::GotoDefinition>(GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: document_uri.clone() },
+                position: position_of(WITH_A_MAPPING, "D -> D"),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .expect("goto-definition should succeed");
+
+    let Some(GotoDefinitionResponse::Scalar(location)) = response else {
+        panic!("expected a scalar goto-definition response, got {response:?}");
+    };
+    assert_eq!(location.uri, document_uri);
+    assert_eq!(location.range.start, position_of(WITH_A_MAPPING, "D;"));
 }
