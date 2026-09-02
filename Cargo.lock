@@ -870,7 +870,7 @@ dependencies = [
 [[package]]
 name = "merc_aterm"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "allocator-api2 0.4.0",
  "delegate",
@@ -896,7 +896,7 @@ dependencies = [
 [[package]]
 name = "merc_collections"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "bitvec",
  "delegate",
@@ -911,7 +911,7 @@ dependencies = [
 [[package]]
 name = "merc_data"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "ahash",
  "delegate",
@@ -926,7 +926,7 @@ dependencies = [
 [[package]]
 name = "merc_io"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "bitstream-io",
  "log",
@@ -942,7 +942,7 @@ dependencies = [
 [[package]]
 name = "merc_lts"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "bindgen",
  "bumpalo",
@@ -966,7 +966,7 @@ dependencies = [
 [[package]]
 name = "merc_macros"
 version = "2.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -976,7 +976,7 @@ dependencies = [
 [[package]]
 name = "merc_number"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "bitstream-io",
  "merc_utilities",
@@ -1008,7 +1008,7 @@ dependencies = [
 [[package]]
 name = "merc_reduction"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -1026,7 +1026,7 @@ dependencies = [
 [[package]]
 name = "merc_refinement"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -1044,7 +1044,7 @@ dependencies = [
 [[package]]
 name = "merc_sharedmutex"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "crossbeam-utils",
  "delegate",
@@ -1055,7 +1055,7 @@ dependencies = [
 [[package]]
 name = "merc_syntax"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "itertools 0.15.0",
  "log",
@@ -1072,7 +1072,7 @@ dependencies = [
 [[package]]
 name = "merc_typecheck"
 version = "2.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "ena",
  "indoc",
@@ -1088,7 +1088,7 @@ dependencies = [
 [[package]]
 name = "merc_unsafety"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "allocator-api2 0.4.0",
  "crossbeam-utils",
@@ -1109,7 +1109,7 @@ dependencies = [
 [[package]]
 name = "merc_utilities"
 version = "3.0.0"
-source = "git+https://github.com/mlaveaux/merc?rev=c96d9edb8804ccf9fccc9fe920b815d9b7d2b422#c96d9edb8804ccf9fccc9fe920b815d9b7d2b422"
+source = "git+https://github.com/mlaveaux/merc?rev=1579368af54c9899dcbc12c7be2aa337e245f8cf#1579368af54c9899dcbc12c7be2aa337e245f8cf"
 dependencies = [
  "crossbeam-utils",
  "env_logger",

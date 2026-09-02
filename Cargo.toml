@@ -31,6 +31,6 @@ indoc = "2.0"
 
 # temporary patch to the forked branch with LSP support.
 [patch."https://github.com/MERCorg/merc"]
-merc_syntax = { git = "https://github.com/mlaveaux/merc", rev = "c96d9edb8804ccf9fccc9fe920b815d9b7d2b422" }
-merc_typecheck = { git = "https://github.com/mlaveaux/merc", rev = "c96d9edb8804ccf9fccc9fe920b815d9b7d2b422" }
-merc_utilities = { git = "https://github.com/mlaveaux/merc", rev = "c96d9edb8804ccf9fccc9fe920b815d9b7d2b422" }
+merc_syntax = { git = "https://github.com/mlaveaux/merc", rev = "1579368af54c9899dcbc12c7be2aa337e245f8cf" }
+merc_typecheck = { git = "https://github.com/mlaveaux/merc", rev = "1579368af54c9899dcbc12c7be2aa337e245f8cf" }
+merc_utilities = { git = "https://github.com/mlaveaux/merc", rev = "1579368af54c9899dcbc12c7be2aa337e245f8cf" }
