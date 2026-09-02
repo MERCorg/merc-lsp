@@ -73,9 +73,11 @@ enum TokenKind {
     /// end up the same color.
     Event = 3,
     EnumMember = 4,
-    /// A `proc` declaration's own parameter, or a reference to one (the `x` in `P(x = e)`) —
-    /// distinct from [`TokenKind::Variable`], which covers every *bound* variable (`sum`/`dist`/
-    /// `forall`/`exists`/`lambda`/comprehension) and `var`/`glob` declaration instead.
+    /// A `proc` declaration's own parameter (or a PBES equation's), or any reference to one —
+    /// the assignment-form `x` in `P(x = e)`, an ordinary positional use like `P(x)` or a
+    /// condition's `x == 0`, all alike (see [`SymbolTable::classify_data_id`]) — distinct from
+    /// [`TokenKind::Variable`], which covers every *bound* variable (`sum`/`dist`/`forall`/
+    /// `exists`/`lambda`/comprehension) and `var`/`glob` declaration instead.
     Parameter = 5,
     /// A reserved mCRL2 word (`sort`, `proc`, `sum`, `true`, …) — see [`tag_keywords`].
     Keyword = 6,
@@ -87,9 +89,17 @@ const MODIFIER_DECLARATION: u32 = 1 << 0;
 /// declaration, via the standard [`SemanticTokenModifier::DEFAULT_LIBRARY`]. See
 /// [`walk_sort_expression`].
 const MODIFIER_DEFAULT_LIBRARY: u32 = 1 << 1;
+/// Marks a constructor or accessor function implicitly declared by a `sort D = struct
+/// c1(a: S)?is_c1 | c2;` alternative — `c1`/`c2` themselves ([`TokenKind::EnumMember`]) and their
+/// accessor functions `a`/`is_c1` ([`TokenKind::Method`]) — as distinct from the same kinds
+/// declared by a top-level `cons`/`map` block, via a custom [`SemanticTokenModifier`] (there's no
+/// standard LSP modifier for this). See [`walk_sort_expression`]'s `SortExpressionKind::Struct`
+/// arm.
+const MODIFIER_STRUCT_VARIANT: u32 = 1 << 2;
 
 /// The legend advertised by `capabilities::server_capabilities`; must list types/modifiers in the
-/// exact order [`TokenKind`]/[`MODIFIER_DECLARATION`]/[`MODIFIER_DEFAULT_LIBRARY`] assume.
+/// exact order [`TokenKind`]/[`MODIFIER_DECLARATION`]/[`MODIFIER_DEFAULT_LIBRARY`]/
+/// [`MODIFIER_STRUCT_VARIANT`] assume.
 pub fn legend() -> SemanticTokensLegend {
     SemanticTokensLegend {
         token_types: vec![
@@ -101,7 +111,11 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenType::PARAMETER,
             SemanticTokenType::KEYWORD,
         ],
-        token_modifiers: vec![SemanticTokenModifier::DECLARATION, SemanticTokenModifier::DEFAULT_LIBRARY],
+        token_modifiers: vec![
+            SemanticTokenModifier::DECLARATION,
+            SemanticTokenModifier::DEFAULT_LIBRARY,
+            SemanticTokenModifier::new("structVariant"),
+        ],
     }
 }
 
@@ -147,7 +161,7 @@ pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcess
 /// process-algebra-shaped parts (`act`/`proc`/`init`) differ, replaced here by a PBES's
 /// propositional-variable equations, quantifier binders, and `PropVarInst`s.
 pub fn pbes_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPbes) -> Vec<SemanticToken> {
-    let symbols = SymbolTable::collect_data(&spec.data_specification);
+    let symbols = SymbolTable::collect_pbes(spec);
     let mut builder = Builder::new(text, line_index);
 
     tag_data_specification(&spec.data_specification, &symbols, &mut builder);
@@ -216,46 +230,120 @@ fn tag_data_specification(data: &UntypedDataSpecification, symbols: &SymbolTable
 
 /// Which declared identifiers name what — the disambiguation a TextMate grammar cannot do, since
 /// the grammar gives the same shape to several different declaration kinds. Used to classify a
-/// bare [`DataExprKind::Id`] (function, constructor, or variable) and a
+/// bare [`DataExprKind::Id`] (function, constructor, parameter, or variable) and a
 /// [`ProcessExprKind::Action`] whose name might actually belong to a process, not an action (see
 /// the module docs above).
 struct SymbolTable<'a> {
     maps: HashSet<&'a str>,
     constructors: HashSet<&'a str>,
+    /// Every accessor function (a named argument projection or a `?`-recogniser) a `sort D =
+    /// struct c1(a: S)?is_c1 | c2;` alternative declares — kept separate from `maps` so a *use*
+    /// of `a`/`is_c1` elsewhere still resolves to [`TokenKind::Method`] (see
+    /// [`Self::classify_data_id`]), unlike a plain `map`-declared function, which is deliberately
+    /// left uncolored. See [`walk_sort_expression`]'s `SortExpressionKind::Struct` arm for why the
+    /// declaration site itself needs the distinct coloring in the first place.
+    struct_accessors: HashSet<&'a str>,
     processes: HashSet<&'a str>,
+    /// Every `proc` declaration's parameter name (for a process specification) or every PBES
+    /// equation's parameter name (for a PBES) — flat, same as every other set here, so a
+    /// parameter reference reads the same regardless of which declaration's parameter it names
+    /// (see the module docs' "deliberately unscoped" note). This is what lets an ordinary
+    /// reference to a parameter — `x` in `P(x: Nat) = a.P(x)`'s positional call, not just the
+    /// assignment-form `x = e` [`walk_process_expr`] already tags directly — come out as
+    /// [`TokenKind::Parameter`] instead of falling back to [`TokenKind::Variable`].
+    parameters: HashSet<&'a str>,
 }
 
 impl<'a> SymbolTable<'a> {
     fn collect_process(spec: &'a UntypedProcessSpecification) -> Self {
         SymbolTable {
             processes: spec.process_declarations.iter().map(|decl| decl.identifier.as_str()).collect(),
+            parameters: spec
+                .process_declarations
+                .iter()
+                .flat_map(|decl| decl.params.iter().map(|param| param.identifier.as_str()))
+                .collect(),
             ..Self::collect_data(&spec.data_specification)
         }
     }
 
-    /// As [`Self::collect_process`], for the data-specification-only namespaces a PBES has too —
-    /// `processes` stays empty, since [`SymbolTable::classify_action`] (the one thing that reads
-    /// it) has nothing to disambiguate for a PBES's `PropVarInst`s (see [`pbes_semantic_tokens`]).
-    fn collect_data(data: &'a UntypedDataSpecification) -> Self {
+    /// As [`Self::collect_process`], for a PBES: `processes` stays empty, since
+    /// [`SymbolTable::classify_action`] (the one thing that reads it) has nothing to disambiguate
+    /// for a PBES's `PropVarInst`s (see [`pbes_semantic_tokens`]); `parameters` instead comes from
+    /// every equation's own propositional-variable parameters.
+    fn collect_pbes(spec: &'a UntypedPbes) -> Self {
         SymbolTable {
-            maps: data.map_declarations.iter().map(|decl| decl.identifier.as_str()).collect(),
-            constructors: data.constructor_declarations.iter().map(|decl| decl.identifier.as_str()).collect(),
-            processes: HashSet::new(),
+            parameters: spec
+                .equations
+                .iter()
+                .flat_map(|eqn| eqn.variable.parameters.iter().map(|param| param.identifier.as_str()))
+                .collect(),
+            ..Self::collect_data(&spec.data_specification)
         }
     }
 
-    /// Classifies a [`DataExprKind::Id`] occurrence, or `None` if it names a mapping — mappings
-    /// are deliberately left uncolored (see [`semantic_tokens`]'s map-declaration loop), so a use
-    /// site has to stay uncolored too rather than fall back to some other kind.
+    /// As [`Self::collect_process`]/[`Self::collect_pbes`], for the data-specification-only
+    /// namespaces both share — `processes` and `parameters` stay empty, filled in by whichever of
+    /// the two callers above has them.
+    ///
+    /// Also harvests every `sort D = struct c1(a: S)?is_c1 | c2;` alternative's own constructor
+    /// name (`c1`/`c2`, into `constructors`) and accessor functions (`a`/`is_c1`, into
+    /// `struct_accessors`) — `merc_typecheck` desugars a struct into real `cons`/`map`
+    /// declarations (see `merc_syntax::ConstructorDecl`'s doc comment), but that desugaring runs
+    /// on the *checked* specification, not the raw [`UntypedDataSpecification`] this table is
+    /// built from, so a *use* of `c1`/`a`/`is_c1` elsewhere in the document would otherwise fall
+    /// through [`Self::classify_data_id`]'s free/bound-variable fallback instead of resolving to
+    /// the same kind its declaration gets (see [`walk_sort_expression`]'s `Struct` arm).
+    fn collect_data(data: &'a UntypedDataSpecification) -> Self {
+        let mut constructors: HashSet<&str> = data.constructor_declarations.iter().map(|decl| decl.identifier.as_str()).collect();
+        let maps: HashSet<&str> = data.map_declarations.iter().map(|decl| decl.identifier.as_str()).collect();
+        let mut struct_accessors: HashSet<&str> = HashSet::new();
+
+        for decl in &data.sort_declarations {
+            let Some(expr) = &decl.expr else { continue };
+            let SortExpressionKind::Struct { inner } = &expr.node else { continue };
+            for constructor in inner {
+                constructors.insert(constructor.name.node.as_str());
+                for (name, _) in &constructor.args {
+                    if let Some(name) = name {
+                        struct_accessors.insert(name.node.as_str());
+                    }
+                }
+                if let Some(projection) = &constructor.projection {
+                    struct_accessors.insert(projection.node.as_str());
+                }
+            }
+        }
+
+        SymbolTable {
+            maps,
+            constructors,
+            struct_accessors,
+            processes: HashSet::new(),
+            parameters: HashSet::new(),
+        }
+    }
+
+    /// Classifies a [`DataExprKind::Id`] occurrence, or `None` if it names a plain mapping —
+    /// mappings are deliberately left uncolored (see [`semantic_tokens`]'s map-declaration loop),
+    /// so a use site has to stay uncolored too rather than fall back to some other kind. A struct
+    /// accessor (`struct_accessors`) is a mapping too, but colored like a [`TokenKind::Method`]
+    /// instead of left uncolored — [`MODIFIER_STRUCT_VARIANT`] itself is only ever set at the
+    /// declaration site inside the `struct` expression (see [`walk_sort_expression`]); a use
+    /// elsewhere carries no modifier, same as any other [`TokenKind::Method`] reference.
     fn classify_data_id(&self, name: &str) -> Option<TokenKind> {
         if self.constructors.contains(name) {
             Some(TokenKind::EnumMember)
+        } else if self.struct_accessors.contains(name) {
+            Some(TokenKind::Method)
         } else if self.maps.contains(name) {
             None
+        } else if self.parameters.contains(name) {
+            Some(TokenKind::Parameter)
         } else {
-            // Not declared as a map or constructor: a bound or free variable. This is also the
-            // fallback for a name that isn't declared at all — flagging that is a diagnostics
-            // concern (type checking), not this pass's job.
+            // Not declared as a map, constructor, or parameter: a bound or free variable. This is
+            // also the fallback for a name that isn't declared at all — flagging that is a
+            // diagnostics concern (type checking), not this pass's job.
             Some(TokenKind::Variable)
         }
     }
@@ -291,7 +379,14 @@ impl<'a> Builder<'a> {
     /// leaves and `SortExpression` references are spanned from their own grammar rule, not a
     /// surrounding one).
     fn push(&mut self, span: &Span, kind: TokenKind, is_declaration: bool) {
-        let modifiers = if is_declaration { MODIFIER_DECLARATION } else { 0 };
+        self.push_with_modifiers(span, kind, if is_declaration { MODIFIER_DECLARATION } else { 0 });
+    }
+
+    /// As [`Builder::push`], for a caller that needs to combine more than just
+    /// [`MODIFIER_DECLARATION`] — a struct-declared constructor/accessor also carries
+    /// [`MODIFIER_STRUCT_VARIANT`] (see [`walk_sort_expression`]'s `SortExpressionKind::Struct`
+    /// arm).
+    fn push_with_modifiers(&mut self, span: &Span, kind: TokenKind, modifiers: u32) {
         self.raw.push((span.clone(), kind, modifiers));
     }
 
@@ -380,6 +475,29 @@ fn walk_sort_expression(expr: &SortExpression, builder: &mut Builder) {
                 let keyword = complex_sort.to_string();
                 let span = Span { start: node.span.start, end: node.span.start + keyword.len() };
                 builder.push_builtin_type(&span);
+            }
+            SortExpressionKind::Struct { inner } => {
+                // A `sort D = struct c1(a: S)?is_c1 | c2;` alternative implicitly declares a
+                // constructor (`c1`) plus, per named argument or `?`-recogniser, an accessor
+                // function (`a`, `is_c1`) — real declarations `merc_typecheck` desugars into the
+                // same `cons`/`map` signature a top-level block would (see
+                // `merc_syntax::ConstructorDecl`'s doc comment), so they're tagged the same base
+                // kinds a `cons`/`map` declaration gets ([`TokenKind::EnumMember`]/
+                // [`TokenKind::Method`]) — plus [`MODIFIER_STRUCT_VARIANT`], so a theme can still
+                // tell a struct-declared constructor/accessor apart from an explicit block's.
+                // Each argument's own sort (`S` above) is a child `SortExpression` node the
+                // recursion below reaches on its own, same as `Complex`'s subsort above.
+                for constructor in inner {
+                    builder.push_with_modifiers(&constructor.name.span, TokenKind::EnumMember, MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT);
+                    for (name, _) in &constructor.args {
+                        if let Some(name) = name {
+                            builder.push_with_modifiers(&name.span, TokenKind::Method, MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT);
+                        }
+                    }
+                    if let Some(projection) = &constructor.projection {
+                        builder.push_with_modifiers(&projection.span, TokenKind::Method, MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT);
+                    }
+                }
             }
             _ => {}
         }
@@ -705,6 +823,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_parameter_use_is_tagged_parameter_not_variable() {
+        // `x` in the recursive call `P(x)` is a *positional* use of `P`'s own parameter — parsed
+        // as an ordinary `ProcessExprKind::Action` argument (see the module docs' `ProcExprId`
+        // quirk: positional process instantiation isn't `ProcessExprKind::Id` at all), not the
+        // assignment form the test above covers, so it went through `classify_data_id`'s bound/
+        // free-variable fallback before `SymbolTable::parameters` existed.
+        let text = "act a: Bool;\nproc P(x: Bool) = a(x).P(x);\ninit P(true);";
+        let tokens = tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let recursive_use = text.rfind("P(x)").unwrap() + "P(".len();
+        let use_pos = line_index.position(text, recursive_use);
+
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == use_pos.line
+            && c == use_pos.character
+            && len == 1
+            && ty == TokenKind::Parameter as u32
+            && modifiers == 0));
+    }
+
+    #[tokio::test]
+    async fn pbes_propvarinst_parameter_use_is_tagged_parameter_not_variable() {
+        // As `ordinary_parameter_use_is_tagged_parameter_not_variable`, for a PBES: `n` inside
+        // `val(n)` is a use of the equation's own parameter, not a free/bound variable.
+        let text = "pbes mu X(n: Bool) = val(n) || X(n);\ninit X(true);";
+        let tokens = pbes_tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let val_use = text.find("val(n)").unwrap() + "val(".len();
+        let use_pos = line_index.position(text, val_use);
+
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == use_pos.line
+            && c == use_pos.character
+            && len == 1
+            && ty == TokenKind::Parameter as u32
+            && modifiers == 0));
+    }
+
+    #[tokio::test]
     async fn system_sorts_are_tagged_default_library_user_sorts_are_not() {
         let text = "sort D;\nmap f: D -> Bool;\nmap g: List(Nat) -> D;";
         let tokens = tokens_for(text).await;
@@ -747,6 +906,57 @@ mod tests {
             && c == param_pos.character
             && ty == TokenKind::Parameter as u32
             && modifiers == MODIFIER_DECLARATION));
+    }
+
+    #[tokio::test]
+    async fn struct_constructor_and_accessors_are_tagged_distinctly_from_a_plain_cons_map_block() {
+        let text = "sort D = struct c1(a: Bool)?is_c1 | c2; map f: D -> Bool; eqn f(c1(true)) = true;";
+        let tokens = tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        // `c1`'s own name inside the struct declaration: an `EnumMember`, same base kind a
+        // top-level `cons` gets, but with `MODIFIER_STRUCT_VARIANT` layered on top of
+        // `MODIFIER_DECLARATION` so a theme can still tell the two apart.
+        let c1_decl_pos = line_index.position(text, text.find("c1(a").unwrap());
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == c1_decl_pos.line
+            && c == c1_decl_pos.character
+            && len == 2
+            && ty == TokenKind::EnumMember as u32
+            && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT)));
+
+        // `a`, the named projection: a `Method`, not left uncolored the way a plain `map` is.
+        let a_decl_pos = line_index.position(text, text.find("a: Bool").unwrap());
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == a_decl_pos.line
+            && c == a_decl_pos.character
+            && len == 1
+            && ty == TokenKind::Method as u32
+            && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT)));
+
+        // `is_c1`, the recogniser: same treatment as the projection above.
+        let is_c1_decl_pos = line_index.position(text, text.find("is_c1").unwrap());
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == is_c1_decl_pos.line
+            && c == is_c1_decl_pos.character
+            && len == 5
+            && ty == TokenKind::Method as u32
+            && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT)));
+
+        // `c2` has no arguments and no recogniser: still an `EnumMember` declaration.
+        let c2_decl_pos = line_index.position(text, text.find("c2;").unwrap());
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == c2_decl_pos.line
+            && c == c2_decl_pos.character
+            && len == 2
+            && ty == TokenKind::EnumMember as u32
+            && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT)));
+
+        // A *use* of the constructor, `c1(true)` in the equation, still reads as a plain
+        // `EnumMember` — no `MODIFIER_STRUCT_VARIANT` outside the struct declaration itself.
+        let c1_use_pos = line_index.position(text, text.rfind("c1(true)").unwrap());
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == c1_use_pos.line
+            && c == c1_use_pos.character
+            && len == 2
+            && ty == TokenKind::EnumMember as u32
+            && modifiers == 0));
     }
 
     #[tokio::test]
