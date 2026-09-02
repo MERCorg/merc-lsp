@@ -15,6 +15,9 @@ use std::time::Duration;
 use async_lsp::MainLoop;
 use async_lsp::ServerSocket;
 use async_lsp::router::Router;
+use lsp_types::CompletionItemKind;
+use lsp_types::CompletionParams;
+use lsp_types::CompletionResponse;
 use lsp_types::DidChangeTextDocumentParams;
 use lsp_types::DidOpenTextDocumentParams;
 use lsp_types::DocumentSymbolParams;
@@ -141,6 +144,12 @@ async fn initialize_advertises_semantic_tokens_support() {
         panic!("expected plain semanticTokens options, got {:?}", result.capabilities.semantic_tokens_provider);
     };
     assert!(!options.legend.token_types.is_empty());
+}
+
+#[tokio::test]
+async fn initialize_advertises_completion_support() {
+    let (_server, result, _rx) = start().await;
+    assert!(result.capabilities.completion_provider.is_some());
 }
 
 #[tokio::test]
@@ -310,6 +319,38 @@ async fn hover_reports_a_mapping_uses_sort() {
     assert!(content.value.contains('f'), "expected hover text to mention 'f', got {}", content.value);
 }
 
+#[tokio::test]
+async fn completion_offers_declared_names_and_keywords() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("completion.mcrl2");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), WITH_A_MAPPING))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let response = server
+        .request::<request::Completion>(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: document_uri },
+                position: position_of(WITH_A_MAPPING, "f(x) = x"),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        })
+        .await
+        .expect("completion should succeed");
+
+    let Some(CompletionResponse::Array(items)) = response else {
+        panic!("expected a completion item array, got {response:?}");
+    };
+    let mapping = items.iter().find(|item| item.label == "f").expect("expected 'f' among the completions");
+    assert_eq!(mapping.kind, Some(CompletionItemKind::FUNCTION));
+    let keyword = items.iter().find(|item| item.label == "proc").expect("expected a 'proc' keyword completion");
+    assert_eq!(keyword.kind, Some(CompletionItemKind::KEYWORD));
+}
+
 /// A `.pbes` document is routed to `UntypedPbes::parse` (via `SpecKind::from_uri`), not the plain
 /// mCRL2 process-specification grammar — a well-formed PBES should parse cleanly and publish no
 /// diagnostics.
@@ -338,6 +379,88 @@ async fn did_open_with_malformed_pres_document_publishes_a_located_diagnostic() 
     let diagnostics = next_diagnostics(&mut rx).await;
     assert_eq!(diagnostics.diagnostics.len(), 1);
     assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp"));
+}
+
+/// A `.pbes` document that parses cleanly but doesn't type check (an undeclared propositional
+/// variable) should publish a type diagnostic too — `PbesSpecification::from_untyped` via
+/// `typecheck::typecheck_pbes`, same distinct `"merc-lsp:types"` source as a process
+/// specification's own type errors.
+#[tokio::test]
+async fn did_open_with_ill_typed_pbes_document_publishes_a_type_diagnostic() {
+    let (server, _result, mut rx) = start().await;
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(uri("ill-typed.pbes"), "pbes mu X = Y;\ninit X;"))
+        .expect("didOpen should be queued");
+
+    let diagnostics = next_diagnostics(&mut rx).await;
+    assert_eq!(diagnostics.diagnostics.len(), 1);
+    assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
+}
+
+/// mCRL2 PBES text used by the hover/goto-definition tests below: an equation `X` with a parameter
+/// `n`, referencing itself with `n` as the argument — the same "argument resolves back to its own
+/// binder" shape [`WITH_A_MAPPING`] exercises for a process specification.
+const PBES_WITH_A_PARAMETER: &str = "pbes mu X(n: Bool) = val(n) || X(n);\ninit X(true);";
+
+/// Hover and goto-definition are generic over `TypingInfo` (`Document::typing_info`) and don't
+/// otherwise care which kind of specification produced it — so a PBES document gets both for
+/// free, once `PbesSpecification`'s own checked spec is stored the same way a process
+/// specification's is (see `document::CheckedOutcome`).
+#[tokio::test]
+async fn hover_reports_a_propositional_variable_arguments_sort() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("hover.pbes");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), PBES_WITH_A_PARAMETER))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let response = server
+        .request::<request::HoverRequest>(HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: document_uri },
+                position: position_of(PBES_WITH_A_PARAMETER, "n);"),
+            },
+            work_done_progress_params: Default::default(),
+        })
+        .await
+        .expect("hover should succeed");
+
+    let Some(Hover { contents: HoverContents::Markup(content), .. }) = response else {
+        panic!("expected markup hover content, got {response:?}");
+    };
+    assert!(content.value.contains("Bool"), "expected hover text to mention 'Bool', got {}", content.value);
+}
+
+#[tokio::test]
+async fn goto_definition_jumps_from_a_propositional_variable_argument_to_its_parameter() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("goto-definition.pbes");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), PBES_WITH_A_PARAMETER))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let response = server
+        .request::<request::GotoDefinition>(GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: document_uri.clone() },
+                position: position_of(PBES_WITH_A_PARAMETER, "n);"),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .expect("goto-definition should succeed");
+
+    let Some(GotoDefinitionResponse::Scalar(location)) = response else {
+        panic!("expected a scalar goto-definition response, got {response:?}");
+    };
+    assert_eq!(location.uri, document_uri);
+    assert_eq!(location.range.start, position_of(PBES_WITH_A_PARAMETER, "n: Bool)"));
 }
 
 /// `textDocument/documentSymbol` also works for a `.pbes` document — its outline is built by

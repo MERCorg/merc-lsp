@@ -5,7 +5,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { ExtensionContext, OutputChannel, window, workspace } from 'vscode';
+import { commands, ExtensionContext, OutputChannel, window, workspace } from 'vscode';
 
 import {
 	LanguageClient,
@@ -73,15 +73,14 @@ function resolveServerCommand(context: ExtensionContext): string {
 	return SERVER_BIN_NAME;
 }
 
-export function activate(context: ExtensionContext) {
-	output = window.createOutputChannel('mCRL2-lsp');
-	context.subscriptions.push(output);
-
-	output.appendLine('mCRL2 extension activated.');
-
+/**
+ * Builds and starts a fresh {@link LanguageClient}, spawning a new `merc-lsp` process. Used both
+ * by {@link activate} and by the `merc-lsp.restartServer` command below — the same steps either
+ * way, since restarting *is* "stop the old client if any, then activate a new one".
+ */
+function startClient(context: ExtensionContext): LanguageClient {
 	const command = resolveServerCommand(context);
-	output.appendLine(`Using merc-lsp binary: ${command}`);
-	output.show(true);
+	output?.appendLine(`Using merc-lsp binary: ${command}`);
 
 	// Both `run` and `debug` launch the same binary the same way: `merc-lsp` speaks LSP over
 	// stdio unconditionally, there's no separate debug mode to select (unlike the Node.js
@@ -100,14 +99,14 @@ export function activate(context: ExtensionContext) {
 		}
 	};
 
-	client = new LanguageClient(
+	const newClient = new LanguageClient(
 		'merc-lsp',
 		'mCRL2 Language Server',
 		serverOptions,
 		clientOptions
 	);
 
-	client.start().then(
+	newClient.start().then(
 		() => output?.appendLine('merc-lsp language server started.'),
 		(error: unknown) => {
 			const message = `Failed to start merc-lsp (looked for "${command}"): ${error instanceof Error ? error.message : error
@@ -116,6 +115,38 @@ export function activate(context: ExtensionContext) {
 			window.showErrorMessage(message);
 		}
 	);
+
+	return newClient;
+}
+
+/**
+ * Stops the current client (if any) and starts a new one, respawning the `merc-lsp` process from
+ * scratch. Bound to the `merc-lsp.restartServer` command (Command Palette: "mCRL2: Restart
+ * Language Server") — the extension launches the server binary exactly once, at activation, and
+ * has no other way to notice a rebuilt binary or recover from the server process itself having
+ * exited; this is the one manual lever for both. Unlike "Developer: Reload Window", it doesn't
+ * discard the rest of the editor session to do it.
+ */
+async function restartClient(context: ExtensionContext): Promise<void> {
+	output?.appendLine('Restarting merc-lsp language server...');
+	if (client) {
+		await client.stop();
+	}
+	client = startClient(context);
+}
+
+export function activate(context: ExtensionContext) {
+	output = window.createOutputChannel('mCRL2-lsp');
+	context.subscriptions.push(output);
+
+	output.appendLine('mCRL2 extension activated.');
+	output.show(true);
+
+	context.subscriptions.push(
+		commands.registerCommand('merc-lsp.restartServer', () => restartClient(context))
+	);
+
+	client = startClient(context);
 }
 
 export function deactivate(): Thenable<void> | undefined {
