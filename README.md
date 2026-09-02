@@ -7,16 +7,29 @@ plain process specifications (`.mcrl2`), PBES (`.pbes`), and PRES (`.pres`).
 ## Current status
 
 - **Diagnostics** — syntax errors for all three document kinds, plus whole-specification type
-  errors (data, actions, processes, `init`) for `.mcrl2`. Communication sort-compatibility isn't
-  checked yet, so "no diagnostics" isn't a full well-typedness guarantee.
+  errors (data, actions, processes, `init`) for `.mcrl2` and (`glob`, propositional-variable
+  equations, `init`) for `.pbes`. Communication sort-compatibility isn't checked yet, so "no
+  diagnostics" isn't a full well-typedness guarantee. `.pres` documents stay parse-only — there is
+  no PRES type checker upstream yet.
 - **Document outline** (`textDocument/documentSymbol`) — for all three document kinds.
-- **Semantic tokens** — AST-driven highlighting for `.mcrl2` that resolves mCRL2's structural
-  ambiguities (e.g. `a(f)` as function application vs. action vs. process instantiation); not yet
-  scope-aware (a bound variable reads the same as a free one), and not yet implemented for
-  PBES/PRES.
-- **Hover** and **go-to-definition** — for `.mcrl2`, driven by the checked data specification's
-  typing info; currently limited to expression nodes inside `eqn` blocks and to identifiers with a
-  real declaration site (user-declared constructors/mappings).
+- **Semantic tokens** — AST-driven highlighting for `.mcrl2` and `.pbes` that resolves mCRL2's
+  structural ambiguities (e.g. `a(f)` as function application vs. action vs. process
+  instantiation); not yet scope-aware (a bound variable reads the same as a free one), and not yet
+  implemented for `.pres`.
+- **Hover** and **go-to-definition** — for `.mcrl2` and `.pbes`, driven by the checked
+  specification's typing info: mapping/constructor/action/process/propositional-variable uses, and
+  bound/global variables, each resolving to their declaration site. Requires the whole document to
+  currently type check (see `PLAN.md`); unavailable for `.pres`.
+- **Inlay hints** (`textDocument/inlayHint`) — for `.mcrl2` and `.pbes`: a `name:` prefix on a
+  call argument when the callee (a process, or a struct constructor) names that position, a
+  `: Sort` suffix otherwise (an action argument, a mapping argument, an equation's `eqn` LHS
+  pattern variable), covering process instantiations/action instances, PBES propositional-variable
+  instantiations, and `val(...)` expressions alike.
+- **Completion** (`textDocument/completion`) — for all three document kinds, including `.pres`
+  (it needs no type checker, see `PLAN.md`): every sort/constructor/mapping/action/process (or
+  propositional-variable equation)/variable the document declares, plus mCRL2's reserved keywords
+  and built-in sort names. Deliberately unscoped — a flat list, not real lexical scoping; an
+  editor's own fuzzy-match/prefix filtering narrows it down.
 
 See `PLAN.md` for the detailed, up-to-date list of finished and open work.
 
@@ -90,3 +103,10 @@ steps above) is the natural way to automate this; not set up yet in this repo.
 
 - `merc-lsp.serverPath` — explicit path to the `merc-lsp` executable, overriding auto-detection.
 - `merc-lsp.trace.server` — `off` / `messages` / `verbose`, LSP wire tracing for debugging.
+
+### Commands
+
+- **mCRL2: Restart Language Server** (`merc-lsp.restartServer`) — stops and relaunches the server
+  process without reloading the whole VS Code window. Useful after swapping in a rebuilt server
+  binary, or as manual recovery if the server ever stops responding (a genuine, reproducible bug
+  at that point, not a transient fault it retries around — see `PLAN.md`).
