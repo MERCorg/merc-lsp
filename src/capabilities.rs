@@ -1,5 +1,6 @@
 //! Builds the server's advertised [`ServerCapabilities`] in one place.
 
+use lsp_types::CompletionOptions;
 use lsp_types::HoverProviderCapability;
 use lsp_types::OneOf;
 use lsp_types::SemanticTokensFullOptions;
@@ -25,10 +26,15 @@ pub fn server_capabilities() -> ServerCapabilities {
                 ..SemanticTokensOptions::default()
             },
         )),
-        // Both built on the checked data specification's `TypingInfo` — see `hover`/
-        // `goto_definition`.
+        // All three built on the checked specification's whole-document `TypingInfo` — see
+        // `hover`/`goto_definition`/`inlay_hints`.
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
+        inlay_hint_provider: Some(OneOf::Left(true)),
+        // Unscoped (see `completion.rs`'s module docs), so no `resolve` step has anything extra
+        // to add and no `triggerCharacters` beyond identifier characters (which never need
+        // listing) makes sense.
+        completion_provider: Some(CompletionOptions::default()),
         ..ServerCapabilities::default()
     }
 }
