@@ -68,12 +68,21 @@ pub enum Specification {
 }
 
 impl Specification {
-    /// The process specification, if `self` is [`Specification::Process`] — every feature that
-    /// isn't parse-error diagnostics or document symbols is scoped to this kind only, for now.
+    /// The process specification, if `self` is [`Specification::Process`].
     pub fn as_process(&self) -> Option<&UntypedProcessSpecification> {
         match self {
             Specification::Process(spec) => Some(spec),
             Specification::Pbes(_) | Specification::Pres(_) => None,
+        }
+    }
+
+    /// As [`Self::as_process`], for [`Specification::Pbes`] — used the same way, by
+    /// [`crate::document::Document::parsed_pbes_specification`]'s struct-field-name lookup for
+    /// PBES inlay hints.
+    pub fn as_pbes(&self) -> Option<&UntypedPbes> {
+        match self {
+            Specification::Pbes(spec) => Some(spec),
+            Specification::Process(_) | Specification::Pres(_) => None,
         }
     }
 }
