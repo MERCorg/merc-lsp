@@ -12,15 +12,17 @@
 //!   parameter's name would just be noise).
 //! - A `: Sort` hint *after* an argument, whenever no name is available. Unlike the name hint,
 //!   this one is *not* shown for every unnamed position — only for a top-level call argument
-//!   (an action instance, or a process/PBES instantiation that doesn't resolve to a matching
-//!   declared name) and for an equation's own left-hand-side pattern variables (the closest thing
-//!   a `map` declaration has to named parameters). A plain function/equation application or an
-//!   infix/prefix operator found *inside* an argument — `a` and `l` inside `a |> l`, or `x` inside
-//!   `g(x)` used as an argument — never gets one: showing it there would just repeat what the
-//!   argument's own hint (or its declaration) already says. Nor does an infix/prefix operator
-//!   expression get one when it *is* the whole argument — `x |> l` used as a top-level action
-//!   argument shows no `: List(...)` after it either, since the operator's own operands already
-//!   make its shape visible; see [`push_hint`].
+//!   (a process/PBES instantiation that doesn't resolve to a matching declared name) and for an
+//!   equation's own left-hand-side pattern variables (the closest thing a `map` declaration has
+//!   to named parameters). Action arguments get no sort hint at all: an action never names its
+//!   arguments, and showing a sort suffix there would be noise that the declaration already
+//!   conveys. A plain function/equation application or an infix/prefix operator found *inside*
+//!   an argument — `a` and `l` inside `a |> l`, or `x` inside `g(x)` used as an argument —
+//!   never gets one either: showing it there would just repeat what the argument's own hint (or
+//!   its declaration) already says. Nor does an infix/prefix operator expression get one when it
+//!   *is* the whole argument — `x |> l` used as a top-level action argument shows no
+//!   `: List(...)` after it either, since the operator's own operands already make its shape
+//!   visible; see [`push_hint`].
 //!
 //! An equation's condition (`eqn ... = ... when b;`) is never hinted at all — `b` is a boolean
 //! guard, not a value worth annotating.
@@ -37,7 +39,7 @@
 //! [`emit_call_hints`] is the part shared by both trees: a process's `Action`/`Id` and a PBES's
 //! `PropVarInst` are the same "named callee, positional `DataExpr` arguments" shape one level
 //! down, so both feed it the same way, just with a different (spec-specific) parameter-name
-//! lookup — see [`process_param_names`]/[`propvarinst_param_names`].
+//! lookup — see [`resolved_process_param_names`]/[`propvarinst_param_names`].
 
 use std::ops::ControlFlow;
 
@@ -52,13 +54,14 @@ use merc_syntax::PbesExpr;
 use merc_syntax::PbesExprKind;
 use merc_syntax::ProcessExpr;
 use merc_syntax::ProcessExprKind;
-use merc_syntax::Span;
-use merc_syntax::SortExpression;
 use merc_syntax::SortDecl;
+use merc_syntax::SortExpression;
 use merc_syntax::SortExpressionKind;
+use merc_syntax::Span;
 use merc_syntax::Traverse;
 use merc_typecheck::PbesSpecification;
 use merc_typecheck::ProcessSpecification;
+use merc_typecheck::ResolvedName;
 use merc_typecheck::TypingInfo;
 
 use crate::convert::LineIndex;
@@ -67,7 +70,7 @@ use crate::convert::LineIndex;
 /// out four parameters just to pass them on. Deliberately holds neither a `ProcessSpecification`
 /// nor a `PbesSpecification` — the one piece that differs between [`inlay_hints`] and
 /// [`pbes_inlay_hints`] — so every helper here is shared by both; each entry point resolves a
-/// callee's parameter names itself (see [`process_param_names`]/[`propvarinst_param_names`])
+/// callee's parameter names itself (see [`resolved_process_param_names`]/[`propvarinst_param_names`])
 /// before handing the result to the shared [`emit_call_hints`]. `sort_declarations` is the *raw*,
 /// un-type-checked specification's own sort declarations — see
 /// [`crate::document::Document::parsed_process_specification`] for why struct field names have to
@@ -91,7 +94,13 @@ pub fn inlay_hints(
     typing_info: &TypingInfo,
     range: Range,
 ) -> Vec<InlayHint> {
-    let mut ctx = Ctx { text, line_index, sort_declarations, typing_info, hints: Vec::new() };
+    let mut ctx = Ctx {
+        text,
+        line_index,
+        sort_declarations,
+        typing_info,
+        hints: Vec::new(),
+    };
 
     for decl in spec.process_declarations() {
         walk_process_expr(&decl.body, spec, &mut ctx);
@@ -100,7 +109,11 @@ pub fn inlay_hints(
         walk_process_expr(init, spec, &mut ctx);
     }
 
-    for eqn_spec in &spec.data_specification().data_specification().equation_declarations {
+    for eqn_spec in &spec
+        .data_specification()
+        .data_specification()
+        .equation_declarations
+    {
         for eqn in &eqn_spec.node.equations {
             walk_applications(&eqn.lhs, &mut ctx);
             walk_struct_applications(&eqn.rhs, &mut ctx);
@@ -123,16 +136,32 @@ pub fn pbes_inlay_hints(
     typing_info: &TypingInfo,
     range: Range,
 ) -> Vec<InlayHint> {
-    let mut ctx = Ctx { text, line_index, sort_declarations, typing_info, hints: Vec::new() };
+    let mut ctx = Ctx {
+        text,
+        line_index,
+        sort_declarations,
+        typing_info,
+        hints: Vec::new(),
+    };
 
     for eqn in spec.equations() {
         walk_pbes_expr(&eqn.formula, spec, &mut ctx);
     }
     let init = spec.init();
-    let param_names = propvarinst_param_names(spec, &init.node.identifier, init.node.arguments.len());
-    emit_call_hints(&init.node.arguments, param_names.as_deref(), &mut ctx);
+    let param_names =
+        propvarinst_param_names(spec, &init.node.identifier, init.node.arguments.len());
+    emit_call_hints(
+        &init.node.arguments,
+        param_names.as_deref(),
+        false,
+        &mut ctx,
+    );
 
-    for eqn_spec in &spec.data_specification().data_specification().equation_declarations {
+    for eqn_spec in &spec
+        .data_specification()
+        .data_specification()
+        .equation_declarations
+    {
         for eqn in &eqn_spec.node.equations {
             walk_applications(&eqn.lhs, &mut ctx);
             walk_struct_applications(&eqn.rhs, &mut ctx);
@@ -150,8 +179,8 @@ fn walk_process_expr(expr: &ProcessExpr, spec: &ProcessSpecification, ctx: &mut 
     expr.visit::<(), _>(|node| {
         match &node.node {
             ProcessExprKind::Action(name, args) => {
-                let param_names = process_param_names(spec, &name.node, args.len());
-                emit_call_hints(args, param_names.as_deref(), ctx);
+                let param_names = resolved_process_param_names(spec, ctx, &name.span);
+                emit_call_hints(args, param_names.as_deref(), false, ctx);
             }
             ProcessExprKind::Id(_, assignments) => {
                 // The assignment's key (`n` in `P(n = x)`) is already an explicit name in the
@@ -161,7 +190,9 @@ fn walk_process_expr(expr: &ProcessExpr, spec: &ProcessSpecification, ctx: &mut 
                 }
             }
             ProcessExprKind::Dist { expr: weight, .. } => walk_struct_applications(weight, ctx),
-            ProcessExprKind::Condition { condition, .. } => walk_struct_applications(condition, ctx),
+            ProcessExprKind::Condition { condition, .. } => {
+                walk_struct_applications(condition, ctx)
+            }
             ProcessExprKind::At { operand, .. } => walk_struct_applications(operand, ctx),
             _ => {}
         }
@@ -178,8 +209,9 @@ fn walk_pbes_expr(expr: &PbesExpr, spec: &PbesSpecification, ctx: &mut Ctx) {
         match &node.node {
             PbesExprKind::DataValExpr(value) => walk_struct_applications(value, ctx),
             PbesExprKind::PropVarInst(inst) => {
-                let param_names = propvarinst_param_names(spec, &inst.node.identifier, inst.node.arguments.len());
-                emit_call_hints(&inst.node.arguments, param_names.as_deref(), ctx);
+                let param_names =
+                    propvarinst_param_names(spec, &inst.node.identifier, inst.node.arguments.len());
+                emit_call_hints(&inst.node.arguments, param_names.as_deref(), false, ctx);
             }
             _ => {}
         }
@@ -189,15 +221,27 @@ fn walk_pbes_expr(expr: &PbesExpr, spec: &PbesSpecification, ctx: &mut Ctx) {
 
 /// Hints `args`, the positional arguments of an action instance, process instantiation, or PBES
 /// propositional-variable instantiation: a `name: ` prefix per argument when `param_names` has a
-/// name for that position, otherwise a `: Sort` suffix (an action never names its arguments, nor
-/// does an instantiation of a variable/equation resolved without a matching arity). Then recurses
-/// into each argument for any nested struct application of its own — never for a nested sort
-/// suffix; see the module doc comment for why a call argument's own hint is the only `: Sort` an
-/// argument should get.
-fn emit_call_hints(args: &[DataExpr], param_names: Option<&[&str]>, ctx: &mut Ctx) {
+/// name for that position, otherwise a `: Sort` suffix (only when `allow_sort_suffix` is true;
+/// an action never names its arguments, nor does an instantiation of a variable/equation resolved
+/// without a matching arity). Then recurses into each argument for any nested struct application
+/// of its own — never for a nested sort suffix; see the module doc comment for why a call
+/// argument's own hint is the only `: Sort` an argument should get.
+fn emit_call_hints(
+    args: &[DataExpr],
+    param_names: Option<&[&str]>,
+    allow_sort_suffix: bool,
+    ctx: &mut Ctx,
+) {
     for (i, argument) in args.iter().enumerate() {
         let field_name = param_names.and_then(|names| names.get(i).copied());
-        push_hint(argument, field_name, sort_of(ctx.typing_info, &argument.span), ctx);
+        if field_name.is_some() || allow_sort_suffix {
+            push_hint(
+                argument,
+                field_name,
+                sort_of(ctx.typing_info, &argument.span),
+                ctx,
+            );
+        }
         walk_struct_applications(argument, ctx);
     }
 }
@@ -222,51 +266,100 @@ fn walk_struct_applications(expr: &DataExpr, ctx: &mut Ctx) {
 
 fn walk_applications_impl(expr: &DataExpr, allow_sort_suffix: bool, ctx: &mut Ctx) {
     expr.visit::<(), _>(|node| {
-        if let DataExprKind::Application { function, arguments } = &node.node {
+        if let DataExprKind::Application {
+            function,
+            arguments,
+        } = &node.node
+        {
             let callee = match &function.node {
                 DataExprKind::Id(name) => Some(name.as_str()),
                 DataExprKind::Resolved(name, _) => Some(name.as_str()),
                 _ => None,
             };
-            let field_names = callee.and_then(|name| struct_field_names(ctx.sort_declarations, name, arguments.len()));
+            let field_names = callee
+                .and_then(|name| struct_field_names(ctx.sort_declarations, name, arguments.len()));
             for (i, argument) in arguments.iter().enumerate() {
-                let field_name = field_names.as_ref().and_then(|names| names.get(i).copied().flatten());
+                let field_name = field_names
+                    .as_ref()
+                    .and_then(|names| names.get(i).copied().flatten());
                 if field_name.is_none() && !allow_sort_suffix {
                     continue;
                 }
-                push_hint(argument, field_name, sort_of(ctx.typing_info, &argument.span), ctx);
+                push_hint(
+                    argument,
+                    field_name,
+                    sort_of(ctx.typing_info, &argument.span),
+                    ctx,
+                );
             }
         }
         ControlFlow::Continue(())
     });
 }
 
-/// The parameter names of the `proc` declaration named `name` with exactly `arity` parameters, if
-/// one exists — `None` for an action (or anything else that isn't such a process), which falls
-/// back to the sort-only hint.
-fn process_param_names<'a>(spec: &'a ProcessSpecification, name: &str, arity: usize) -> Option<Vec<&'a str>> {
+/// The parameter names of the `proc` declaration that the `TypingInfo` resolved `name`'s span to —
+/// i.e. the single winning overload, not just any declaration sharing a name and arity. Resolving
+/// via the type checker's `ResolvedName::Process` declaration span is what lets an overloaded
+/// process (same name and parameter count, different parameter sorts) pick the declaration the
+/// checked call actually selected. `None` when `name`'s span resolves to no process (an action, or
+/// a process reference the checker didn't record — the checked call sites this skips anyway, so a
+/// `None` just falls back to the sort-only hint).
+fn resolved_process_param_names<'a>(
+    spec: &'a ProcessSpecification,
+    ctx: &Ctx,
+    callee_span: &Span,
+) -> Option<Vec<&'a str>> {
+    let decl_span = ctx.typing_info.nodes().iter().find_map(|node| {
+        if node.span.start == callee_span.start
+            && node.span.end == callee_span.end
+            && let Some(ResolvedName::Process { declaration, .. }) = &node.name
+        {
+            declaration.clone()
+        } else {
+            None
+        }
+    })?;
     spec.process_declarations()
         .iter()
-        .find(|decl| decl.identifier == name && decl.params.len() == arity)
-        .map(|decl| decl.params.iter().map(|param| param.identifier.as_str()).collect())
+        .find(|decl| decl.span == decl_span)
+        .map(|decl| {
+            decl.params
+                .iter()
+                .map(|param| param.identifier.as_str())
+                .collect()
+        })
 }
 
-/// As [`process_param_names`], for a PBES propositional-variable equation — the parameter names of
+/// As [`resolved_process_param_names`], for a PBES propositional-variable equation — the parameter names of
 /// the equation named `name` with exactly `arity` parameters, if one exists. `None` when `name`
 /// resolves to nothing with a matching arity (a free/global variable used where a `PropVarInst` is
 /// expected, or a genuinely undeclared name — either way, a checked specification wouldn't have
 /// accepted the document, so this is defensive rather than expected in practice).
-fn propvarinst_param_names<'a>(spec: &'a PbesSpecification, name: &str, arity: usize) -> Option<Vec<&'a str>> {
+fn propvarinst_param_names<'a>(
+    spec: &'a PbesSpecification,
+    name: &str,
+    arity: usize,
+) -> Option<Vec<&'a str>> {
     spec.equations()
         .iter()
         .find(|eqn| eqn.variable.identifier == name && eqn.variable.parameters.len() == arity)
-        .map(|eqn| eqn.variable.parameters.iter().map(|param| param.identifier.as_str()).collect())
+        .map(|eqn| {
+            eqn.variable
+                .parameters
+                .iter()
+                .map(|param| param.identifier.as_str())
+                .collect()
+        })
 }
 
 /// The field names of the struct constructor named `name` with exactly `arity` fields, if one is
 /// declared — each entry `None` for an unnamed field, which falls back to the sort-only hint for
 /// just that one argument (a struct can be partially named).
-fn struct_field_names<'a>(sort_declarations: &'a [SortDecl], name: &str, arity: usize) -> Option<Vec<Option<&'a str>>> {
+fn struct_field_names<'a>(
+    sort_declarations: &'a [SortDecl],
+    name: &str,
+    arity: usize,
+) -> Option<Vec<Option<&'a str>>> {
     sort_declarations.iter().find_map(|decl| {
         let SortExpressionKind::Struct { inner } = &decl.expr.as_ref()?.node else {
             return None;
@@ -274,7 +367,13 @@ fn struct_field_names<'a>(sort_declarations: &'a [SortDecl], name: &str, arity: 
         inner
             .iter()
             .find(|constructor| constructor.name.node == name && constructor.args.len() == arity)
-            .map(|constructor| constructor.args.iter().map(|(field, _)| field.as_ref().map(|spanned| spanned.node.as_str())).collect())
+            .map(|constructor| {
+                constructor
+                    .args
+                    .iter()
+                    .map(|(field, _)| field.as_ref().map(|spanned| spanned.node.as_str()))
+                    .collect()
+            })
     })
 }
 
@@ -298,22 +397,42 @@ fn sort_of<'a>(typing_info: &'a TypingInfo, span: &Span) -> Option<&'a SortExpre
 /// `argument` is itself an infix/prefix operator application (`x |> l`, `-x`) — its operands are
 /// already visible right there in the source, so appending the *result*'s sort on top would just
 /// be noise; a `name:` prefix is unaffected, since that names the argument, not its result.
-fn push_hint(argument: &DataExpr, field_name: Option<&str>, sort: Option<&SortExpression>, ctx: &mut Ctx) {
+fn push_hint(
+    argument: &DataExpr,
+    field_name: Option<&str>,
+    sort: Option<&SortExpression>,
+    ctx: &mut Ctx,
+) {
     let hint = match field_name {
         Some(name) => {
             if is_bare_reference_to(argument, name) {
                 return;
             }
             let position = ctx.line_index.position(ctx.text, argument.span.start);
-            build_hint(position, format!("{name}:"), InlayHintKind::PARAMETER, false, true)
+            build_hint(
+                position,
+                format!("{name}:"),
+                InlayHintKind::PARAMETER,
+                false,
+                true,
+            )
         }
         None => {
-            if matches!(argument.node, DataExprKind::Binary { .. } | DataExprKind::Unary { .. }) {
+            if matches!(
+                argument.node,
+                DataExprKind::Binary { .. } | DataExprKind::Unary { .. }
+            ) {
                 return;
             }
             let Some(sort) = sort else { return };
             let position = ctx.line_index.position(ctx.text, argument.span.end);
-            build_hint(position, format!(": {sort}"), InlayHintKind::TYPE, false, false)
+            build_hint(
+                position,
+                format!(": {sort}"),
+                InlayHintKind::TYPE,
+                false,
+                false,
+            )
         }
     };
     ctx.hints.push(hint);
@@ -328,7 +447,13 @@ fn is_bare_reference_to(argument: &DataExpr, name: &str) -> bool {
     }
 }
 
-fn build_hint(position: Position, label: String, kind: InlayHintKind, padding_left: bool, padding_right: bool) -> InlayHint {
+fn build_hint(
+    position: Position,
+    label: String,
+    kind: InlayHintKind,
+    padding_left: bool,
+    padding_right: bool,
+) -> InlayHint {
     InlayHint {
         position,
         label: InlayHintLabel::String(label),
@@ -372,15 +497,30 @@ mod tests {
         let mut checked = match typecheck(spec).await {
             TypecheckOutcome::Ok(checked) => checked,
             TypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
-            TypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+            TypecheckOutcome::Internal(message) => {
+                panic!("internal error typechecking fixture: {message}")
+            }
         };
         let line_index = LineIndex::new(text);
         let typing_info = checked.typing_info();
         let whole_document = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: u32::MAX, character: u32::MAX },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: u32::MAX,
+                character: u32::MAX,
+            },
         };
-        let hints = inlay_hints(text, &line_index, &checked, &sort_declarations, &typing_info, whole_document);
+        let hints = inlay_hints(
+            text,
+            &line_index,
+            &checked,
+            &sort_declarations,
+            &typing_info,
+            whole_document,
+        );
         (hints, line_index)
     }
 
@@ -393,15 +533,30 @@ mod tests {
         let mut checked = match typecheck_pbes(text.to_string()).await {
             PbesTypecheckOutcome::Ok(checked) => checked,
             PbesTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
-            PbesTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+            PbesTypecheckOutcome::Internal(message) => {
+                panic!("internal error typechecking fixture: {message}")
+            }
         };
         let line_index = LineIndex::new(text);
         let typing_info = checked.typing_info();
         let whole_document = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: u32::MAX, character: u32::MAX },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: u32::MAX,
+                character: u32::MAX,
+            },
         };
-        let hints = pbes_inlay_hints(text, &line_index, &checked, &sort_declarations, &typing_info, whole_document);
+        let hints = pbes_inlay_hints(
+            text,
+            &line_index,
+            &checked,
+            &sort_declarations,
+            &typing_info,
+            whole_document,
+        );
         (hints, line_index)
     }
 
@@ -419,21 +574,23 @@ mod tests {
         let text = "act a: List(Pos);\nproc P(x: Pos, l: List(Pos)) = a(x |> l);\ninit delta;";
         let (hints, _line_index) = hints_for(text).await;
 
-        assert!(hints.is_empty(), "did not expect any hint for an infix-operator argument, got {hints:?}");
+        assert!(
+            hints.is_empty(),
+            "did not expect any hint for an infix-operator argument, got {hints:?}"
+        );
     }
 
     #[tokio::test]
-    async fn action_argument_gets_a_type_suffix_hint() {
+    async fn action_argument_gets_no_type_suffix_hint() {
         let text = "act a: Nat;\nproc P(n: Nat) = a(n);\ninit P(1);";
         let (hints, line_index) = hints_for(text).await;
 
         let n_end = text.find("n);").unwrap() + 1;
-        let expected = line_index.position(text, n_end);
-        let hint = hints.iter().find(|h| h.position == expected).expect("expected a hint after 'n'");
-        assert_eq!(label(hint), ": Nat");
-        assert_eq!(hint.kind, Some(InlayHintKind::TYPE));
-        // No leading space: `a: Nat`, not `a : Nat`.
-        assert_eq!(hint.padding_left, Some(false));
+        let unwanted = line_index.position(text, n_end);
+        assert!(
+            hints.iter().all(|h| h.position != unwanted),
+            "did not expect a type suffix hint after an action argument"
+        );
     }
 
     #[tokio::test]
@@ -446,11 +603,17 @@ mod tests {
 
         let one_end = text.find("1))").unwrap() + 1;
         let unwanted = line_index.position(text, one_end);
-        assert!(hints.iter().all(|h| h.position != unwanted), "did not expect a hint after the nested '1'");
+        assert!(
+            hints.iter().all(|h| h.position != unwanted),
+            "did not expect a hint after the nested '1'"
+        );
 
         let g_start = text.find("g(1)").unwrap();
         let expected = line_index.position(text, g_start);
-        let hint = hints.iter().find(|h| h.position == expected).expect("expected a hint before 'g(1)'");
+        let hint = hints
+            .iter()
+            .find(|h| h.position == expected)
+            .expect("expected a hint before 'g(1)'");
         assert_eq!(label(hint), "n:");
     }
 
@@ -461,7 +624,10 @@ mod tests {
 
         let n_start = text.rfind('n').unwrap();
         let unwanted = line_index.position(text, n_start);
-        assert!(hints.iter().all(|h| h.position != unwanted), "did not expect a redundant 'n:' hint before 'n'");
+        assert!(
+            hints.iter().all(|h| h.position != unwanted),
+            "did not expect a redundant 'n:' hint before 'n'"
+        );
     }
 
     #[tokio::test]
@@ -478,22 +644,32 @@ mod tests {
 
         let lhs_x_end = text.find("f(x)").unwrap() + 3;
         let expected = line_index.position(text, lhs_x_end);
-        let hint = hints.iter().find(|h| h.position == expected).expect("expected a hint after the LHS 'x'");
+        let hint = hints
+            .iter()
+            .find(|h| h.position == expected)
+            .expect("expected a hint after the LHS 'x'");
         assert_eq!(label(hint), ": D");
     }
 
     #[tokio::test]
     async fn equation_rhs_application_argument_gets_no_sort_hint() {
-        let text = "sort D;\nmap f: D -> D;\nmap g: D -> D;\nvar x: D;\neqn f(x) = g(x);\ninit delta;";
+        let text =
+            "sort D;\nmap f: D -> D;\nmap g: D -> D;\nvar x: D;\neqn f(x) = g(x);\ninit delta;";
         let (hints, line_index) = hints_for(text).await;
 
         let rhs_x_end = text.find("g(x)").unwrap() + 3;
         let unwanted = line_index.position(text, rhs_x_end);
-        assert!(hints.iter().all(|h| h.position != unwanted), "did not expect a hint after the RHS 'x'");
+        assert!(
+            hints.iter().all(|h| h.position != unwanted),
+            "did not expect a hint after the RHS 'x'"
+        );
 
         let lhs_x_end = text.find("f(x)").unwrap() + 3;
         let expected = line_index.position(text, lhs_x_end);
-        let hint = hints.iter().find(|h| h.position == expected).expect("expected a hint after the LHS 'x'");
+        let hint = hints
+            .iter()
+            .find(|h| h.position == expected)
+            .expect("expected a hint after the LHS 'x'");
         assert_eq!(label(hint), ": D");
     }
 
@@ -504,8 +680,30 @@ mod tests {
 
         let one_start = text.rfind('1').unwrap();
         let expected = line_index.position(text, one_start);
-        let hint = hints.iter().find(|h| h.position == expected).expect("expected a hint before '1'");
+        let hint = hints
+            .iter()
+            .find(|h| h.position == expected)
+            .expect("expected a hint before '1'");
         assert_eq!(label(hint), "n:");
+        assert_eq!(hint.kind, Some(InlayHintKind::PARAMETER));
+    }
+
+    #[tokio::test]
+    async fn overloaded_process_argument_hints_the_resolved_overload() {
+        // `P(what)` picks the second `P`, whose parameter is named `y` — not the first `P`, which
+        // only shares the name and arity but takes an `S` instead of a `T`. The hint must name the
+        // overload the type checker actually resolved (`y:`), not the first matching declaration
+        // (`x:`).
+        let text = "sort S = struct test;\nsort T = struct what;\nact a;\nproc P(x: S) = a;\nproc P(y: T) = delta;\ninit P(what);";
+        let (hints, line_index) = hints_for(text).await;
+
+        let what_start = text.rfind("what").unwrap();
+        let expected = line_index.position(text, what_start);
+        let hint = hints
+            .iter()
+            .find(|h| h.position == expected)
+            .expect("expected a hint before 'what'");
+        assert_eq!(label(hint), "y:");
         assert_eq!(hint.kind, Some(InlayHintKind::PARAMETER));
     }
 
@@ -516,7 +714,10 @@ mod tests {
 
         let five_start = text.find('5').unwrap();
         let expected = line_index.position(text, five_start);
-        let hint = hints.iter().find(|h| h.position == expected).expect("expected a hint before '5'");
+        let hint = hints
+            .iter()
+            .find(|h| h.position == expected)
+            .expect("expected a hint before '5'");
         assert_eq!(label(hint), "n:");
         assert_eq!(hint.kind, Some(InlayHintKind::PARAMETER));
     }
@@ -528,7 +729,10 @@ mod tests {
 
         let x_end = text.find("x) = x;").unwrap() + 1;
         let expected = line_index.position(text, x_end);
-        let hint = hints.iter().find(|h| h.position == expected).expect("expected a hint after the LHS 'x'");
+        let hint = hints
+            .iter()
+            .find(|h| h.position == expected)
+            .expect("expected a hint after the LHS 'x'");
         assert_eq!(label(hint), ": D");
         assert_eq!(hint.kind, Some(InlayHintKind::TYPE));
     }
@@ -540,21 +744,27 @@ mod tests {
 
         let one_start = text.rfind('1').unwrap();
         let expected = line_index.position(text, one_start);
-        let hint = hints.iter().find(|h| h.position == expected).expect("expected a hint before the init argument '1'");
+        let hint = hints
+            .iter()
+            .find(|h| h.position == expected)
+            .expect("expected a hint before the init argument '1'");
         assert_eq!(label(hint), "n:");
         assert_eq!(hint.kind, Some(InlayHintKind::PARAMETER));
     }
 
     #[tokio::test]
     async fn val_expression_argument_gets_hinted_like_a_data_expression() {
-        let text = "sort S = struct s(n: Nat);\nmap f: S -> Bool;\npbes mu X = val(f(s(5)));\ninit X;";
+        let text =
+            "sort S = struct s(n: Nat);\nmap f: S -> Bool;\npbes mu X = val(f(s(5)));\ninit X;";
         let (hints, line_index) = pbes_hints_for(text).await;
 
         let five_start = text.find('5').unwrap();
         let expected = line_index.position(text, five_start);
-        let hint = hints.iter().find(|h| h.position == expected).expect("expected a hint before '5' inside val(...)");
+        let hint = hints
+            .iter()
+            .find(|h| h.position == expected)
+            .expect("expected a hint before '5' inside val(...)");
         assert_eq!(label(hint), "n:");
         assert_eq!(hint.kind, Some(InlayHintKind::PARAMETER));
     }
-
 }

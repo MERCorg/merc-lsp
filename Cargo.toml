@@ -28,9 +28,3 @@ env_logger = "0.11"
 tokio = { version = "1.53", features = ["io-util", "time"] }
 serde_json = "1.0"
 indoc = "2.0"
-
-# temporary patch to the forked branch with LSP support.
-[patch."https://github.com/MERCorg/merc"]
-merc_syntax = { git = "https://github.com/mlaveaux/merc", rev = "1579368af54c9899dcbc12c7be2aa337e245f8cf" }
-merc_typecheck = { git = "https://github.com/mlaveaux/merc", rev = "1579368af54c9899dcbc12c7be2aa337e245f8cf" }
-merc_utilities = { git = "https://github.com/mlaveaux/merc", rev = "1579368af54c9899dcbc12c7be2aa337e245f8cf" }

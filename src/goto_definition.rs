@@ -9,8 +9,8 @@
 //! symbol declared only on the system-defined specification has no declaration site
 //! `merc_typecheck` exposes at all, so those resolve to `None` rather than a location — same as a
 //! binder with no real span of its own (`declaration: None`; see `ResolvedName`'s doc comment
-//! upstream). Shares [`crate::hover`]'s offset→[`TypedNode`] lookup and its scoping caveat: a
-//! checked specification is only available once the whole process specification type checks.
+//! upstream). Shares [`crate::hover`]'s scoping caveat: a checked specification is only available
+//! once the whole process specification type checks.
 
 use lsp_types::Position;
 use lsp_types::Range;
@@ -18,12 +18,11 @@ use merc_typecheck::ResolvedName;
 use merc_typecheck::TypingInfo;
 
 use crate::convert::LineIndex;
-use crate::hover::typed_node_at;
 
 /// The declaration range for the identifier at `position`, if it resolves to one.
 pub fn definition_range(text: &str, line_index: &LineIndex, typing_info: &TypingInfo, position: Position) -> Option<Range> {
     let offset = line_index.offset(text, position)?;
-    let node = typed_node_at(typing_info, offset)?;
+    let node = typing_info.at_offset(offset)?;
 
     let declaration = match &node.name {
         Some(ResolvedName::Constructor { declaration, .. })

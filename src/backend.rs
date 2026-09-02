@@ -214,11 +214,14 @@ fn hover_request(documents: &DocumentStore, params: HoverParams) -> Option<Hover
     let mut document = documents.get_mut(uri)?;
     let typing_info = document.typing_info()?;
     let actions = document.checked_process_specification().map_or(&[][..], ProcessSpecification::action_declarations);
+    let processes = document.checked_process_specification().map_or(&[][..], ProcessSpecification::process_declarations);
     hover::hover(
         &document.text,
         &document.line_index,
         &typing_info,
         actions,
+        processes,
+        Some(uri),
         params.text_document_position_params.position,
     )
 }

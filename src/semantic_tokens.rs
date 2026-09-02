@@ -748,6 +748,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_branch_of_a_guarded_choice_chain_is_tagged_not_just_the_last() {
+        // Regression test: `x -> (...)`'s condition slot is a `DataExpr` in the grammar, and
+        // `pest`'s greedy `ProcExprPrefix*` repetition used to let it swallow the parenthesized
+        // "then" branch (and beyond) as nested data-expression structure — `.` read as list
+        // indexing, `+` as addition — until it opportunistically found a later `->` to complete a
+        // bogus second `Condition`. Only the chain's last branch ended up parsed (and therefore
+        // tagged) as real process-algebra structure; every earlier branch's `e`/`P` calls and `x`
+        // condition read as generic data-expression tokens instead of `Event`/`Method`/`Parameter`.
+        // `crate::parse::parse` now runs `reparse_process_specification` on every parsed process
+        // specification before handing it to any consumer, which reconstructs the intended
+        // structure from the declared action/process names alone — this checks every branch, not
+        // just the last one, gets the right token kind.
+        let text = "act e: Bool;\nproc P(x: Bool) =\n  x -> (e(x).P(x)) +\n  x -> (e(x).P(x));\ninit P(true);";
+        let tokens = tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let kind_at = |offset: usize| -> Option<u32> {
+            let pos = line_index.position(text, offset);
+            positions
+                .iter()
+                .find(|&&(l, c, ..)| l == pos.line && c == pos.character)
+                .map(|&(.., ty, _)| ty)
+        };
+
+        // Both branches' conditions, action calls, and recursive process calls — not only the
+        // last branch's.
+        let mut x_offsets = text.match_indices('x').map(|(i, _)| i);
+        x_offsets.next(); // skip the parameter declaration `P(x: Bool)`
+        let condition_offsets: Vec<usize> = [x_offsets.next().unwrap(), x_offsets.nth(2).unwrap()].to_vec();
+        for offset in condition_offsets {
+            assert_eq!(kind_at(offset), Some(TokenKind::Parameter as u32), "condition `x` at byte {offset} should be tagged Parameter");
+        }
+
+        let event_offsets: Vec<usize> = text.match_indices("e(x)").map(|(i, _)| i).collect();
+        assert_eq!(event_offsets.len(), 2, "fixture should contain exactly two `e(x)` calls");
+        for offset in event_offsets {
+            assert_eq!(kind_at(offset), Some(TokenKind::Event as u32), "`e` at byte {offset} should be tagged Event");
+        }
+
+        let method_offsets: Vec<usize> = text.match_indices("P(x)").map(|(i, _)| i).collect();
+        assert_eq!(method_offsets.len(), 2, "fixture should contain exactly two `P(x)` calls");
+        for offset in method_offsets {
+            assert_eq!(kind_at(offset), Some(TokenKind::Method as u32), "`P` at byte {offset} should be tagged Method");
+        }
+    }
+
+    #[tokio::test]
     async fn classifies_bare_identifiers_by_declaring_block() {
         // `c` (a constructor) and `x` (a variable) are indistinguishable from source text alone.
         let text = "sort D;\ncons c: D;\nmap f: D -> Bool;\nvar x: D;\neqn f(x) = f(c);";
