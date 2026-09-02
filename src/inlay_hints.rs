@@ -1,6 +1,6 @@
 //! `textDocument/inlayHint`: shows the name or sort of every call-argument expression (action
 //! instance, process instantiation, PBES/PRES propositional-variable instantiation, structured-sort
-//! constructor application) and every equation-LHS pattern variable.
+//! constructor application).
 //!
 //! Two kinds of hint, each restricted to where it's actually informative:
 //!
@@ -12,17 +12,17 @@
 //!   parameter's name would just be noise).
 //! - A `: Sort` hint *after* an argument, whenever no name is available. Unlike the name hint,
 //!   this one is *not* shown for every unnamed position — only for a top-level call argument
-//!   (a process/PBES instantiation that doesn't resolve to a matching declared name) and for an
-//!   equation's own left-hand-side pattern variables (the closest thing a `map` declaration has
-//!   to named parameters). Action arguments get no sort hint at all: an action never names its
-//!   arguments, and showing a sort suffix there would be noise that the declaration already
-//!   conveys. A plain function/equation application or an infix/prefix operator found *inside*
-//!   an argument — `a` and `l` inside `a |> l`, or `x` inside `g(x)` used as an argument —
-//!   never gets one either: showing it there would just repeat what the argument's own hint (or
-//!   its declaration) already says. Nor does an infix/prefix operator expression get one when it
-//!   *is* the whole argument — `x |> l` used as a top-level action argument shows no
-//!   `: List(...)` after it either, since the operator's own operands already make its shape
-//!   visible; see [`push_hint`].
+//!   (a process/PBES instantiation that doesn't resolve to a matching declared name). Action
+//!   arguments get no sort hint at all: an action never names its arguments, and showing a sort
+//!   suffix there would be noise that the declaration already conveys. Nor does an equation's own
+//!   left-hand-side pattern variable (`x` in `eqn f(x) = ...;`) get one — its sort is already a
+//!   click away on hover, and repeating it on every equation would just be clutter. A plain
+//!   function/equation application or an infix/prefix operator found *inside* an argument — `a`
+//!   and `l` inside `a |> l`, or `x` inside `g(x)` used as an argument — never gets one either:
+//!   showing it there would just repeat what the argument's own hint (or its declaration) already
+//!   says. Nor does an infix/prefix operator expression get one when it *is* the whole argument —
+//!   `x |> l` used as a top-level action argument shows no `: List(...)` after it either, since
+//!   the operator's own operands already make its shape visible; see [`push_hint`].
 //!
 //! An equation's condition (`eqn ... = ... when b;`) is never hinted at all — `b` is a boolean
 //! guard, not a value worth annotating.
@@ -31,11 +31,10 @@
 //! doesn't descend into the `DataExpr`s inside its actions/conditions/`dist` weights/`val(...)`
 //! expressions — see `symbols.rs`'s module doc comment), so [`inlay_hints`]/[`pbes_inlay_hints`]
 //! each walk their own tree by hand for its `DataExpr`-bearing fields, then hand each one to
-//! [`walk_applications`] or [`walk_struct_applications`], both of which *do* use `Traverse`
-//! (`DataExpr` recurses fully into itself) to find every nested application within it, including
-//! the field's own top level. [`walk_applications`] allows the `: Sort` fallback and is used only
-//! for an equation's LHS pattern; [`walk_struct_applications`] never falls back to `: Sort` and is
-//! used everywhere else a `DataExpr` subtree needs searching for nested struct constructors.
+//! [`walk_struct_applications`], which *does* use `Traverse` (`DataExpr` recurses fully into
+//! itself) to find every nested struct-constructor application within it, including the field's
+//! own top level — an equation's LHS pattern is walked the same way as everywhere else. Its
+//! arguments are never sort-suffixed; see the module doc comment above and [`push_hint`].
 //! [`emit_call_hints`] is the part shared by both trees: a process's `Action`/`Id` and a PBES's
 //! `PropVarInst` are the same "named callee, positional `DataExpr` arguments" shape one level
 //! down, so both feed it the same way, just with a different (spec-specific) parameter-name
@@ -115,7 +114,7 @@ pub fn inlay_hints(
         .equation_declarations
     {
         for eqn in &eqn_spec.node.equations {
-            walk_applications(&eqn.lhs, &mut ctx);
+            walk_struct_applications(&eqn.lhs, &mut ctx);
             walk_struct_applications(&eqn.rhs, &mut ctx);
             // The condition (`when b`) is a boolean guard, not a value — never hinted.
         }
@@ -163,7 +162,7 @@ pub fn pbes_inlay_hints(
         .equation_declarations
     {
         for eqn in &eqn_spec.node.equations {
-            walk_applications(&eqn.lhs, &mut ctx);
+            walk_struct_applications(&eqn.lhs, &mut ctx);
             walk_struct_applications(&eqn.rhs, &mut ctx);
             // The condition (`when b`) is a boolean guard, not a value — never hinted.
         }
@@ -246,25 +245,13 @@ fn emit_call_hints(
     }
 }
 
-/// As [`walk_struct_applications`], but additionally falls back to a `: Sort` suffix for an
-/// argument whose applied function isn't a struct constructor — appropriate only for an
-/// equation's own LHS pattern, `f(x)` in `eqn f(x) = ...;`: a `map` declaration has nowhere else
-/// to name its parameters, so this is the one place a plain function application's argument
-/// deserves a sort hint. Every other caller uses [`walk_struct_applications`] instead.
-fn walk_applications(expr: &DataExpr, ctx: &mut Ctx) {
-    walk_applications_impl(expr, true, ctx);
-}
-
 /// Finds every struct-constructor application anywhere in `expr`'s subtree (including `expr`
 /// itself) and hints its arguments with a `name: ` prefix per named field. A plain (non-struct)
-/// application's arguments are left alone — no hint at all — since outside an equation's own LHS
-/// pattern there's nothing to say about them that their own declaration doesn't already say (see
-/// the module doc comment).
+/// application's arguments are left alone — no hint at all — since there's nothing to say about
+/// them that their own declaration doesn't already say (see the module doc comment). This is used
+/// for an equation's own LHS pattern too: a plain function application there gets no `: Sort`
+/// hint either — its sort is a hover away, and one on every equation would be clutter.
 fn walk_struct_applications(expr: &DataExpr, ctx: &mut Ctx) {
-    walk_applications_impl(expr, false, ctx);
-}
-
-fn walk_applications_impl(expr: &DataExpr, allow_sort_suffix: bool, ctx: &mut Ctx) {
     expr.visit::<(), _>(|node| {
         if let DataExprKind::Application {
             function,
@@ -282,12 +269,12 @@ fn walk_applications_impl(expr: &DataExpr, allow_sort_suffix: bool, ctx: &mut Ct
                 let field_name = field_names
                     .as_ref()
                     .and_then(|names| names.get(i).copied().flatten());
-                if field_name.is_none() && !allow_sort_suffix {
+                let Some(field_name) = field_name else {
                     continue;
-                }
+                };
                 push_hint(
                     argument,
-                    field_name,
+                    Some(field_name),
                     sort_of(ctx.typing_info, &argument.span),
                     ctx,
                 );
@@ -633,44 +620,24 @@ mod tests {
     #[tokio::test]
     async fn equation_condition_gets_no_hint() {
         let text = "sort D;\nmap f: D -> D;\nmap p: D -> Bool;\nvar x: D;\neqn p(x) -> f(x) = x;\ninit delta;";
-        let (hints, line_index) = hints_for(text).await;
+        let (hints, _line_index) = hints_for(text).await;
 
-        let condition_x_end = text.find("p(x)").unwrap() + 3;
-        let unwanted = line_index.position(text, condition_x_end);
         assert!(
-            hints.iter().all(|h| h.position != unwanted),
-            "did not expect a hint after the condition's 'x'"
+            hints.is_empty(),
+            "did not expect any hint, got {hints:?}"
         );
-
-        let lhs_x_end = text.find("f(x)").unwrap() + 3;
-        let expected = line_index.position(text, lhs_x_end);
-        let hint = hints
-            .iter()
-            .find(|h| h.position == expected)
-            .expect("expected a hint after the LHS 'x'");
-        assert_eq!(label(hint), ": D");
     }
 
     #[tokio::test]
     async fn equation_rhs_application_argument_gets_no_sort_hint() {
         let text =
             "sort D;\nmap f: D -> D;\nmap g: D -> D;\nvar x: D;\neqn f(x) = g(x);\ninit delta;";
-        let (hints, line_index) = hints_for(text).await;
+        let (hints, _line_index) = hints_for(text).await;
 
-        let rhs_x_end = text.find("g(x)").unwrap() + 3;
-        let unwanted = line_index.position(text, rhs_x_end);
         assert!(
-            hints.iter().all(|h| h.position != unwanted),
-            "did not expect a hint after the RHS 'x'"
+            hints.is_empty(),
+            "did not expect any hint, got {hints:?}"
         );
-
-        let lhs_x_end = text.find("f(x)").unwrap() + 3;
-        let expected = line_index.position(text, lhs_x_end);
-        let hint = hints
-            .iter()
-            .find(|h| h.position == expected)
-            .expect("expected a hint after the LHS 'x'");
-        assert_eq!(label(hint), ": D");
     }
 
     #[tokio::test]
@@ -723,18 +690,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn equation_lhs_pattern_variable_gets_a_type_suffix_hint() {
+    async fn equation_lhs_pattern_variable_gets_no_type_suffix_hint() {
         let text = "sort D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = x;\ninit delta;";
+        let (hints, _line_index) = hints_for(text).await;
+
+        assert!(
+            hints.is_empty(),
+            "did not expect any hint, got {hints:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn equation_lhs_struct_pattern_argument_still_gets_a_name_prefix_hint() {
+        let text = "sort S = struct s(n: Nat);\nmap f: S -> S;\nvar y: Nat;\neqn f(s(y)) = s(y);\ninit delta;";
         let (hints, line_index) = hints_for(text).await;
 
-        let x_end = text.find("x) = x;").unwrap() + 1;
-        let expected = line_index.position(text, x_end);
+        let lhs_y_start = text.find("s(y))").unwrap() + 2;
+        let expected = line_index.position(text, lhs_y_start);
         let hint = hints
             .iter()
             .find(|h| h.position == expected)
-            .expect("expected a hint after the LHS 'x'");
-        assert_eq!(label(hint), ": D");
-        assert_eq!(hint.kind, Some(InlayHintKind::TYPE));
+            .expect("expected a hint before the LHS struct argument 'y'");
+        assert_eq!(label(hint), "n:");
+        assert_eq!(hint.kind, Some(InlayHintKind::PARAMETER));
     }
 
     #[tokio::test]
