@@ -19,6 +19,12 @@
 	},
 	"main": "./out/extension.js",
 	"contributes": {
+		"commands": [
+			{
+				"command": "merc-lsp.restartServer",
+				"title": "mCRL2: Restart Language Server"
+			}
+		],
 		"languages": [
 			{
 				"id": "mcrl2",

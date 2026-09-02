@@ -1,14 +1,16 @@
-//! A panic-safe, off-executor wrapper around `merc_syntax`'s parse entry points.
+//! An off-executor wrapper around `merc_syntax`'s parse entry points.
 //!
-//! `merc_syntax`'s AST-building layer (the code that runs *after* pest's own grammar match
-//! succeeds) contains `unwrap`/`expect`/`unreachable!` sites that can in principle panic on a
-//! malformed-but-grammatically-valid input. Since this server is a long-running process talking
-//! over stdio, a panic on the async task handling a request must not be allowed to take the
-//! whole server down; it also must not deadlock any lock the panicking task happened to be
-//! holding.
-//!
-//! Parsing is also synchronous and CPU-bound, so it is dispatched onto a blocking thread rather
-//! than run inline on the async runtime.
+//! Parsing is synchronous and CPU-bound, so it is dispatched onto a blocking thread rather than
+//! run inline on the async runtime, keeping a large or pathological input from stalling other
+//! documents' requests. No panic guard around the parse itself: `merc_syntax`'s AST-building layer
+//! used to carry `unwrap`/`expect`/`unreachable!` sites reachable from a malformed-but-
+//! grammatically-valid input, which this module used to catch with `catch_unwind` so a parser bug
+//! degraded to an "internal error" diagnostic instead of taking a request down; that class of bug
+//! is fixed upstream now, so a panic here is a genuine, reproducible bug in this server, not
+//! something a client retry (or a user re-typing the same input) can route around — see
+//! `ParseOutcome::Internal`'s doc comment for what still happens if one occurs anyway, and
+//! `vscode-client`'s `merc-lsp.restartServer` command for recovering the running server without
+//! reloading the whole editor window.
 //!
 //! Three document kinds are supported ([`SpecKind`]): plain mCRL2 process specifications, PBES
 //! (parameterised boolean equation systems), and PRES (parameterised real equation systems). The
@@ -19,8 +21,6 @@
 //! errors on a genuinely broken file misleading (which grammar's error should be shown?).
 //! Type checking, hover, and go-to-definition are not extended to PBES/PRES yet: `merc_typecheck`
 //! only exposes `ProcessSpecification`, nothing for `UntypedPbes`/`UntypedPres` — see `PLAN.md`.
-
-use std::panic::AssertUnwindSafe;
 
 use lsp_types::Url;
 use merc_syntax::UntypedPbes;
@@ -79,58 +79,40 @@ impl Specification {
 }
 
 /// The result of attempting to parse a document: either the AST, a normal parse error, or an
-/// internal error (a panic in the AST-building layer).
+/// internal error.
 pub enum ParseOutcome {
     Ok(Specification),
     ParseError(MercError),
-    /// The parser panicked while building the AST. Carries a message suitable for a diagnostic;
-    /// the panic itself has already been caught and logged.
+    /// The blocking task doing the parse didn't complete — it panicked (a genuine bug; see this
+    /// module's doc comment) or the runtime is shutting down. Carries a message suitable for a
+    /// diagnostic. `tokio::task::spawn_blocking` isolates the panic to that one task: it does not
+    /// take the rest of the server down, so this document just goes quiet (this diagnostic, no
+    /// hover/goto-def/inlay-hints on it) rather than the whole connection dying.
     Internal(String),
 }
 
-/// Parses `text` as `kind`, off the async executor and guarded against panics.
+/// Parses `text` as `kind`, off the async executor.
 ///
 /// Takes `text` by value (rather than borrowing) because the work is moved onto a blocking
-/// thread via [`tokio::task::spawn_blocking`], which requires a `'static` closure.
+/// thread via [`tokio::task::spawn_blocking`], which requires a `'static` closure. Also gets
+/// parsing off the runtime's async worker threads, so a large or pathological input can't stall
+/// other documents' requests.
 pub async fn parse(kind: SpecKind, text: String) -> ParseOutcome {
-    // `spawn_blocking` also gets parsing off the runtime's async worker threads, so a large or
-    // pathological input can't stall other documents' requests.
-    match tokio::task::spawn_blocking(move || parse_catching_panics(kind, &text)).await {
-        Ok(outcome) => outcome,
-        Err(join_error) => {
-            // The blocking task itself panicked in a way `catch_unwind` below didn't intercept
-            // (e.g. it was cancelled), or the runtime is shutting down.
-            log::error!("parse task failed to join: {join_error}");
-            ParseOutcome::Internal("internal error: parser task did not complete".to_string())
-        }
-    }
-}
-
-fn parse_catching_panics(kind: SpecKind, text: &str) -> ParseOutcome {
-    let result = std::panic::catch_unwind(AssertUnwindSafe(|| match kind {
-        SpecKind::Process => UntypedProcessSpecification::parse(text).map(|spec| Specification::Process(Box::new(spec))),
-        SpecKind::Pbes => UntypedPbes::parse(text).map(|spec| Specification::Pbes(Box::new(spec))),
-        SpecKind::Pres => UntypedPres::parse(text).map(|spec| Specification::Pres(Box::new(spec))),
-    }));
-    match result {
+    let outcome = match kind {
+        SpecKind::Process => tokio::task::spawn_blocking(move || {
+            UntypedProcessSpecification::parse(&text).map(|spec| Specification::Process(Box::new(spec)))
+        })
+        .await,
+        SpecKind::Pbes => tokio::task::spawn_blocking(move || UntypedPbes::parse(&text).map(|spec| Specification::Pbes(Box::new(spec)))).await,
+        SpecKind::Pres => tokio::task::spawn_blocking(move || UntypedPres::parse(&text).map(|spec| Specification::Pres(Box::new(spec)))).await,
+    };
+    match outcome {
         Ok(Ok(spec)) => ParseOutcome::Ok(spec),
         Ok(Err(error)) => ParseOutcome::ParseError(error),
-        Err(panic) => {
-            let message = panic_message(&panic);
-            log::error!("panic while parsing document: {message}");
-            ParseOutcome::Internal(format!("internal parser error: {message}"))
+        Err(join_error) => {
+            log::error!("parse task failed to join: {join_error}");
+            ParseOutcome::Internal(format!("internal error: parser task did not complete ({join_error})"))
         }
-    }
-}
-
-/// Best-effort extraction of a human-readable message from a caught panic payload.
-pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
-    if let Some(message) = panic.downcast_ref::<&str>() {
-        message.to_string()
-    } else if let Some(message) = panic.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        "unknown panic".to_string()
     }
 }
 
