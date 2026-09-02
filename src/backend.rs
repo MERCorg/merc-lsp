@@ -10,6 +10,8 @@ use std::sync::Arc;
 
 use async_lsp::ClientSocket;
 use async_lsp::router::Router;
+use lsp_types::CompletionParams;
+use lsp_types::CompletionResponse;
 use lsp_types::Diagnostic;
 use lsp_types::DocumentSymbolParams;
 use lsp_types::DocumentSymbolResponse;
@@ -18,6 +20,8 @@ use lsp_types::GotoDefinitionResponse;
 use lsp_types::Hover;
 use lsp_types::HoverParams;
 use lsp_types::InitializeResult;
+use lsp_types::InlayHint;
+use lsp_types::InlayHintParams;
 use lsp_types::Location;
 use lsp_types::LogMessageParams;
 use lsp_types::MessageType;
@@ -31,10 +35,13 @@ use lsp_types::notification;
 use lsp_types::request;
 
 use crate::capabilities::server_capabilities;
+use crate::completion;
+use crate::document::CheckedOutcome;
 use crate::document::Document;
 use crate::document::DocumentStore;
 use crate::goto_definition;
 use crate::hover;
+use crate::inlay_hints;
 use crate::parse;
 use crate::parse::ParseOutcome;
 use crate::parse::SpecKind;
@@ -93,6 +100,14 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         .request::<request::GotoDefinition, _>(|state, params| {
             let documents = state.documents.clone();
             async move { Ok(goto_definition_request(&documents, params)) }
+        })
+        .request::<request::InlayHintRequest, _>(|state, params| {
+            let documents = state.documents.clone();
+            async move { Ok(inlay_hint_request(&documents, params)) }
+        })
+        .request::<request::Completion, _>(|state, params| {
+            let documents = state.documents.clone();
+            async move { Ok(completion_request(&documents, params)) }
         })
         .notification::<notification::Initialized>(|state, _| {
             if let Err(error) = state.client.notify::<notification::LogMessage>(LogMessageParams {
@@ -157,33 +172,65 @@ fn document_symbol(documents: &DocumentStore, params: DocumentSymbolParams) -> O
     Some(DocumentSymbolResponse::Nested(symbols))
 }
 
-fn semantic_tokens_full(documents: &DocumentStore, params: SemanticTokensParams) -> Option<SemanticTokensResult> {
-    let document = documents.get(&params.text_document.uri)?;
-    // No parse, no tokens, so nothing to report. Also nothing yet for PBES/PRES (see
-    // `parse::SpecKind`'s docs) — semantic tokens stay mCRL2-only for now.
+fn completion_request(documents: &DocumentStore, params: CompletionParams) -> Option<CompletionResponse> {
+    let document = documents.get(&params.text_document_position.text_document.uri)?;
+    // Same "no parse, nothing to offer" rule as `document_symbol`/`semantic_tokens_full` — but,
+    // unlike semantic tokens, PRES gets its own pass too here: completion works off the raw parse,
+    // not a checked specification, so PRES having no type checker upstream doesn't block it (see
+    // `completion.rs`'s module docs).
     let ParseOutcome::Ok(spec) = &document.parsed else {
         return None;
     };
-    let spec = spec.as_process()?;
+    let items = match spec {
+        Specification::Process(spec) => completion::completions(spec),
+        Specification::Pbes(spec) => completion::pbes_completions(spec),
+        Specification::Pres(spec) => completion::pres_completions(spec),
+    };
+    Some(CompletionResponse::Array(items))
+}
 
-    let data = semantic_tokens::semantic_tokens(&document.text, &document.line_index, spec);
+fn semantic_tokens_full(documents: &DocumentStore, params: SemanticTokensParams) -> Option<SemanticTokensResult> {
+    let document = documents.get(&params.text_document.uri)?;
+    // No parse, no tokens, so nothing to report. Nothing yet for PRES specifically (see
+    // `parse::SpecKind`'s docs) — process specifications and PBES both have their own pass below.
+    let ParseOutcome::Ok(spec) = &document.parsed else {
+        return None;
+    };
+    let data = match spec {
+        Specification::Process(spec) => semantic_tokens::semantic_tokens(&document.text, &document.line_index, spec),
+        Specification::Pbes(spec) => semantic_tokens::pbes_semantic_tokens(&document.text, &document.line_index, spec),
+        Specification::Pres(_) => return None,
+    };
     Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data }))
 }
 
+/// `typing_info()` memoizes internally but still needs `&mut Document` to call (see
+/// [`crate::document::Document::typing_info`]) — every handler below reaches its document through
+/// `get_mut`, not `get`, for exactly that reason, even though only this one line needs the
+/// mutable borrow.
 fn hover_request(documents: &DocumentStore, params: HoverParams) -> Option<Hover> {
     let uri = &params.text_document_position_params.text_document.uri;
-    let document = documents.get(uri)?;
-    let data_specification = document.checked_data_specification()?;
-    hover::hover(&document.text, &document.line_index, data_specification, params.text_document_position_params.position)
+    let mut document = documents.get_mut(uri)?;
+    let typing_info = document.typing_info()?;
+    hover::hover(&document.text, &document.line_index, &typing_info, params.text_document_position_params.position)
 }
 
 fn goto_definition_request(documents: &DocumentStore, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
     let uri = params.text_document_position_params.text_document.uri.clone();
-    let document = documents.get(&uri)?;
-    let data_specification = document.checked_data_specification()?;
+    let mut document = documents.get_mut(&uri)?;
+    let typing_info = document.typing_info()?;
     let position = params.text_document_position_params.position;
-    let range = goto_definition::definition_range(&document.text, &document.line_index, data_specification, position)?;
+    let range = goto_definition::definition_range(&document.text, &document.line_index, &typing_info, position)?;
     Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
+}
+
+fn inlay_hint_request(documents: &DocumentStore, params: InlayHintParams) -> Option<Vec<InlayHint>> {
+    let uri = &params.text_document.uri;
+    let mut document = documents.get_mut(uri)?;
+    let typing_info = document.typing_info()?;
+    let spec = document.checked_process_specification()?;
+    let sort_declarations = &document.parsed_process_specification()?.data_specification.sort_declarations;
+    Some(inlay_hints::inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range))
 }
 
 /// Clones out of `state` whatever [`on_change`] needs and spawns it, so parsing can `.await`
@@ -195,18 +242,24 @@ fn spawn_on_change(state: &mut Backend, uri: Url, text: String, version: i32) {
 }
 
 /// Re-parses `text` at `version` for `uri` (as whichever [`SpecKind`] its extension selects),
-/// type checks it if parsing succeeded *and* it's a plain process specification (PBES/PRES have
-/// no type checker upstream yet — see [`crate::parse`]'s docs), stores the result, and publishes
-/// diagnostics for it. Used by `did_open` and `did_change` (via [`spawn_on_change`]).
+/// type checks it if parsing succeeded and a type checker exists for the kind (a process
+/// specification or a PBES; PRES has none upstream yet — see [`crate::parse`]'s docs), stores the
+/// result, and publishes diagnostics for it. Used by `did_open` and `did_change` (via
+/// [`spawn_on_change`]).
 async fn on_change(client: ClientSocket, documents: Arc<DocumentStore>, uri: Url, text: String, version: i32) {
     let outcome = parse::parse(SpecKind::from_uri(&uri), text.clone()).await;
 
-    // Only meaningful once parsing succeeded, and only for a process specification. Cloned
-    // (rather than moved) out of `outcome`: the original stays in `outcome` below, since
-    // `symbols`/`semantic_tokens` need the raw AST regardless of whether type checking succeeds.
-    let typechecked = match &outcome {
-        ParseOutcome::Ok(Specification::Process(spec)) => Some(typecheck::typecheck((**spec).clone()).await),
-        ParseOutcome::Ok(Specification::Pbes(_) | Specification::Pres(_)) => None,
+    // Only meaningful once parsing succeeded. Cloned (rather than moved) out of `outcome`: the
+    // original stays in `outcome` below, since `symbols`/`semantic_tokens` need the raw AST
+    // regardless of whether type checking succeeds. A PBES re-parses `text` itself internally
+    // instead of cloning an already-parsed `UntypedPbes` — see `typecheck::typecheck_pbes`'s doc
+    // comment for why.
+    let checked = match &outcome {
+        ParseOutcome::Ok(Specification::Process(spec)) => {
+            Some(CheckedOutcome::Process(typecheck::typecheck((**spec).clone()).await))
+        }
+        ParseOutcome::Ok(Specification::Pbes(_)) => Some(CheckedOutcome::Pbes(typecheck::typecheck_pbes(text.clone()).await)),
+        ParseOutcome::Ok(Specification::Pres(_)) => None,
         ParseOutcome::ParseError(_) | ParseOutcome::Internal(_) => None,
     };
 
@@ -222,7 +275,7 @@ async fn on_change(client: ClientSocket, documents: Arc<DocumentStore>, uri: Url
         return;
     }
 
-    let document = Document::new(text, version, outcome, typechecked);
+    let document = Document::new(text, version, outcome, checked);
     let diags = document.diagnostics();
     documents.insert(uri.clone(), document);
     // Publishing is mandatory even when `diags` is empty: an empty vector is what clears any
