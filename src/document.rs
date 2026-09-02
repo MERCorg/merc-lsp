@@ -4,6 +4,7 @@
 use dashmap::DashMap;
 use lsp_types::Diagnostic;
 use lsp_types::Url;
+use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedProcessSpecification;
 use merc_typecheck::PbesSpecification;
 use merc_typecheck::ProcessSpecification;
@@ -91,12 +92,9 @@ impl Document {
     /// As [`Self::checked_process_specification`], for a PBES document. [`crate::hover`] and
     /// [`crate::goto_definition`] don't need this directly — both are generic over `TypingInfo`
     /// (via [`Self::typing_info`]) and don't otherwise care which kind of specification produced
-    /// it, so PBES hover/goto-def works without it. Kept as the PBES counterpart of
-    /// [`Self::checked_process_specification`] for whatever needs the checked spec itself, not
-    /// just its `TypingInfo` — a PBES-flavored `crate::inlay_hints` (not implemented yet: today's
-    /// is written directly against `ProcessSpecification`'s `act`/`proc` declaration shape) or
-    /// PBES semantic tokens, say.
-    #[allow(dead_code)]
+    /// it, so PBES hover/goto-def works without it. Used by [`crate::inlay_hints::pbes_inlay_hints`]
+    /// (which does need the checked spec itself, for its equations' parameter names), the PBES
+    /// counterpart of [`Self::checked_process_specification`].
     pub fn checked_pbes_specification(&self) -> Option<&PbesSpecification> {
         match &self.checked {
             Some(CheckedOutcome::Pbes(PbesTypecheckOutcome::Ok(spec))) => Some(spec),
@@ -104,7 +102,7 @@ impl Document {
         }
     }
 
-    /// The *raw*, un-type-checked process specification backing [`crate::inlay_hints`]'s
+    /// The *raw*, un-type-checked process specification backing [`crate::inlay_hints::inlay_hints`]'s
     /// struct-field-name lookup.
     ///
     /// Type checking desugars a `struct` sort declaration in place — [`ProcessSpecification`]'s
@@ -117,6 +115,15 @@ impl Document {
     pub fn parsed_process_specification(&self) -> Option<&UntypedProcessSpecification> {
         match &self.parsed {
             ParseOutcome::Ok(spec) => spec.as_process(),
+            _ => None,
+        }
+    }
+
+    /// As [`Self::parsed_process_specification`], for a PBES document — backs
+    /// [`crate::inlay_hints::pbes_inlay_hints`]'s struct-field-name lookup the same way.
+    pub fn parsed_pbes_specification(&self) -> Option<&UntypedPbes> {
+        match &self.parsed {
+            ParseOutcome::Ok(spec) => spec.as_pbes(),
             _ => None,
         }
     }

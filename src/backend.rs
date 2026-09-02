@@ -33,6 +33,7 @@ use lsp_types::ServerInfo;
 use lsp_types::Url;
 use lsp_types::notification;
 use lsp_types::request;
+use merc_typecheck::ProcessSpecification;
 
 use crate::capabilities::server_capabilities;
 use crate::completion;
@@ -212,7 +213,14 @@ fn hover_request(documents: &DocumentStore, params: HoverParams) -> Option<Hover
     let uri = &params.text_document_position_params.text_document.uri;
     let mut document = documents.get_mut(uri)?;
     let typing_info = document.typing_info()?;
-    hover::hover(&document.text, &document.line_index, &typing_info, params.text_document_position_params.position)
+    let actions = document.checked_process_specification().map_or(&[][..], ProcessSpecification::action_declarations);
+    hover::hover(
+        &document.text,
+        &document.line_index,
+        &typing_info,
+        actions,
+        params.text_document_position_params.position,
+    )
 }
 
 fn goto_definition_request(documents: &DocumentStore, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
@@ -228,9 +236,13 @@ fn inlay_hint_request(documents: &DocumentStore, params: InlayHintParams) -> Opt
     let uri = &params.text_document.uri;
     let mut document = documents.get_mut(uri)?;
     let typing_info = document.typing_info()?;
-    let spec = document.checked_process_specification()?;
-    let sort_declarations = &document.parsed_process_specification()?.data_specification.sort_declarations;
-    Some(inlay_hints::inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range))
+    if let Some(spec) = document.checked_process_specification() {
+        let sort_declarations = &document.parsed_process_specification()?.data_specification.sort_declarations;
+        return Some(inlay_hints::inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range));
+    }
+    let spec = document.checked_pbes_specification()?;
+    let sort_declarations = &document.parsed_pbes_specification()?.data_specification.sort_declarations;
+    Some(inlay_hints::pbes_inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range))
 }
 
 /// Clones out of `state` whatever [`on_change`] needs and spawns it, so parsing can `.await`
