@@ -1,14 +1,16 @@
 //! `textDocument/definition`: resolves the identifier at a position to its declaration site.
 //!
 //! Covers every [`ResolvedName`] variant that carries a declaration span: a user-declared
-//! constructor or mapping, a variable (an equation's own `var`-block, a process/PBES parameter, a
-//! `sum`/`dist`/quantifier binder), and an action/process reference itself. A built-in or a symbol
-//! declared only on the system-defined specification has no declaration site `merc_typecheck`
-//! exposes at all, so those resolve to `None` rather than a location — same as a struct-desugared
-//! constructor/mapping, or a binder with no real span of its own (`declaration: None`; see
-//! `ResolvedName`'s doc comment upstream). Shares [`crate::hover`]'s offset→[`TypedNode`] lookup
-//! and its scoping caveat: a checked specification is only available once the whole process
-//! specification type checks.
+//! constructor or mapping — including one implicitly declared by a `sort D = struct c1(a: S)?is_c1
+//! | c2;` alternative, which resolves to `c1`/`a`/`is_c1`'s own name within the `struct` expression
+//! (`merc_syntax::ConstructorDecl` carries a real span for each of those now, not just a top-level
+//! `cons`/`map` declaration) — a variable (an equation's own `var`-block, a process/PBES parameter,
+//! a `sum`/`dist`/quantifier binder), and an action/process reference itself. A built-in or a
+//! symbol declared only on the system-defined specification has no declaration site
+//! `merc_typecheck` exposes at all, so those resolve to `None` rather than a location — same as a
+//! binder with no real span of its own (`declaration: None`; see `ResolvedName`'s doc comment
+//! upstream). Shares [`crate::hover`]'s offset→[`TypedNode`] lookup and its scoping caveat: a
+//! checked specification is only available once the whole process specification type checks.
 
 use lsp_types::Position;
 use lsp_types::Range;
@@ -83,6 +85,56 @@ mod tests {
         let range = definition_range(text, &line_index, &typing_info, position).expect("expected a definition");
 
         let declaration_offset = text.find("n: Nat)").unwrap();
+        let expected = line_index.position(text, declaration_offset);
+        assert_eq!(range.start, expected);
+    }
+
+    #[tokio::test]
+    async fn jumps_when_the_cursor_sits_right_after_the_use_s_last_character() {
+        let text = "sort D;\ncons c: D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = x;\ninit delta;";
+        let typing_info = typing_info_for(text).await;
+        let line_index = LineIndex::new(text);
+
+        // One past the last character of the `f` use in `f(x) = x`, as if the cursor were
+        // placed immediately after it rather than on or before it.
+        let use_offset = text.find("f(x) = x").unwrap() + 1;
+        let position = line_index.position(text, use_offset);
+        let range = definition_range(text, &line_index, &typing_info, position).expect("expected a definition");
+
+        let declaration_offset = text.find("map f").unwrap() + "map ".len();
+        let expected = line_index.position(text, declaration_offset);
+        assert_eq!(range.start, expected);
+    }
+
+    #[tokio::test]
+    async fn jumps_from_a_struct_constructor_use_to_its_name_in_the_struct_declaration() {
+        // A struct-desugared constructor used to have no declaration site at all (`declaration:
+        // None`, per this module's own doc comment) — `merc_syntax::ConstructorDecl` now carries a
+        // real span for the constructor's own name, so this resolves like any other constructor.
+        let text = "sort D = struct c1(a: Bool) | c2;\nmap f: D -> Bool;\neqn f(c1(true)) = true;\ninit delta;";
+        let typing_info = typing_info_for(text).await;
+        let line_index = LineIndex::new(text);
+
+        let use_offset = text.find("c1(true)").unwrap();
+        let position = line_index.position(text, use_offset);
+        let range = definition_range(text, &line_index, &typing_info, position).expect("expected a definition");
+
+        let declaration_offset = text.find("struct c1").unwrap() + "struct ".len();
+        let expected = line_index.position(text, declaration_offset);
+        assert_eq!(range.start, expected);
+    }
+
+    #[tokio::test]
+    async fn jumps_from_a_struct_recogniser_use_to_its_own_name() {
+        let text = "sort D = struct c1(a: Bool)?is_c1 | c2;\neqn true = is_c1(c1(true));\ninit delta;";
+        let typing_info = typing_info_for(text).await;
+        let line_index = LineIndex::new(text);
+
+        let use_offset = text.find("is_c1(c1(true))").unwrap();
+        let position = line_index.position(text, use_offset);
+        let range = definition_range(text, &line_index, &typing_info, position).expect("expected a definition");
+
+        let declaration_offset = text.find("?is_c1").unwrap() + "?".len();
         let expected = line_index.position(text, declaration_offset);
         assert_eq!(range.start, expected);
     }
