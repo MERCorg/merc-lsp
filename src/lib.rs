@@ -12,11 +12,13 @@
 
 mod backend;
 mod capabilities;
+mod completion;
 mod convert;
 mod diagnostics;
 mod document;
 mod goto_definition;
 mod hover;
+mod inlay_hints;
 mod parse;
 mod semantic_tokens;
 mod symbols;

@@ -1,5 +1,5 @@
-//! Builds `textDocument/semanticTokens/full` output from a parsed
-//! [`UntypedProcessSpecification`].
+//! Builds `textDocument/semanticTokens/full` output from a parsed [`UntypedProcessSpecification`]
+//! ([`semantic_tokens`]) or [`UntypedPbes`] ([`pbes_semantic_tokens`]).
 //!
 //! This is required for mCRL2 since the grammar is ambiguous, for example a(f)
 //! could be a function application, an action instantiation, or a process
@@ -39,12 +39,17 @@ use lsp_types::SemanticTokenType;
 use lsp_types::SemanticTokensLegend;
 use merc_syntax::DataExpr;
 use merc_syntax::DataExprKind;
+use merc_syntax::PbesExpr;
+use merc_syntax::PbesExprKind;
 use merc_syntax::ProcessExpr;
 use merc_syntax::ProcessExprKind;
+use merc_syntax::PropVarInst;
 use merc_syntax::SortExpression;
 use merc_syntax::SortExpressionKind;
 use merc_syntax::Span;
 use merc_syntax::Traverse;
+use merc_syntax::UntypedDataSpecification;
+use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedProcessSpecification;
 
 use crate::convert::LineIndex;
@@ -102,41 +107,10 @@ pub fn legend() -> SemanticTokensLegend {
 
 /// Builds the full, delta-encoded semantic token list for `spec`.
 pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcessSpecification) -> Vec<SemanticToken> {
-    let symbols = SymbolTable::collect(spec);
+    let symbols = SymbolTable::collect_process(spec);
     let mut builder = Builder::new(text, line_index);
 
-    for decl in &spec.data_specification.sort_declarations {
-        builder.push(&decl.span, TokenKind::Type, true);
-        if let Some(expr) = &decl.expr {
-            walk_sort_expression(expr, &mut builder);
-        }
-    }
-
-    for decl in &spec.data_specification.constructor_declarations {
-        builder.push(&decl.span, TokenKind::EnumMember, true);
-        walk_sort_expression(&decl.sort, &mut builder);
-    }
-
-    for decl in &spec.data_specification.map_declarations {
-        // Deliberately no `builder.push` for the mapping's own name, at declaration or at any
-        // use site below (see `SymbolTable::classify_data_id`): mappings are left uncolored, so
-        // they read as plain text rather than competing for a color with constructors/processes.
-        walk_sort_expression(&decl.sort, &mut builder);
-    }
-
-    for eqn_spec in &spec.data_specification.equation_declarations {
-        for decl in &eqn_spec.variables {
-            builder.push(&decl.span, TokenKind::Variable, true);
-            walk_sort_expression(&decl.sort, &mut builder);
-        }
-        for eqn in &eqn_spec.equations {
-            if let Some(condition) = &eqn.condition {
-                walk_data_expr(condition, &symbols, &mut builder);
-            }
-            walk_data_expr(&eqn.lhs, &symbols, &mut builder);
-            walk_data_expr(&eqn.rhs, &symbols, &mut builder);
-        }
-    }
+    tag_data_specification(&spec.data_specification, &symbols, &mut builder);
 
     for decl in &spec.global_variables {
         builder.push(&decl.span, TokenKind::Variable, true);
@@ -168,6 +142,78 @@ pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcess
     builder.finish()
 }
 
+/// As [`semantic_tokens`], for a parsed PBES. Shares the data-specification pass and every
+/// `DataExpr`/`SortExpression` walker with the process-specification side; only the
+/// process-algebra-shaped parts (`act`/`proc`/`init`) differ, replaced here by a PBES's
+/// propositional-variable equations, quantifier binders, and `PropVarInst`s.
+pub fn pbes_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPbes) -> Vec<SemanticToken> {
+    let symbols = SymbolTable::collect_data(&spec.data_specification);
+    let mut builder = Builder::new(text, line_index);
+
+    tag_data_specification(&spec.data_specification, &symbols, &mut builder);
+
+    for decl in &spec.global_variables {
+        builder.push(&decl.span, TokenKind::Variable, true);
+        walk_sort_expression(&decl.sort, &mut builder);
+    }
+
+    for eqn in &spec.equations {
+        // A propositional-variable equation is PBES's one callable-name concept — no separate
+        // action/process distinction to make (unlike `ProcessExprKind::Action`, see the module
+        // docs above), so this and every `PropVarInst` below are unconditionally `Method`.
+        builder.push_identifier(&eqn.variable.span, &eqn.variable.identifier, TokenKind::Method, true);
+        for param in &eqn.variable.parameters {
+            builder.push(&param.span, TokenKind::Parameter, true);
+            walk_sort_expression(&param.sort, &mut builder);
+        }
+        walk_pbes_expr(&eqn.formula, &symbols, &mut builder);
+    }
+
+    walk_prop_var_inst(&spec.init, &symbols, &mut builder);
+
+    tag_keywords(text, &mut builder);
+
+    builder.finish()
+}
+
+/// The `sort`/`cons`/`map`/`eqn` part of tagging, shared by [`semantic_tokens`] and
+/// [`pbes_semantic_tokens`] — both a process specification and a PBES have the identical
+/// `UntypedDataSpecification` subtree.
+fn tag_data_specification(data: &UntypedDataSpecification, symbols: &SymbolTable, builder: &mut Builder) {
+    for decl in &data.sort_declarations {
+        builder.push(&decl.span, TokenKind::Type, true);
+        if let Some(expr) = &decl.expr {
+            walk_sort_expression(expr, builder);
+        }
+    }
+
+    for decl in &data.constructor_declarations {
+        builder.push(&decl.span, TokenKind::EnumMember, true);
+        walk_sort_expression(&decl.sort, builder);
+    }
+
+    for decl in &data.map_declarations {
+        // Deliberately no `builder.push` for the mapping's own name, at declaration or at any
+        // use site below (see `SymbolTable::classify_data_id`): mappings are left uncolored, so
+        // they read as plain text rather than competing for a color with constructors/processes.
+        walk_sort_expression(&decl.sort, builder);
+    }
+
+    for eqn_spec in &data.equation_declarations {
+        for decl in &eqn_spec.variables {
+            builder.push(&decl.span, TokenKind::Variable, true);
+            walk_sort_expression(&decl.sort, builder);
+        }
+        for eqn in &eqn_spec.equations {
+            if let Some(condition) = &eqn.condition {
+                walk_data_expr(condition, symbols, builder);
+            }
+            walk_data_expr(&eqn.lhs, symbols, builder);
+            walk_data_expr(&eqn.rhs, symbols, builder);
+        }
+    }
+}
+
 /// Which declared identifiers name what — the disambiguation a TextMate grammar cannot do, since
 /// the grammar gives the same shape to several different declaration kinds. Used to classify a
 /// bare [`DataExprKind::Id`] (function, constructor, or variable) and a
@@ -180,21 +226,21 @@ struct SymbolTable<'a> {
 }
 
 impl<'a> SymbolTable<'a> {
-    fn collect(spec: &'a UntypedProcessSpecification) -> Self {
+    fn collect_process(spec: &'a UntypedProcessSpecification) -> Self {
         SymbolTable {
-            maps: spec
-                .data_specification
-                .map_declarations
-                .iter()
-                .map(|decl| decl.identifier.as_str())
-                .collect(),
-            constructors: spec
-                .data_specification
-                .constructor_declarations
-                .iter()
-                .map(|decl| decl.identifier.as_str())
-                .collect(),
             processes: spec.process_declarations.iter().map(|decl| decl.identifier.as_str()).collect(),
+            ..Self::collect_data(&spec.data_specification)
+        }
+    }
+
+    /// As [`Self::collect_process`], for the data-specification-only namespaces a PBES has too —
+    /// `processes` stays empty, since [`SymbolTable::classify_action`] (the one thing that reads
+    /// it) has nothing to disambiguate for a PBES's `PropVarInst`s (see [`pbes_semantic_tokens`]).
+    fn collect_data(data: &'a UntypedDataSpecification) -> Self {
+        SymbolTable {
+            maps: data.map_declarations.iter().map(|decl| decl.identifier.as_str()).collect(),
+            constructors: data.constructor_declarations.iter().map(|decl| decl.identifier.as_str()).collect(),
+            processes: HashSet::new(),
         }
     }
 
@@ -415,9 +461,43 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, builder: &mut Bu
     });
 }
 
-/// Every word-like mCRL2 keyword relevant to a process/data specification, for [`tag_keywords`].
-/// Built-in sort names (`Bool`, `List`, …) are deliberately not here: [`walk_sort_expression`]
-/// already tags those, more precisely (node by node, off the AST, not a blind text scan).
+/// Walks every identifier in `expr`'s subtree: `PropVarInst`s (propositional-variable references,
+/// always [`TokenKind::Method`] — see [`pbes_semantic_tokens`]'s module note), `val(...)`-wrapped
+/// data expressions, and any `forall`/`exists` binder, descending into the data expressions each
+/// carries — none of which `Traverse` crosses into on its own, same reasoning as
+/// [`walk_process_expr`].
+fn walk_pbes_expr(expr: &PbesExpr, symbols: &SymbolTable, builder: &mut Builder) {
+    expr.visit::<(), _>(|node| {
+        match &node.node {
+            PbesExprKind::PropVarInst(inst) => walk_prop_var_inst(inst, symbols, builder),
+            PbesExprKind::DataValExpr(data_expr) => walk_data_expr(data_expr, symbols, builder),
+            PbesExprKind::Quantifier { variables, .. } => {
+                for variable in variables {
+                    builder.push(&variable.span, TokenKind::Variable, true);
+                    walk_sort_expression(&variable.sort, builder);
+                }
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    });
+}
+
+/// Tags a propositional-variable instantiation's own name, then walks each of its arguments —
+/// shared by [`walk_pbes_expr`] (a `PropVarInst` occurring inside a formula) and
+/// [`pbes_semantic_tokens`] (a PBES's `init`).
+fn walk_prop_var_inst(inst: &PropVarInst, symbols: &SymbolTable, builder: &mut Builder) {
+    builder.push_identifier(&inst.span, &inst.node.identifier, TokenKind::Method, false);
+    for argument in &inst.node.arguments {
+        walk_data_expr(argument, symbols, builder);
+    }
+}
+
+/// Every word-like mCRL2 keyword relevant to a process/data specification, for [`tag_keywords`]
+/// (and, `pub(crate)`, for [`crate::completion`]'s keyword completion items). Built-in sort names
+/// (`Bool`, `List`, …) are deliberately not here: [`walk_sort_expression`] already tags those,
+/// more precisely (node by node, off the AST, not a blind text scan) — `completion.rs` has its
+/// own small list for the same names, for the same reason `SYSTEM_SORTS` gives there.
 ///
 /// `true`/`false`/`delta`/`tau` are genuinely reserved — the grammar rejects them as the prefix
 /// of a longer identifier (`DataExprTrue = { "true" ~ !Id }` and siblings; see `merc_syntax`'s
@@ -427,10 +507,10 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, builder: &mut Bu
 /// principle nothing stops a spec from declaring, say, a map literally named `sort`; in practice
 /// this essentially never happens, and accepting that rather than leaving every structural
 /// keyword uncolored is the better trade.
-const KEYWORDS: &[&str] = &[
+pub(crate) const KEYWORDS: &[&str] = &[
     "sort", "cons", "map", "glob", "act", "proc", "init", "var", "eqn", "struct", "whr", "end",
     "forall", "exists", "lambda", "sum", "dist", "val", "true", "false", "delta", "tau",
-    "hide", "block", "allow", "comm", "rename",
+    "hide", "block", "allow", "comm", "rename", "pbes", "pres", "mu", "nu",
 ];
 
 /// Tags every occurrence of a reserved mCRL2 keyword (see [`KEYWORDS`]) as [`TokenKind::Keyword`].
@@ -491,6 +571,15 @@ mod tests {
         let line_index = LineIndex::new(text);
         match outcome {
             ParseOutcome::Ok(Specification::Process(spec)) => semantic_tokens(text, &line_index, &spec),
+            _ => panic!("fixture failed to parse"),
+        }
+    }
+
+    async fn pbes_tokens_for(text: &str) -> Vec<SemanticToken> {
+        let outcome = parse(SpecKind::Pbes, text.to_string()).await;
+        let line_index = LineIndex::new(text);
+        match outcome {
+            ParseOutcome::Ok(Specification::Pbes(spec)) => pbes_semantic_tokens(text, &line_index, &spec),
             _ => panic!("fixture failed to parse"),
         }
     }
@@ -674,6 +763,68 @@ mod tests {
             let [(l1, c1, len1, ..), (l2, c2, ..)] = window else { unreachable!() };
             if l1 == l2 {
                 assert!(c1 + len1 <= *c2, "tokens on the same line must not overlap: {window:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pbes_equation_and_parameter_and_propvarinst_are_tagged() {
+        let text = "pbes mu X(n: Bool) = val(n) || X(n);\ninit X(true);";
+        let tokens = pbes_tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let decl_pos = line_index.position(text, text.find('X').unwrap());
+        let param_decl_pos = line_index.position(text, text.find("n: Bool").unwrap());
+        let recursive_use_pos = line_index.position(text, text.rfind("X(n)").unwrap());
+        let init_use_pos = line_index.position(text, text.find("init X").unwrap() + "init ".len());
+
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == decl_pos.line
+            && c == decl_pos.character
+            && len == 1
+            && ty == TokenKind::Method as u32
+            && modifiers == MODIFIER_DECLARATION));
+        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == param_decl_pos.line
+            && c == param_decl_pos.character
+            && ty == TokenKind::Parameter as u32
+            && modifiers == MODIFIER_DECLARATION));
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == recursive_use_pos.line
+            && c == recursive_use_pos.character
+            && len == 1
+            && ty == TokenKind::Method as u32
+            && modifiers == 0));
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == init_use_pos.line
+            && c == init_use_pos.character
+            && len == 1
+            && ty == TokenKind::Method as u32
+            && modifiers == 0));
+    }
+
+    #[tokio::test]
+    async fn pbes_quantifier_binder_is_tagged_as_a_variable_declaration() {
+        let text = "pbes mu X = forall n: Bool . val(n);\ninit X;";
+        let tokens = pbes_tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let binder_pos = line_index.position(text, text.find("n: Bool").unwrap());
+        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == binder_pos.line
+            && c == binder_pos.character
+            && ty == TokenKind::Variable as u32
+            && modifiers == MODIFIER_DECLARATION));
+    }
+
+    #[tokio::test]
+    async fn pbes_tokens_are_sorted_and_non_overlapping() {
+        let text = "sort D;\ncons c: D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = f(c);\npbes mu X(n: Bool) = val(n) || X(n);\ninit X(true);";
+        let tokens = pbes_tokens_for(text).await;
+        let positions = absolute(&tokens);
+
+        for window in positions.windows(2) {
+            let [(l1, c1, len1, ..), (l2, c2, ..)] = window else { unreachable!() };
+            assert!((*l1, *c1) < (*l2, *c2), "tokens must be strictly ordered by position");
+            if l1 == l2 {
+                assert!(c1 + len1 <= *c2, "tokens on the same line must not overlap");
             }
         }
     }

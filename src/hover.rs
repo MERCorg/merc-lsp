@@ -1,21 +1,19 @@
-//! `textDocument/hover`: offset → [`TypedNode`] → hover text, built from a document's checked
-//! data specification typing info ([`DataSpecification::typing_info`]).
+//! `textDocument/hover`: offset → [`TypedNode`] → hover text, built from a document's whole
+//! [`TypingInfo`] ([`crate::document::Document::typing_info`]).
 //!
-//! Scoped by what [`DataSpecification::typing_info`] itself covers: only expression nodes inside
-//! `eqn` blocks get a [`TypedNode`] — a sort declaration, an action argument, or a process
-//! parameter has no typing info to look up (no `TypingInfo` route exists upstream yet for
-//! anything outside the data specification's own equations), so hovering one of those yields
-//! `None` rather than degraded hover. See [`Document::checked_data_specification`] for the
-//! further caveat on *when* a checked specification is available at all.
-//!
-//! [`Document::checked_data_specification`]: crate::document::Document::checked_data_specification
+//! Covers every checked expression node — `eqn` blocks *and* process bodies (action arguments,
+//! process-instantiation arguments, conditions, time bounds, `dist` weights) — since
+//! `ProcessSpecification::typing_info` merges both. A sort declaration, an action/process
+//! declaration's own parameter list, and anything outside a checked expression still has no
+//! `TypedNode` to look up, so hovering one of those yields `None` rather than degraded hover. See
+//! [`crate::document::Document::checked_process_specification`] for the further caveat on *when* a
+//! checked specification is available at all.
 
 use lsp_types::Hover;
 use lsp_types::HoverContents;
 use lsp_types::MarkupContent;
 use lsp_types::MarkupKind;
 use lsp_types::Position;
-use merc_typecheck::DataSpecification;
 use merc_typecheck::ResolvedName;
 use merc_typecheck::TypedNode;
 use merc_typecheck::TypingInfo;
@@ -24,10 +22,9 @@ use crate::convert::LineIndex;
 
 /// Builds hover content for `position`, or `None` when it isn't over a typed expression node, or
 /// `position` doesn't resolve to an offset in `text` at all.
-pub fn hover(text: &str, line_index: &LineIndex, data_specification: &DataSpecification, position: Position) -> Option<Hover> {
+pub fn hover(text: &str, line_index: &LineIndex, typing_info: &TypingInfo, position: Position) -> Option<Hover> {
     let offset = line_index.offset(text, position)?;
-    let typing_info = data_specification.typing_info();
-    let node = typed_node_at(&typing_info, offset)?;
+    let node = typed_node_at(typing_info, offset)?;
 
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
@@ -45,22 +42,27 @@ pub(crate) fn typed_node_at(typing_info: &TypingInfo, offset: usize) -> Option<&
 }
 
 /// Renders `node` as Markdown: an mCRL2-highlighted `name: Sort` code block (just `Sort` for a
-/// node with no resolved name — a literal or an operator's overall application, say), followed by
-/// what kind of name it resolved to, when known.
+/// node with no resolved name — a literal or an operator's overall application, say; just `name`
+/// for an action/process reference, which has no data-expression sort at all), followed by what
+/// kind of name it resolved to, when known.
 fn hover_markdown(node: &TypedNode) -> String {
-    let sort = &node.sort;
     let named = match &node.name {
-        Some(ResolvedName::Variable { name }) => Some((name.as_str(), "equation variable")),
+        Some(ResolvedName::Variable { name, .. }) => Some((name.as_str(), "variable")),
         Some(ResolvedName::Constructor { name, .. }) => Some((name.as_str(), "constructor")),
         Some(ResolvedName::Mapping { name, .. }) => Some((name.as_str(), "mapping")),
         Some(ResolvedName::SystemDefined { name }) => Some((name.as_str(), "system-defined")),
         Some(ResolvedName::Builtin { name }) => Some((name.as_str(), "built-in operator")),
+        Some(ResolvedName::Action { name, .. }) => Some((name.as_str(), "action")),
+        Some(ResolvedName::Process { name, .. }) => Some((name.as_str(), "process")),
         // `#[non_exhaustive]`: fall back to an unlabelled sort for any future variant.
         Some(_) | None => None,
     };
-    match named {
-        Some((name, kind)) => format!("```mcrl2\n{name}: {sort}\n```\n{kind}"),
-        None => format!("```mcrl2\n{sort}\n```"),
+    match (named, &node.sort) {
+        (Some((name, kind)), Some(sort)) => format!("```mcrl2\n{name}: {sort}\n```\n{kind}"),
+        // An action/process reference: no data-expression sort to show at all.
+        (Some((name, kind)), None) => format!("```mcrl2\n{name}\n```\n{kind}"),
+        (None, Some(sort)) => format!("```mcrl2\n{sort}\n```"),
+        (None, None) => String::new(),
     }
 }
 
@@ -74,13 +76,13 @@ mod tests {
     use crate::typecheck::TypecheckOutcome;
     use crate::typecheck::typecheck;
 
-    async fn checked_for(text: &str) -> DataSpecification {
+    async fn typing_info_for(text: &str) -> TypingInfo {
         let spec = match parse(SpecKind::Process, text.to_string()).await {
             ParseOutcome::Ok(Specification::Process(spec)) => *spec,
             _ => panic!("fixture failed to parse"),
         };
         match typecheck(spec).await {
-            TypecheckOutcome::Ok(checked) => checked.into_data_specification(),
+            TypecheckOutcome::Ok(mut checked) => checked.typing_info(),
             TypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
             TypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
         }
@@ -89,12 +91,12 @@ mod tests {
     #[tokio::test]
     async fn hovers_a_mapping_use_with_its_sort() {
         let text = "sort D;\ncons c: D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = x;\ninit delta;";
-        let data_specification = checked_for(text).await;
+        let typing_info = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
 
         let offset = text.find("f(x) = x").unwrap();
         let position = line_index.position(text, offset);
-        let hover = hover(text, &line_index, &data_specification, position).expect("expected hover content");
+        let hover = hover(text, &line_index, &typing_info, position).expect("expected hover content");
 
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
@@ -107,10 +109,27 @@ mod tests {
     #[tokio::test]
     async fn no_hover_outside_any_typed_node() {
         let text = "sort D;\ninit delta;";
-        let data_specification = checked_for(text).await;
+        let typing_info = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
 
         let position = line_index.position(text, 0);
-        assert!(hover(text, &line_index, &data_specification, position).is_none());
+        assert!(hover(text, &line_index, &typing_info, position).is_none());
+    }
+
+    #[tokio::test]
+    async fn hovers_an_action_argument_with_its_declared_sort() {
+        let text = "act a: Nat;\nproc P(n: Nat) = a(n);\ninit P(1);";
+        let typing_info = typing_info_for(text).await;
+        let line_index = LineIndex::new(text);
+
+        let offset = text.find("n);").unwrap();
+        let position = line_index.position(text, offset);
+        let hover = hover(text, &line_index, &typing_info, position).expect("expected hover content");
+
+        let HoverContents::Markup(content) = hover.contents else {
+            panic!("expected markup content");
+        };
+        assert!(content.value.contains("n: Nat"), "unexpected hover text: {}", content.value);
+        assert!(content.value.contains("variable"));
     }
 }
