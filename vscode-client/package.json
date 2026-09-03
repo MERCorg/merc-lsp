@@ -1,7 +1,7 @@
 {
 	"name": "merc-lsp-client",
-	"displayName": "mCRL2 Language Support",
-	"description": "Language support for mCRL2 specifications, backed by the merc-lsp language server",
+	"displayName": "Merc Language Support",
+	"description": "Language support for merc specifications, backed by the merc-lsp language server",
 	"author": "Maurice Laveauxn",
 	"license": "BSL-1.0",
 	"version": "1.0.0",
@@ -22,15 +22,15 @@
 		"commands": [
 			{
 				"command": "merc-lsp.restartServer",
-				"title": "mCRL2: Restart Language Server"
+				"title": "merc: Restart Language Server"
 			}
 		],
 		"languages": [
 			{
-				"id": "mcrl2",
+				"id": "merc",
 				"aliases": [
-					"mCRL2",
-					"mcrl2"
+					"MERC",
+					"merc"
 				],
 				"extensions": [
 					".mcrl2"
@@ -38,9 +38,10 @@
 				"configuration": "./language-configuration.json"
 			},
 			{
-				"id": "mcrl2-pbes",
+				"id": "merc-pbes",
 				"aliases": [
-					"mCRL2 PBES"
+					"PBES",
+					"pbes"
 				],
 				"extensions": [
 					".pbes"
@@ -48,9 +49,10 @@
 				"configuration": "./language-configuration.json"
 			},
 			{
-				"id": "mcrl2-pres",
+				"id": "merc-pres",
 				"aliases": [
-					"mCRL2 PRES"
+					"PRES",
+					"pres"
 				],
 				"extensions": [
 					".pres"
@@ -60,24 +62,24 @@
 		],
 		"grammars": [
 			{
-				"language": "mcrl2",
-				"scopeName": "source.mcrl2",
-				"path": "./syntaxes/mcrl2.tmLanguage.json"
+				"language": "merc",
+				"scopeName": "source.merc",
+				"path": "./syntaxes/merc.tmLanguage.json"
 			},
 			{
-				"language": "mcrl2-pbes",
-				"scopeName": "source.mcrl2",
-				"path": "./syntaxes/mcrl2.tmLanguage.json"
+				"language": "merc-pbes",
+				"scopeName": "source.merc",
+				"path": "./syntaxes/merc.tmLanguage.json"
 			},
 			{
-				"language": "mcrl2-pres",
-				"scopeName": "source.mcrl2",
-				"path": "./syntaxes/mcrl2.tmLanguage.json"
+				"language": "merc-pres",
+				"scopeName": "source.merc",
+				"path": "./syntaxes/merc.tmLanguage.json"
 			}
 		],
 		"semanticTokenScopes": [
 			{
-				"language": "mcrl2",
+				"language": "merc",
 				"scopes": {
 					"type": ["entity.name.type"],
 					"type.defaultLibrary": ["support.type"],
@@ -90,7 +92,7 @@
 				}
 			},
 			{
-				"language": "mcrl2-pbes",
+				"language": "merc-pbes",
 				"scopes": {
 					"type": ["entity.name.type"],
 					"type.defaultLibrary": ["support.type"],
@@ -103,7 +105,7 @@
 				}
 			},
 			{
-				"language": "mcrl2-pres",
+				"language": "merc-pres",
 				"scopes": {
 					"type": ["entity.name.type"],
 					"type.defaultLibrary": ["support.type"],
@@ -118,7 +120,7 @@
 		],
 		"configuration": {
 			"type": "object",
-			"title": "mCRL2",
+			"title": "MERC",
 			"properties": {
 				"merc-lsp.serverPath": {
 					"type": "string",

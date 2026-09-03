@@ -1,8 +1,3 @@
-/* --------------------------------------------------------------------------------------------
- * Copyright (c) Microsoft Corporation. All rights reserved.
- * Licensed under the MIT License. See License.txt in the project root for license information.
- * ------------------------------------------------------------------------------------------ */
-
 import * as fs from 'fs';
 import * as path from 'path';
 import { commands, ExtensionContext, OutputChannel, window, workspace } from 'vscode';
@@ -90,18 +85,18 @@ function startClient(context: ExtensionContext): LanguageClient {
 
 	const clientOptions: LanguageClientOptions = {
 		documentSelector: [
-			{ scheme: 'file', language: 'mcrl2' },
-			{ scheme: 'file', language: 'mcrl2-pbes' },
-			{ scheme: 'file', language: 'mcrl2-pres' }
+			{ scheme: 'file', language: 'merc' },
+			{ scheme: 'file', language: 'merc-pbes' },
+			{ scheme: 'file', language: 'merc-pres' }
 		],
 		synchronize: {
-			fileEvents: workspace.createFileSystemWatcher('**/*.{mcrl2,pbes,pres}')
+			fileEvents: workspace.createFileSystemWatcher('**/*.{merc,pbes,pres}')
 		}
 	};
 
 	const newClient = new LanguageClient(
 		'merc-lsp',
-		'mCRL2 Language Server',
+		'Merc Language Server',
 		serverOptions,
 		clientOptions
 	);
@@ -121,7 +116,7 @@ function startClient(context: ExtensionContext): LanguageClient {
 
 /**
  * Stops the current client (if any) and starts a new one, respawning the `merc-lsp` process from
- * scratch. Bound to the `merc-lsp.restartServer` command (Command Palette: "mCRL2: Restart
+ * scratch. Bound to the `merc-lsp.restartServer` command (Command Palette: "merc: Restart
  * Language Server") — the extension launches the server binary exactly once, at activation, and
  * has no other way to notice a rebuilt binary or recover from the server process itself having
  * exited; this is the one manual lever for both. Unlike "Developer: Reload Window", it doesn't
@@ -136,10 +131,10 @@ async function restartClient(context: ExtensionContext): Promise<void> {
 }
 
 export function activate(context: ExtensionContext) {
-	output = window.createOutputChannel('mCRL2-lsp');
+	output = window.createOutputChannel('merc-lsp');
 	context.subscriptions.push(output);
 
-	output.appendLine('mCRL2 extension activated.');
+	output.appendLine('merc extension activated.');
 	output.show(true);
 
 	context.subscriptions.push(
