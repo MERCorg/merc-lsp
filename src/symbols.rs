@@ -30,7 +30,6 @@ use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 
 use crate::convert::LineIndex;
-use crate::convert::is_identifier_byte;
 
 /// Builds the full, hierarchical outline for `spec`, ordered by source position.
 ///
@@ -49,7 +48,7 @@ pub fn document_symbols(text: &str, line_index: &LineIndex, spec: &UntypedProces
         } else {
             Some(decl.args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" # "))
         };
-        symbols.push(symbol_at(decl.identifier.clone(), detail, SymbolKind::EVENT, text, line_index, &decl.span, None));
+        symbols.push(symbol_at(decl.identifier.node.clone(), detail, SymbolKind::EVENT, text, line_index, &decl.identifier.span, None));
     }
     for decl in &spec.process_declarations {
         let children: Vec<DocumentSymbol> = decl
@@ -62,7 +61,7 @@ pub fn document_symbols(text: &str, line_index: &LineIndex, spec: &UntypedProces
         } else {
             Some(decl.params.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))
         };
-        symbols.push(symbol_at(decl.identifier.clone(), detail, SymbolKind::FUNCTION, text, line_index, &decl.span, Some(children)));
+        symbols.push(symbol_at(decl.identifier.node.clone(), detail, SymbolKind::FUNCTION, text, line_index, &decl.identifier.span, Some(children)));
     }
     if let Some(init) = &spec.init {
         symbols.push(init_symbol(text, line_index, init));
@@ -90,12 +89,12 @@ pub fn pbes_symbols(text: &str, line_index: &LineIndex, spec: &UntypedPbes) -> V
             .collect();
         let detail = Some(format!("{} {}", eqn.operator, eqn.formula));
         symbols.push(symbol_at(
-            eqn.variable.identifier.clone(),
+            eqn.variable.identifier.node.clone(),
             detail,
             SymbolKind::FUNCTION,
             text,
             line_index,
-            &eqn.variable.span,
+            &eqn.variable.identifier.span,
             Some(children),
         ));
     }
@@ -123,12 +122,12 @@ pub fn pres_symbols(text: &str, line_index: &LineIndex, spec: &UntypedPres) -> V
             .map(|param| id_decl_symbol(text, line_index, param, SymbolKind::VARIABLE))
             .collect();
         symbols.push(symbol_at(
-            eqn.variable.identifier.clone(),
+            eqn.variable.identifier.node.clone(),
             Some(eqn.operator.to_string()),
             SymbolKind::FUNCTION,
             text,
             line_index,
-            &eqn.variable.span,
+            &eqn.variable.identifier.span,
             Some(children),
         ));
     }
@@ -215,10 +214,12 @@ fn pbes_init_symbol(text: &str, line_index: &LineIndex, init: &PropVarInst) -> D
 }
 
 /// Builds a symbol whose `range` and `selection_range` are both exactly `span` — for a
-/// declaration kind (`SortDecl`, `ActDecl`, `IdDecl`) whose span `merc_syntax` now gives
-/// precisely the identifier itself (previously the whole group in `sort A, B, C;` and its
-/// `cons`/`map`/`var`/`glob`/`act` siblings all shared one span, byte-identical for every
-/// sibling — see [`find_identifier`]'s doc comment for how that used to be worked around).
+/// declaration kind (`SortDecl`, `IdDecl`) whose own span `merc_syntax` now gives precisely the
+/// identifier itself (previously the whole group in `sort A, B, C;` and its `cons`/`map`/`var`/
+/// `glob` siblings all shared one span, byte-identical for every sibling), or, for `ActDecl`/
+/// `ProcDecl`/`PropVarDecl` — whose own span still covers the whole declaration (`act a, b: Nat;`,
+/// `proc P(n: Nat) = ...;`) — the identifier's own precise span (`decl.identifier.span`), now that
+/// `identifier` on those three carries a [`Span`] of its own rather than being a plain `String`.
 fn symbol_at(
     name: String,
     detail: Option<String>,
@@ -251,40 +252,6 @@ fn build_symbol(
         selection_range,
         children,
     }
-}
-
-/// Finds the first word-boundary-delimited occurrence of `identifier` within `text[span]`.
-///
-/// `pub(crate)`: used by [`crate::semantic_tokens`], which uses it to narrow a process/action
-/// instantiation's span (`P(x = 1)`, `a(1)`) down to just the name — that one's still
-/// whole-construct upstream, unlike the declaration-kind spans this module builds symbols from.
-pub(crate) fn find_identifier(text: &str, span: &Span, identifier: &str) -> Option<Span> {
-    if identifier.is_empty() {
-        return None;
-    }
-    let start = span.start.min(text.len());
-    let end = span.end.min(text.len());
-    let haystack = text.get(start..end)?;
-    let bytes = haystack.as_bytes();
-
-    let mut search_from = 0;
-    while let Some(relative) = haystack[search_from..].find(identifier) {
-        let match_start = search_from + relative;
-        let match_end = match_start + identifier.len();
-        let before_ok = match_start == 0 || !is_identifier_byte(bytes[match_start - 1]);
-        let after_ok = match_end >= bytes.len() || !is_identifier_byte(bytes[match_end]);
-        if before_ok && after_ok {
-            return Some(Span {
-                start: start + match_start,
-                end: start + match_end,
-            });
-        }
-        search_from = match_start + 1;
-        if search_from >= haystack.len() {
-            break;
-        }
-    }
-    None
 }
 
 #[cfg(test)]
