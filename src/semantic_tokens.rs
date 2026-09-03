@@ -1,5 +1,6 @@
 //! Builds `textDocument/semanticTokens/full` output from a parsed [`UntypedProcessSpecification`]
-//! ([`semantic_tokens`]) or [`UntypedPbes`] ([`pbes_semantic_tokens`]).
+//! ([`semantic_tokens`]), [`UntypedPbes`] ([`pbes_semantic_tokens`]), or [`UntypedPres`]
+//! ([`pres_semantic_tokens`]).
 //!
 //! This is required for mCRL2 since the grammar is ambiguous, for example a(f)
 //! could be a function application, an action instantiation, or a process
@@ -18,6 +19,14 @@
 //! process/action bodies (see `PLAN.md`). Only the `declaration` modifier marks
 //! a binder site specifically. This still recovers everything a TextMate
 //! grammar structurally cannot.
+//!
+//! [`TokenKind::Parameter`] is the one exception to "flat table": a `proc`
+//! declaration's (or PBES equation's) own parameters *are* scoped to that one
+//! declaration's body, via the `current_params` threaded through
+//! [`walk_process_expr`]/[`walk_pbes_expr`]/[`walk_data_expr`] — a name that is
+//! merely some *other* declaration's parameter falls back to
+//! [`TokenKind::Variable`] instead, rather than lighting up everywhere that
+//! name happens to appear.
 //!
 //! One grammar quirk the symbol table also has to paper over: a process
 //! reference with no arguments and no parentheses (the overwhelmingly common
@@ -41,6 +50,8 @@ use merc_syntax::DataExpr;
 use merc_syntax::DataExprKind;
 use merc_syntax::PbesExpr;
 use merc_syntax::PbesExprKind;
+use merc_syntax::PresExpr;
+use merc_syntax::PresExprKind;
 use merc_syntax::ProcessExpr;
 use merc_syntax::ProcessExprKind;
 use merc_syntax::PropVarInst;
@@ -50,11 +61,11 @@ use merc_syntax::Span;
 use merc_syntax::Traverse;
 use merc_syntax::UntypedDataSpecification;
 use merc_syntax::UntypedPbes;
+use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 
 use crate::convert::LineIndex;
 use crate::convert::is_identifier_byte;
-use crate::symbols::find_identifier;
 
 /// A token's semantic type, as an index into the legend returned by [`legend`] — the two must be
 /// kept in lock-step, since only this numeric index (not a name) is sent over the wire.
@@ -132,23 +143,33 @@ pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcess
     }
 
     for decl in &spec.action_declarations {
-        builder.push(&decl.span, TokenKind::Event, true);
+        // `decl.span` covers the whole declaration (`a: Nat # Bool`, shared with every sibling in
+        // a grouped `act a, b: Nat;` too) — `decl.identifier.span` is just the name, which is all
+        // a declaration-modifier token should cover (its argument sorts get their own `Type`
+        // tokens right below, which `decl.span` would otherwise overlap).
+        builder.push(&decl.identifier.span, TokenKind::Event, true);
         for arg in &decl.args {
             walk_sort_expression(arg, &mut builder);
         }
     }
 
     for decl in &spec.process_declarations {
-        builder.push(&decl.span, TokenKind::Method, true);
+        // As above: `decl.span` covers the whole `P(n: Nat) = ...;` declaration, not just `P` —
+        // `decl.identifier.span` is the precise name, leaving the params/body below to tag
+        // themselves without `decl`'s own token swallowing them.
+        builder.push(&decl.identifier.span, TokenKind::Method, true);
+        let params: HashSet<&str> = decl.params.iter().map(|param| param.identifier.as_str()).collect();
         for param in &decl.params {
             builder.push(&param.span, TokenKind::Parameter, true);
             walk_sort_expression(&param.sort, &mut builder);
         }
-        walk_process_expr(&decl.body, &symbols, &mut builder);
+        walk_process_expr(&decl.body, &symbols, &params, &mut builder);
     }
 
     if let Some(init) = &spec.init {
-        walk_process_expr(init, &symbols, &mut builder);
+        // `init` is not a process declaration's body, so no parameter is in scope here — a bare
+        // `x` in `init P(x = e)`'s expression would (rightly) fall back to `Variable`.
+        walk_process_expr(init, &symbols, &HashSet::new(), &mut builder);
     }
 
     tag_keywords(text, &mut builder);
@@ -175,15 +196,52 @@ pub fn pbes_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPb
         // A propositional-variable equation is PBES's one callable-name concept — no separate
         // action/process distinction to make (unlike `ProcessExprKind::Action`, see the module
         // docs above), so this and every `PropVarInst` below are unconditionally `Method`.
-        builder.push_identifier(&eqn.variable.span, &eqn.variable.identifier, TokenKind::Method, true);
+        builder.push(&eqn.variable.identifier.span, TokenKind::Method, true);
+        let params: HashSet<&str> = eqn.variable.parameters.iter().map(|param| param.identifier.as_str()).collect();
         for param in &eqn.variable.parameters {
             builder.push(&param.span, TokenKind::Parameter, true);
             walk_sort_expression(&param.sort, &mut builder);
         }
-        walk_pbes_expr(&eqn.formula, &symbols, &mut builder);
+        walk_pbes_expr(&eqn.formula, &symbols, &params, &mut builder);
     }
 
-    walk_prop_var_inst(&spec.init, &symbols, &mut builder);
+    // `init` is not an equation's own formula, so no parameter is in scope here.
+    walk_prop_var_inst(&spec.init, &symbols, &HashSet::new(), &mut builder);
+
+    tag_keywords(text, &mut builder);
+
+    builder.finish()
+}
+
+/// As [`pbes_semantic_tokens`], for a parsed PRES — [`UntypedPres`] has the identical shape one
+/// level down (see [`crate::completion::pres_completions`]'s doc comment), so this differs only in
+/// walking [`PresExpr`] instead of [`PbesExpr`] for each equation's formula.
+pub fn pres_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPres) -> Vec<SemanticToken> {
+    let symbols = SymbolTable::collect_pres(spec);
+    let mut builder = Builder::new(text, line_index);
+
+    tag_data_specification(&spec.data_specification, &symbols, &mut builder);
+
+    for decl in &spec.global_variables {
+        builder.push(&decl.span, TokenKind::Variable, true);
+        walk_sort_expression(&decl.sort, &mut builder);
+    }
+
+    for eqn in &spec.equations {
+        // As in `pbes_semantic_tokens`: a propositional-variable equation is PRES's one
+        // callable-name concept too, so this and every `PropVarInst` below are unconditionally
+        // `Method`.
+        builder.push(&eqn.variable.identifier.span, TokenKind::Method, true);
+        let params: HashSet<&str> = eqn.variable.parameters.iter().map(|param| param.identifier.as_str()).collect();
+        for param in &eqn.variable.parameters {
+            builder.push(&param.span, TokenKind::Parameter, true);
+            walk_sort_expression(&param.sort, &mut builder);
+        }
+        walk_pres_expr(&eqn.formula, &symbols, &params, &mut builder);
+    }
+
+    // `init` is not an equation's own formula, so no parameter is in scope here.
+    walk_prop_var_inst(&spec.init, &symbols, &HashSet::new(), &mut builder);
 
     tag_keywords(text, &mut builder);
 
@@ -213,6 +271,9 @@ fn tag_data_specification(data: &UntypedDataSpecification, symbols: &SymbolTable
         walk_sort_expression(&decl.sort, builder);
     }
 
+    // No `proc`/PBES-equation is in scope for a top-level data equation, so no parameter name is
+    // ever in scope here — see `classify_data_id`'s `current_params`.
+    let no_params = HashSet::new();
     for eqn_spec in &data.equation_declarations {
         for decl in &eqn_spec.variables {
             builder.push(&decl.span, TokenKind::Variable, true);
@@ -220,10 +281,10 @@ fn tag_data_specification(data: &UntypedDataSpecification, symbols: &SymbolTable
         }
         for eqn in &eqn_spec.equations {
             if let Some(condition) = &eqn.condition {
-                walk_data_expr(condition, symbols, builder);
+                walk_data_expr(condition, symbols, &no_params, builder);
             }
-            walk_data_expr(&eqn.lhs, symbols, builder);
-            walk_data_expr(&eqn.rhs, symbols, builder);
+            walk_data_expr(&eqn.lhs, symbols, &no_params, builder);
+            walk_data_expr(&eqn.rhs, symbols, &no_params, builder);
         }
     }
 }
@@ -244,47 +305,31 @@ struct SymbolTable<'a> {
     /// declaration site itself needs the distinct coloring in the first place.
     struct_accessors: HashSet<&'a str>,
     processes: HashSet<&'a str>,
-    /// Every `proc` declaration's parameter name (for a process specification) or every PBES
-    /// equation's parameter name (for a PBES) — flat, same as every other set here, so a
-    /// parameter reference reads the same regardless of which declaration's parameter it names
-    /// (see the module docs' "deliberately unscoped" note). This is what lets an ordinary
-    /// reference to a parameter — `x` in `P(x: Nat) = a.P(x)`'s positional call, not just the
-    /// assignment-form `x = e` [`walk_process_expr`] already tags directly — come out as
-    /// [`TokenKind::Parameter`] instead of falling back to [`TokenKind::Variable`].
-    parameters: HashSet<&'a str>,
 }
 
 impl<'a> SymbolTable<'a> {
     fn collect_process(spec: &'a UntypedProcessSpecification) -> Self {
         SymbolTable {
             processes: spec.process_declarations.iter().map(|decl| decl.identifier.as_str()).collect(),
-            parameters: spec
-                .process_declarations
-                .iter()
-                .flat_map(|decl| decl.params.iter().map(|param| param.identifier.as_str()))
-                .collect(),
             ..Self::collect_data(&spec.data_specification)
         }
     }
 
     /// As [`Self::collect_process`], for a PBES: `processes` stays empty, since
     /// [`SymbolTable::classify_action`] (the one thing that reads it) has nothing to disambiguate
-    /// for a PBES's `PropVarInst`s (see [`pbes_semantic_tokens`]); `parameters` instead comes from
-    /// every equation's own propositional-variable parameters.
+    /// for a PBES's `PropVarInst`s (see [`pbes_semantic_tokens`]).
     fn collect_pbes(spec: &'a UntypedPbes) -> Self {
-        SymbolTable {
-            parameters: spec
-                .equations
-                .iter()
-                .flat_map(|eqn| eqn.variable.parameters.iter().map(|param| param.identifier.as_str()))
-                .collect(),
-            ..Self::collect_data(&spec.data_specification)
-        }
+        Self::collect_data(&spec.data_specification)
     }
 
-    /// As [`Self::collect_process`]/[`Self::collect_pbes`], for the data-specification-only
-    /// namespaces both share — `processes` and `parameters` stay empty, filled in by whichever of
-    /// the two callers above has them.
+    /// As [`Self::collect_pbes`], for a PRES — same reasoning, `processes` stays empty.
+    fn collect_pres(spec: &'a UntypedPres) -> Self {
+        Self::collect_data(&spec.data_specification)
+    }
+
+    /// As [`Self::collect_process`]/[`Self::collect_pbes`]/[`Self::collect_pres`], for the
+    /// data-specification-only namespace all three share — `processes` stays empty, filled in by
+    /// [`Self::collect_process`].
     ///
     /// Also harvests every `sort D = struct c1(a: S)?is_c1 | c2;` alternative's own constructor
     /// name (`c1`/`c2`, into `constructors`) and accessor functions (`a`/`is_c1`, into
@@ -320,7 +365,6 @@ impl<'a> SymbolTable<'a> {
             constructors,
             struct_accessors,
             processes: HashSet::new(),
-            parameters: HashSet::new(),
         }
     }
 
@@ -331,19 +375,26 @@ impl<'a> SymbolTable<'a> {
     /// instead of left uncolored — [`MODIFIER_STRUCT_VARIANT`] itself is only ever set at the
     /// declaration site inside the `struct` expression (see [`walk_sort_expression`]); a use
     /// elsewhere carries no modifier, same as any other [`TokenKind::Method`] reference.
-    fn classify_data_id(&self, name: &str) -> Option<TokenKind> {
+    ///
+    /// `current_params` is the *current* `proc`/PBES-equation declaration's own parameter names
+    /// only — unlike every other set on `self`, parameters are genuinely scoped (see the module
+    /// docs' "deliberately unscoped" note, which is about everything *except* this): a name that
+    /// merely happens to be some *other* declaration's parameter must not read as
+    /// [`TokenKind::Parameter`] here, or every process/equation would highlight every other one's
+    /// parameter names too. Callers thread the right set in via [`walk_data_expr`].
+    fn classify_data_id(&self, name: &str, current_params: &HashSet<&str>) -> Option<TokenKind> {
         if self.constructors.contains(name) {
             Some(TokenKind::EnumMember)
         } else if self.struct_accessors.contains(name) {
             Some(TokenKind::Method)
         } else if self.maps.contains(name) {
             None
-        } else if self.parameters.contains(name) {
+        } else if current_params.contains(name) {
             Some(TokenKind::Parameter)
         } else {
-            // Not declared as a map, constructor, or parameter: a bound or free variable. This is
-            // also the fallback for a name that isn't declared at all — flagging that is a
-            // diagnostics concern (type checking), not this pass's job.
+            // Not declared as a map, constructor, or (in-scope) parameter: a bound or free
+            // variable. This is also the fallback for a name that isn't declared at all —
+            // flagging that is a diagnostics concern (type checking), not this pass's job.
             Some(TokenKind::Variable)
         }
     }
@@ -394,16 +445,6 @@ impl<'a> Builder<'a> {
     /// of mCRL2's own system sorts, never a declaration. See [`walk_sort_expression`].
     fn push_builtin_type(&mut self, span: &Span) {
         self.raw.push((span.clone(), TokenKind::Type, MODIFIER_DEFAULT_LIBRARY));
-    }
-
-    /// Tags just `identifier` within `span`, for the one shape that still covers more than the
-    /// name itself: a process/action instantiation's (`ProcExprId`/`Action` are spanned over the
-    /// whole `name(args...)`, not just `name`). Every declaration kind's own span is precisely
-    /// the identifier already (see `symbols.rs`'s `symbol_at`) — [`Builder::push`] tags those
-    /// directly.
-    fn push_identifier(&mut self, span: &Span, identifier: &str, kind: TokenKind, is_declaration: bool) {
-        let span = find_identifier(self.text, span, identifier).unwrap_or_else(|| span.clone());
-        self.push(&span, kind, is_declaration);
     }
 
     fn finish(mut self) -> Vec<SemanticToken> {
@@ -505,14 +546,15 @@ fn walk_sort_expression(expr: &SortExpression, builder: &mut Builder) {
     });
 }
 
-/// Walks every identifier in `expr`'s subtree: bare references (classified via `symbols`) and any
-/// binder (`lambda`/`forall`/`exists`/set-or-bag comprehension) it introduces along the way, plus
-/// that binder's sort.
-fn walk_data_expr(expr: &DataExpr, symbols: &SymbolTable, builder: &mut Builder) {
+/// Walks every identifier in `expr`'s subtree: bare references (classified via `symbols`, scoped
+/// to `current_params` — see [`SymbolTable::classify_data_id`]) and any binder
+/// (`lambda`/`forall`/`exists`/set-or-bag comprehension) it introduces along the way, plus that
+/// binder's sort.
+fn walk_data_expr(expr: &DataExpr, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
     expr.visit::<(), _>(|node| {
         match &node.node {
             DataExprKind::Id(name) => {
-                if let Some(kind) = symbols.classify_data_id(name) {
+                if let Some(kind) = symbols.classify_data_id(name, current_params) {
                     builder.push(&node.span, kind, false);
                 }
             }
@@ -536,22 +578,28 @@ fn walk_data_expr(expr: &DataExpr, symbols: &SymbolTable, builder: &mut Builder)
 /// any `sum`/`dist` binder, descending into the data expressions each carries — arguments,
 /// assignments, distributions, and conditions — none of which `Traverse` crosses into on its own,
 /// since they're a different node type ([`DataExpr`], not [`ProcessExpr`]).
-fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, builder: &mut Builder) {
+///
+/// `current_params` is the enclosing `proc` declaration's own parameter names (see
+/// [`SymbolTable::classify_data_id`]) — the same set for every node in `expr`, since a process
+/// body cannot itself declare a nested `proc`.
+fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
     expr.visit::<(), _>(|node| {
         match &node.node {
             ProcessExprKind::Id(name, assignments) => {
-                builder.push_identifier(&node.span, name, TokenKind::Method, false);
+                builder.push(&name.span, TokenKind::Method, false);
                 for assignment in assignments {
-                    // The parameter name in `x = e` — a *use* of an existing process parameter,
-                    // not a new binding, hence no `MODIFIER_DECLARATION`.
+                    // The parameter name in `x = e` — a *use* of the *target* process `name`'s
+                    // own parameter (by construction of the assignment syntax), not necessarily
+                    // one of the enclosing process's — always `Parameter` regardless of
+                    // `current_params`, same as before this function took that scope.
                     builder.push(&assignment.span, TokenKind::Parameter, false);
-                    walk_data_expr(&assignment.expr, symbols, builder);
+                    walk_data_expr(&assignment.expr, symbols, current_params, builder);
                 }
             }
             ProcessExprKind::Action(name, arguments) => {
-                builder.push_identifier(&node.span, name, symbols.classify_action(name), false);
+                builder.push(&name.span, symbols.classify_action(name), false);
                 for argument in arguments {
-                    walk_data_expr(argument, symbols, builder);
+                    walk_data_expr(argument, symbols, current_params, builder);
                 }
             }
             ProcessExprKind::Sum { variables, .. } => {
@@ -565,13 +613,13 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, builder: &mut Bu
                     builder.push(&variable.span, TokenKind::Variable, true);
                     walk_sort_expression(&variable.sort, builder);
                 }
-                walk_data_expr(expr, symbols, builder);
+                walk_data_expr(expr, symbols, current_params, builder);
             }
             ProcessExprKind::Condition { condition, .. } => {
-                walk_data_expr(condition, symbols, builder);
+                walk_data_expr(condition, symbols, current_params, builder);
             }
             ProcessExprKind::At { operand, .. } => {
-                walk_data_expr(operand, symbols, builder);
+                walk_data_expr(operand, symbols, current_params, builder);
             }
             _ => {}
         }
@@ -584,11 +632,15 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, builder: &mut Bu
 /// data expressions, and any `forall`/`exists` binder, descending into the data expressions each
 /// carries — none of which `Traverse` crosses into on its own, same reasoning as
 /// [`walk_process_expr`].
-fn walk_pbes_expr(expr: &PbesExpr, symbols: &SymbolTable, builder: &mut Builder) {
+///
+/// `current_params` is the enclosing PBES equation's own parameter names (see
+/// [`SymbolTable::classify_data_id`]) — the same set for every node in `expr`, since a formula
+/// cannot itself declare a nested equation.
+fn walk_pbes_expr(expr: &PbesExpr, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
     expr.visit::<(), _>(|node| {
         match &node.node {
-            PbesExprKind::PropVarInst(inst) => walk_prop_var_inst(inst, symbols, builder),
-            PbesExprKind::DataValExpr(data_expr) => walk_data_expr(data_expr, symbols, builder),
+            PbesExprKind::PropVarInst(inst) => walk_prop_var_inst(inst, symbols, current_params, builder),
+            PbesExprKind::DataValExpr(data_expr) => walk_data_expr(data_expr, symbols, current_params, builder),
             PbesExprKind::Quantifier { variables, .. } => {
                 for variable in variables {
                     builder.push(&variable.span, TokenKind::Variable, true);
@@ -601,13 +653,44 @@ fn walk_pbes_expr(expr: &PbesExpr, symbols: &SymbolTable, builder: &mut Builder)
     });
 }
 
+/// As [`walk_pbes_expr`], for a [`PresExpr`] tree — a `val(...)`-wrapped data expression and any
+/// `PropVarInst` are tagged the same way; a `sum`/`inf`/`sup` [`PresExprKind::Bound`] binder plays
+/// the same role a PBES `Quantifier` does; and each side of a scalar multiplication
+/// (`PresExprKind::RightConstantMultiply`/`LeftConstantMultiply`) carries its own `constant` —
+/// a [`DataExpr`], not a nested [`PresExpr`], so `Traverse` doesn't reach it on its own, same
+/// reasoning as every other data-expression field this module walks explicitly. `Equal`'s and
+/// `Condition`'s own tag fields (`Eq`/`Condition`) carry no identifiers; their `body`/`lhs`/
+/// `then`/`else_` children are plain [`PresExpr`] nodes `Traverse` already recurses into.
+fn walk_pres_expr(expr: &PresExpr, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+    expr.visit::<(), _>(|node| {
+        match &node.node {
+            PresExprKind::PropVarInst(inst) => walk_prop_var_inst(inst, symbols, current_params, builder),
+            PresExprKind::DataValExpr(data_expr) => walk_data_expr(data_expr, symbols, current_params, builder),
+            PresExprKind::RightConstantMultiply { constant, .. } | PresExprKind::LeftConstantMultiply { constant, .. } => {
+                walk_data_expr(constant, symbols, current_params, builder);
+            }
+            PresExprKind::Bound { variables, .. } => {
+                for variable in variables {
+                    builder.push(&variable.span, TokenKind::Variable, true);
+                    walk_sort_expression(&variable.sort, builder);
+                }
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    });
+}
+
 /// Tags a propositional-variable instantiation's own name, then walks each of its arguments —
-/// shared by [`walk_pbes_expr`] (a `PropVarInst` occurring inside a formula) and
-/// [`pbes_semantic_tokens`] (a PBES's `init`).
-fn walk_prop_var_inst(inst: &PropVarInst, symbols: &SymbolTable, builder: &mut Builder) {
-    builder.push_identifier(&inst.span, &inst.node.identifier, TokenKind::Method, false);
+/// shared by [`walk_pbes_expr`]/[`walk_pres_expr`] (a `PropVarInst` occurring inside a formula)
+/// and [`pbes_semantic_tokens`]/[`pres_semantic_tokens`] (a PBES/PRES's `init`, which passes an
+/// empty `current_params`: no equation is in scope there). `identifier` now carries its own span,
+/// precisely the name (an upstream `merc_syntax` addition mirroring `ActionName`), so this tags it
+/// directly rather than text-searching `inst`'s whole `name(args)` span for it.
+fn walk_prop_var_inst(inst: &PropVarInst, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+    builder.push(&inst.node.identifier.span, TokenKind::Method, false);
     for argument in &inst.node.arguments {
-        walk_data_expr(argument, symbols, builder);
+        walk_data_expr(argument, symbols, current_params, builder);
     }
 }
 
@@ -702,6 +785,15 @@ mod tests {
         }
     }
 
+    async fn pres_tokens_for(text: &str) -> Vec<SemanticToken> {
+        let outcome = parse(SpecKind::Pres, text.to_string()).await;
+        let line_index = LineIndex::new(text);
+        match outcome {
+            ParseOutcome::Ok(Specification::Pres(spec)) => pres_semantic_tokens(text, &line_index, &spec),
+            _ => panic!("fixture failed to parse"),
+        }
+    }
+
     /// Reconstructs absolute (line, character, length, type, modifiers) tuples from the
     /// delta-encoded token stream, so assertions can be written against plain positions.
     fn absolute(tokens: &[SemanticToken]) -> Vec<(u32, u32, u32, u32, u32)> {
@@ -756,7 +848,7 @@ mod tests {
         // bogus second `Condition`. Only the chain's last branch ended up parsed (and therefore
         // tagged) as real process-algebra structure; every earlier branch's `e`/`P` calls and `x`
         // condition read as generic data-expression tokens instead of `Event`/`Method`/`Parameter`.
-        // `crate::parse::parse` now runs `reparse_process_specification` on every parsed process
+        // `crate::parse::parse` now runs `disambiguate_process_specification` on every parsed process
         // specification before handing it to any consumer, which reconstructs the intended
         // structure from the declared action/process names alone — this checks every branch, not
         // just the last one, gets the right token kind.
@@ -889,6 +981,37 @@ mod tests {
             && c == use_pos.character
             && len == 1
             && ty == TokenKind::Parameter as u32
+            && modifiers == 0));
+    }
+
+    #[tokio::test]
+    async fn parameter_of_one_process_is_not_tagged_parameter_in_an_unrelated_process() {
+        // Regression test: `x` is `P`'s own parameter, but also happens to be the name of an
+        // unrelated `glob`al variable that `Q` (which declares no parameter of its own) refers to
+        // — `x` inside `Q`'s body must not light up as `Parameter` merely because *some* process
+        // elsewhere in the document happens to declare a parameter with that name.
+        let text = "glob x: Bool;\nact a: Bool;\nproc P(x: Bool) = a(x);\nproc Q = a(x);\ninit P(true) || Q;";
+        let tokens = tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let p_use = text.find("a(x)").unwrap() + "a(".len();
+        let q_use = text.rfind("a(x)").unwrap() + "a(".len();
+        let p_use_pos = line_index.position(text, p_use);
+        let q_use_pos = line_index.position(text, q_use);
+
+        // Inside `P`, `x` is `P`'s own parameter.
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == p_use_pos.line
+            && c == p_use_pos.character
+            && len == 1
+            && ty == TokenKind::Parameter as u32
+            && modifiers == 0));
+        // Inside `Q`, the same name `x` is not a parameter of `Q` — it's the global variable — so
+        // it must be tagged `Variable`, not `Parameter`.
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == q_use_pos.line
+            && c == q_use_pos.character
+            && len == 1
+            && ty == TokenKind::Variable as u32
             && modifiers == 0));
     }
 
@@ -1076,6 +1199,143 @@ mod tests {
     async fn pbes_tokens_are_sorted_and_non_overlapping() {
         let text = "sort D;\ncons c: D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = f(c);\npbes mu X(n: Bool) = val(n) || X(n);\ninit X(true);";
         let tokens = pbes_tokens_for(text).await;
+        let positions = absolute(&tokens);
+
+        for window in positions.windows(2) {
+            let [(l1, c1, len1, ..), (l2, c2, ..)] = window else { unreachable!() };
+            assert!((*l1, *c1) < (*l2, *c2), "tokens must be strictly ordered by position");
+            if l1 == l2 {
+                assert!(c1 + len1 <= *c2, "tokens on the same line must not overlap");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pres_propvarinst_parameter_use_is_tagged_parameter_not_variable() {
+        // As `pbes_propvarinst_parameter_use_is_tagged_parameter_not_variable`, for a PRES: `n`
+        // inside `val(n)` is a use of the equation's own parameter, and the recursive `X(n)`'s
+        // argument likewise, across a PRES-specific `+` (`PresExprKind::Binary`).
+        let text = "pres mu X(n: Nat) = val(n) + X(n); init X(0);";
+        let tokens = pres_tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let val_use = text.find("val(n)").unwrap() + "val(".len();
+        let recursive_use = text.rfind("X(n)").unwrap() + "X(".len();
+        let val_pos = line_index.position(text, val_use);
+        let recursive_pos = line_index.position(text, recursive_use);
+
+        for pos in [val_pos, recursive_pos] {
+            assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == pos.line
+                && c == pos.character
+                && len == 1
+                && ty == TokenKind::Parameter as u32
+                && modifiers == 0));
+        }
+    }
+
+    #[tokio::test]
+    async fn pres_equation_and_parameter_and_propvarinst_are_tagged() {
+        let text = "pres mu X(n: Nat) = val(n) + X(n); init X(0);";
+        let tokens = pres_tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let decl_pos = line_index.position(text, text.find('X').unwrap());
+        let param_decl_pos = line_index.position(text, text.find("n: Nat").unwrap());
+        let recursive_use_pos = line_index.position(text, text.rfind("X(n)").unwrap());
+        let init_use_pos = line_index.position(text, text.find("init X").unwrap() + "init ".len());
+
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == decl_pos.line
+            && c == decl_pos.character
+            && len == 1
+            && ty == TokenKind::Method as u32
+            && modifiers == MODIFIER_DECLARATION));
+        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == param_decl_pos.line
+            && c == param_decl_pos.character
+            && ty == TokenKind::Parameter as u32
+            && modifiers == MODIFIER_DECLARATION));
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == recursive_use_pos.line
+            && c == recursive_use_pos.character
+            && len == 1
+            && ty == TokenKind::Method as u32
+            && modifiers == 0));
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == init_use_pos.line
+            && c == init_use_pos.character
+            && len == 1
+            && ty == TokenKind::Method as u32
+            && modifiers == 0));
+    }
+
+    #[tokio::test]
+    async fn pres_bound_binder_is_tagged_as_a_variable_declaration() {
+        // `sum`/`inf`/`sup` are PRES's own binder forms (`PresExprKind::Bound`), distinct from a
+        // PBES `Quantifier` node but playing the identical role here.
+        let text = "pres mu X = sum n: Nat . val(n); init X;";
+        let tokens = pres_tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let binder_pos = line_index.position(text, text.find("n: Nat").unwrap());
+        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == binder_pos.line
+            && c == binder_pos.character
+            && ty == TokenKind::Variable as u32
+            && modifiers == MODIFIER_DECLARATION));
+    }
+
+    #[tokio::test]
+    async fn pres_constant_multiply_operand_is_walked_as_a_data_expression() {
+        // `PresExprKind::RightConstantMultiply`/`LeftConstantMultiply`'s own `constant` field is a
+        // `DataExpr`, not a nested `PresExpr` — `Traverse` doesn't reach it on its own, so
+        // `walk_pres_expr` has to walk it explicitly (see its doc comment).
+        let text = "pres mu X(n: Nat) = val(n) * X(n); init X(0);";
+        let tokens = pres_tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let constant_use = text.rfind("val(n) * X(n)").unwrap() + "val(".len();
+        let constant_pos = line_index.position(text, constant_use);
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == constant_pos.line
+            && c == constant_pos.character
+            && len == 1
+            && ty == TokenKind::Parameter as u32
+            && modifiers == 0));
+    }
+
+    #[tokio::test]
+    async fn parameter_of_one_pres_equation_is_not_tagged_parameter_in_an_unrelated_equation() {
+        // As `parameter_of_one_process_is_not_tagged_parameter_in_an_unrelated_process`, for a
+        // PRES: `n` is `X`'s own parameter, but also the name of an unrelated `glob`al variable
+        // that `Y` (which declares no parameter of its own) refers to.
+        let text = "glob n: Bool;\npres mu X(n: Bool) = val(n);\nnu Y = val(n);\ninit X(true);";
+        let tokens = pres_tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let x_use = text.find("val(n)").unwrap() + "val(".len();
+        let y_use = text.rfind("val(n)").unwrap() + "val(".len();
+        let x_use_pos = line_index.position(text, x_use);
+        let y_use_pos = line_index.position(text, y_use);
+
+        // Inside `X`, `n` is `X`'s own parameter.
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == x_use_pos.line
+            && c == x_use_pos.character
+            && len == 1
+            && ty == TokenKind::Parameter as u32
+            && modifiers == 0));
+        // Inside `Y`, the same name `n` is not a parameter of `Y` — it's the global variable —
+        // so it must be tagged `Variable`, not `Parameter`.
+        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == y_use_pos.line
+            && c == y_use_pos.character
+            && len == 1
+            && ty == TokenKind::Variable as u32
+            && modifiers == 0));
+    }
+
+    #[tokio::test]
+    async fn pres_tokens_are_sorted_and_non_overlapping() {
+        let text = "sort D;\ncons c: D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = f(c);\npres mu X(n: Nat) = val(n) + X(n); init X(0);";
+        let tokens = pres_tokens_for(text).await;
         let positions = absolute(&tokens);
 
         for window in positions.windows(2) {

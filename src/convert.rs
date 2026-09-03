@@ -109,10 +109,8 @@ impl LineIndex {
     /// past the end of an existing line clamps to the line's end instead of failing, matching
     /// how most LSP clients send positions that are momentarily out of sync with the server.
     ///
-    /// Not called from production code yet — reserved for the offset-lookup side of hover
-    /// (PLAN.md §3.7), a stretch goal not implemented in phase 1. Exercised by the round-trip
-    /// test below in the meantime.
-    #[allow(dead_code)]
+    /// Used by `backend::completion_request` to find the byte offset a completion request's
+    /// cursor position names, for [`crate::completion_context`] to classify.
     pub fn offset(&self, text: &str, position: Position) -> Option<usize> {
         let line = *self.lines.get(position.line as usize)?;
         let line_end = self

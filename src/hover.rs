@@ -17,7 +17,6 @@ use merc_typecheck::TypingInfo;
 
 use crate::convert::LineIndex;
 use crate::parse::Specification;
-use crate::sort_ref;
 
 /// Everything [`hover`] needs that doesn't vary per request is added.
 /// `position` stays a separate argument to [`hover`] since it's the one input
@@ -32,11 +31,12 @@ pub struct HoverContext<'a> {
     pub doc_uri: Option<&'a Url>,
 }
 
-/// Builds hover content for `position`, or `None` when it isn't over a typed expression node or a
-/// sort reference, or `position` doesn't resolve to an offset into `ctx.text` at all.
+/// Builds hover content for `position`, or `None` when it isn't over a typed
+/// node at all, or `position` doesn't resolve to an offset into `ctx.text` at
+/// all.
 ///
-/// When `ctx.doc_uri` is provided, hover text includes a "Go to definition" link pointing at the
-/// declaration.
+/// When `ctx.doc_uri` is provided, hover text includes a "Go to definition"
+/// link pointing at the declaration.
 pub fn hover(ctx: &HoverContext, position: Position) -> Option<Hover> {
     let &HoverContext {
         text,
@@ -48,27 +48,39 @@ pub fn hover(ctx: &HoverContext, position: Position) -> Option<Hover> {
         doc_uri,
     } = ctx;
     let offset = line_index.offset(text, position)?;
+    let node = typing_info.at_offset(offset)?;
 
-    if let Some(node) = typing_info.at_offset(offset) {
+    // A sort-name reference resolves to a name and a declaration span, not a declaration itself.
+    if let Some(ResolvedName::Sort { name, .. }) = &node.name {
+        let decl = spec.and_then(|spec| find_sort_declaration(spec, name))?;
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: hover_markdown(node, actions, processes, doc_uri, line_index, text),
+                value: sort_hover_markdown(decl, doc_uri, line_index, text),
             }),
             range: Some(line_index.range(text, &node.span)),
         });
     }
 
-    let spec = spec?;
-    let found = sort_ref::sort_ref_at(spec, offset)?;
-    let decl = sort_ref::find_sort_declaration(spec, &found.name)?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: sort_hover_markdown(decl, doc_uri, line_index, text),
+            value: hover_markdown(node, actions, processes, doc_uri, line_index, text),
         }),
-        range: Some(line_index.range(text, &found.span)),
+        range: Some(line_index.range(text, &node.span)),
     })
+}
+
+/// The `sort` block declaring `name`, if the specification's data specification has one — `None`
+/// only when `spec` doesn't have one, which shouldn't arise for a name a [`ResolvedName::Sort`]
+/// node reported.
+fn find_sort_declaration<'a>(spec: &'a Specification, name: &str) -> Option<&'a SortDecl> {
+    let declarations = match spec {
+        Specification::Process(spec) => &spec.data_specification.sort_declarations,
+        Specification::Pbes(spec) => &spec.data_specification.sort_declarations,
+        Specification::Pres(spec) => &spec.data_specification.sort_declarations,
+    };
+    declarations.iter().find(|decl| decl.identifier == name)
 }
 
 /// Renders the sort declaration as Markdown.
@@ -96,7 +108,7 @@ fn hover_markdown(
     text: &str,
 ) -> String {
     if let Some(ResolvedName::Action { name, declaration }) = &node.name {
-        let decl = declaration.as_ref().and_then(|span| actions.iter().find(|decl| &decl.span == span));
+        let decl = declaration.as_ref().and_then(|span| actions.iter().find(|decl| &decl.identifier.span == span));
         let link = declaration.as_ref().map_or(String::new(), |span| goto_def_link(span, doc_uri, line_index, text));
         return match decl.filter(|decl| !decl.args.is_empty()) {
             Some(decl) => {
@@ -108,7 +120,7 @@ fn hover_markdown(
     }
 
     if let Some(ResolvedName::Process { name, declaration }) = &node.name {
-        let decl = declaration.as_ref().and_then(|span| processes.iter().find(|decl| &decl.span == span));
+        let decl = declaration.as_ref().and_then(|span| processes.iter().find(|decl| &decl.identifier.span == span));
         let link = declaration.as_ref().map_or(String::new(), |span| goto_def_link(span, doc_uri, line_index, text));
         let kind = "process";
         return match decl.filter(|decl| !decl.params.is_empty()) {

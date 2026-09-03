@@ -37,6 +37,8 @@ use merc_typecheck::ProcessSpecification;
 
 use crate::capabilities::server_capabilities;
 use crate::completion;
+use crate::completion::CompletionCategory;
+use crate::completion_context;
 use crate::document::CheckedOutcome;
 use crate::document::Document;
 use crate::document::DocumentStore;
@@ -121,7 +123,8 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         })
         .notification::<notification::DidOpenTextDocument>(|state, params| {
             let doc = params.text_document;
-            spawn_on_change(state, doc.uri, doc.text, doc.version);
+            // Publish immediately
+            spawn_on_change(state, doc.uri, doc.text, doc.version, true);
             ControlFlow::Continue(())
         })
         .notification::<notification::DidChangeTextDocument>(|state, params| {
@@ -129,14 +132,14 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
             // means the client always sends exactly one change event containing the whole new
             // text.
             if let Some(change) = params.content_changes.into_iter().next() {
-                spawn_on_change(state, params.text_document.uri, change.text, params.text_document.version);
+                spawn_on_change(state, params.text_document.uri, change.text, params.text_document.version, false);
             }
             ControlFlow::Continue(())
         })
         .notification::<notification::DidSaveTextDocument>(|state, params| {
-            // With FULL sync, `did_change` already re-parsed and published on every edit;
-            // re-publish the already-computed diagnostics for clients that only reliably fire on
-            // save.
+            // `did_change` already re-parsed and type checked on every edit. So
+            // the diagnostics for the just-saved text are already sitting in
+            // the store; this only has to publish them.
             let uri = params.text_document.uri;
             if let Some(document) = state.documents.get(&uri) {
                 let diags = document.diagnostics();
@@ -150,11 +153,7 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
             state.documents.remove(&params.text_document.uri);
             ControlFlow::Continue(())
         })
-        // The default catch-all breaks the main loop on any notification with no registered
-        // handler (besides `$/`-prefixed ones) — including standard ones we simply don't act on,
-        // like `workspace/didChangeConfiguration`, and `exit` itself, which `LifecycleLayer`
-        // forwards down to us before breaking the loop on its own. Ignore anything we don't
-        // handle instead of taking the server down.
+        // Ignore anything we don't handle instead of taking the server down.
         .unhandled_notification(|_, _| ControlFlow::Continue(()));
 
     router
@@ -182,25 +181,37 @@ fn completion_request(documents: &DocumentStore, params: CompletionParams) -> Op
     let ParseOutcome::Ok(spec) = &document.parsed else {
         return None;
     };
+    // Falls back to `CompletionCategory::Unscoped` whenever the position
+    // doesn't resolve to a byte offset at all — a client sending a position
+    // outside the document is not reason enough to offer nothing.
+    let offset = document.line_index.offset(&document.text, params.text_document_position.position);
     let items = match spec {
-        Specification::Process(spec) => completion::completions(spec),
-        Specification::Pbes(spec) => completion::pbes_completions(spec),
-        Specification::Pres(spec) => completion::pres_completions(spec),
+        Specification::Process(spec) => {
+            let category = offset.map_or(CompletionCategory::Unscoped, |offset| completion_context::process_category(spec, offset));
+            completion::completions(spec, category)
+        }
+        Specification::Pbes(spec) => {
+            let category = offset.map_or(CompletionCategory::Unscoped, |offset| completion_context::pbes_category(spec, offset));
+            completion::pbes_completions(spec, category)
+        }
+        Specification::Pres(spec) => {
+            let category = offset.map_or(CompletionCategory::Unscoped, |offset| completion_context::pres_category(spec, offset));
+            completion::pres_completions(spec, category)
+        }
     };
     Some(CompletionResponse::Array(items))
 }
 
 fn semantic_tokens_full(documents: &DocumentStore, params: SemanticTokensParams) -> Option<SemanticTokensResult> {
     let document = documents.get(&params.text_document.uri)?;
-    // No parse, no tokens, so nothing to report. Nothing yet for PRES specifically (see
-    // `parse::SpecKind`'s docs) — process specifications and PBES both have their own pass below.
+    // No parse, no tokens, so nothing to report.
     let ParseOutcome::Ok(spec) = &document.parsed else {
         return None;
     };
     let data = match spec {
         Specification::Process(spec) => semantic_tokens::semantic_tokens(&document.text, &document.line_index, spec),
         Specification::Pbes(spec) => semantic_tokens::pbes_semantic_tokens(&document.text, &document.line_index, spec),
-        Specification::Pres(_) => return None,
+        Specification::Pres(spec) => semantic_tokens::pres_semantic_tokens(&document.text, &document.line_index, spec),
     };
     Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data }))
 }
@@ -235,12 +246,8 @@ fn goto_definition_request(documents: &DocumentStore, params: GotoDefinitionPara
     let uri = params.text_document_position_params.text_document.uri.clone();
     let mut document = documents.get_mut(&uri)?;
     let typing_info = document.typing_info()?;
-    let spec = match &document.parsed {
-        ParseOutcome::Ok(spec) => Some(spec),
-        _ => None,
-    };
     let position = params.text_document_position_params.position;
-    let range = goto_definition::definition_range(&document.text, &document.line_index, &typing_info, spec, position)?;
+    let range = goto_definition::definition_range(&document.text, &document.line_index, &typing_info, position)?;
     Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
 }
 
@@ -258,19 +265,18 @@ fn inlay_hint_request(documents: &DocumentStore, params: InlayHintParams) -> Opt
 }
 
 /// Clones out of `state` whatever [`on_change`] needs and spawns it, so parsing can `.await`
-/// past this (synchronous) notification handler's borrow of `state`.
-fn spawn_on_change(state: &mut Backend, uri: Url, text: String, version: i32) {
+/// past this (synchronous) notification handler's borrow of `state`. `publish` is threaded
+/// straight through to [`on_change`] — see there for what it controls.
+fn spawn_on_change(state: &mut Backend, uri: Url, text: String, version: i32, publish: bool) {
     let client = state.client.clone();
     let documents = state.documents.clone();
-    tokio::spawn(on_change(client, documents, uri, text, version));
+    tokio::spawn(on_change(client, documents, uri, text, version, publish));
 }
 
 /// Re-parses `text` at `version` for `uri` (as whichever [`SpecKind`] its extension selects),
 /// type checks it if parsing succeeded and a type checker exists for the kind (a process
-/// specification or a PBES; PRES has none upstream yet — see [`crate::parse`]'s docs), stores the
-/// result, and publishes diagnostics for it. Used by `did_open` and `did_change` (via
-/// [`spawn_on_change`]).
-async fn on_change(client: ClientSocket, documents: Arc<DocumentStore>, uri: Url, text: String, version: i32) {
+/// specification or a PBES; PRES has none upstream yet — see [`crate::parse`]'s docs).
+async fn on_change(client: ClientSocket, documents: Arc<DocumentStore>, uri: Url, text: String, version: i32, publish: bool) {
     let outcome = parse::parse(SpecKind::from_uri(&uri), text.clone()).await;
 
     // Only meaningful once parsing succeeded. Cloned (rather than moved) out of `outcome`: the
@@ -300,11 +306,16 @@ async fn on_change(client: ClientSocket, documents: Arc<DocumentStore>, uri: Url
     }
 
     let document = Document::new(text, version, outcome, checked);
-    let diags = document.diagnostics();
+    // Computed before the store takes ownership of `document`, `publish` or not: a `did_save`
+    // later reads this same computation back out of the store rather than redoing it (see
+    // `router`'s `DidSaveTextDocument` handler).
+    let diags = publish.then(|| document.diagnostics());
     documents.insert(uri.clone(), document);
-    // Publishing is mandatory even when `diags` is empty: an empty vector is what clears any
-    // diagnostics left over from a previous, failing parse.
-    publish_diagnostics(&client, uri, diags, version);
+    if let Some(diags) = diags {
+        // Publishing is mandatory even when `diags` is empty: an empty vector is what clears any
+        // diagnostics left over from a previous, failing parse.
+        publish_diagnostics(&client, uri, diags, version);
+    }
 }
 
 fn publish_diagnostics(client: &ClientSocket, uri: Url, diagnostics: Vec<Diagnostic>, version: i32) {

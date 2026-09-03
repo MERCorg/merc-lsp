@@ -308,7 +308,7 @@ fn resolved_process_param_names<'a>(
     })?;
     spec.process_declarations()
         .iter()
-        .find(|decl| decl.span == decl_span)
+        .find(|decl| decl.identifier.span == decl_span)
         .map(|decl| {
             decl.params
                 .iter()
@@ -329,7 +329,7 @@ fn propvarinst_param_names<'a>(
 ) -> Option<Vec<&'a str>> {
     spec.equations()
         .iter()
-        .find(|eqn| eqn.variable.identifier == name && eqn.variable.parameters.len() == arity)
+        .find(|eqn| eqn.variable.identifier.as_str() == name && eqn.variable.parameters.len() == arity)
         .map(|eqn| {
             eqn.variable
                 .parameters

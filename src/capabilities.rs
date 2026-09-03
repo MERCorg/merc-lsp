@@ -9,14 +9,21 @@ use lsp_types::SemanticTokensServerCapabilities;
 use lsp_types::ServerCapabilities;
 use lsp_types::TextDocumentSyncCapability;
 use lsp_types::TextDocumentSyncKind;
+use lsp_types::TextDocumentSyncOptions;
+use lsp_types::TextDocumentSyncSaveOptions;
 
 use crate::semantic_tokens;
 
 /// Capabilities advertised by this LSP.
 pub fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
-        // We don't support increment parsing.
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        // We don't support incremental parsing, so we use full document sync.
+        text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
+            open_close: Some(true),
+            change: Some(TextDocumentSyncKind::FULL),
+            save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+            ..TextDocumentSyncOptions::default()
+        })),
         document_symbol_provider: Some(OneOf::Left(true)),
         // AST-driven coloring
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
