@@ -26,7 +26,7 @@ use lsp_types::Url;
 use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
-use merc_typecheck::reparse_process_specification;
+use merc_typecheck::disambiguate_process_specification;
 use merc_utilities::MercError;
 
 /// Which of `merc_syntax`'s three top-level grammar entry points a document should be parsed
@@ -113,13 +113,13 @@ pub async fn parse(kind: SpecKind, text: String) -> ParseOutcome {
             UntypedProcessSpecification::parse(&text).map(|mut spec| {
                 // Reconstructs process-algebra structure the grammar mis-parsed as a data
                 // expression (a long `cond -> (...) + cond -> (...) + ...` chain being the
-                // motivating case — see `reparse_process_specification`'s own doc comment) using
-                // only declared action/process names, before anything downstream (semantic
+                // motivating case — see `disambiguate_process_specification`'s own doc comment)
+                // using only declared action/process names, before anything downstream (semantic
                 // tokens, inlay hints, completion, and — via `typecheck::typecheck`, which
-                // re-reparses idempotently — type checking itself) ever sees this AST. Applied
-                // here rather than separately in each consumer so every feature agrees on the
-                // same corrected tree.
-                reparse_process_specification(&mut spec);
+                // re-disambiguates idempotently — type checking itself) ever sees this AST.
+                // Applied here rather than separately in each consumer so every feature agrees on
+                // the same corrected tree.
+                disambiguate_process_specification(&mut spec);
                 Specification::Process(Box::new(spec))
             })
         })

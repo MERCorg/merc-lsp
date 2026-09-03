@@ -20,6 +20,7 @@ use lsp_types::CompletionParams;
 use lsp_types::CompletionResponse;
 use lsp_types::DidChangeTextDocumentParams;
 use lsp_types::DidOpenTextDocumentParams;
+use lsp_types::DidSaveTextDocumentParams;
 use lsp_types::DocumentSymbolParams;
 use lsp_types::DocumentSymbolResponse;
 use lsp_types::GotoDefinitionParams;
@@ -41,6 +42,8 @@ use lsp_types::TextDocumentContentChangeEvent;
 use lsp_types::TextDocumentIdentifier;
 use lsp_types::TextDocumentItem;
 use lsp_types::TextDocumentPositionParams;
+use lsp_types::TextDocumentSyncCapability;
+use lsp_types::TextDocumentSyncKind;
 use lsp_types::Url;
 use lsp_types::VersionedTextDocumentIdentifier;
 use lsp_types::notification;
@@ -111,6 +114,28 @@ async fn next_diagnostics(rx: &mut UnboundedReceiver<PublishDiagnosticsParams>) 
         .expect("drain channel closed unexpectedly")
 }
 
+/// `didChange` hands the actual reparse off to a spawned task and returns
+/// immediately `didSave`'s handler, unlike `didChange`'s, can't be `.await`ed
+/// by the test.
+async fn wait_for_reparse(server: &ServerSocket, document_uri: Url, mut predicate: impl FnMut(&Option<DocumentSymbolResponse>) -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let response = server
+            .request::<request::DocumentSymbolRequest>(DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri: document_uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .expect("documentSymbol should succeed");
+        if predicate(&response) {
+            return;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for the didChange reparse to land");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 fn did_open(uri: Url, text: &str) -> DidOpenTextDocumentParams {
     DidOpenTextDocumentParams {
         text_document: TextDocumentItem {
@@ -126,6 +151,18 @@ fn did_open(uri: Url, text: &str) -> DidOpenTextDocumentParams {
 async fn initialize_advertises_document_symbol_support() {
     let (_server, result, _rx) = start().await;
     assert_eq!(result.capabilities.document_symbol_provider, Some(OneOf::Left(true)));
+}
+
+/// The bare-`TextDocumentSyncKind` shorthand this used to advertise implicitly means *no*
+/// `didSave` notifications at all.
+#[tokio::test]
+async fn initialize_advertises_save_notification_support() {
+    let (_server, result, _rx) = start().await;
+    let Some(TextDocumentSyncCapability::Options(options)) = result.capabilities.text_document_sync else {
+        panic!("expected full TextDocumentSyncOptions, got {:?}", result.capabilities.text_document_sync);
+    };
+    assert_eq!(options.change, Some(TextDocumentSyncKind::FULL));
+    assert!(options.save.is_some(), "didSave notifications must be requested");
 }
 
 #[tokio::test]
@@ -198,6 +235,9 @@ async fn did_open_with_ill_typed_document_publishes_a_type_diagnostic() {
 
 /// Regression test for the single most common LSP bug: forgetting to publish the *empty*
 /// diagnostics vector on a bad -> good transition, leaving stale squiggles in the editor forever.
+///
+/// Diagnostics are only surfaced on `didOpen`/`didSave` (see the next two tests for that in
+/// isolation), so this drives a `didChange` followed by a `didSave` to observe the clear.
 #[tokio::test]
 async fn fixing_a_malformed_document_clears_its_diagnostics() {
     let (server, _result, mut rx) = start().await;
@@ -211,7 +251,7 @@ async fn fixing_a_malformed_document_clears_its_diagnostics() {
 
     server
         .notify::<notification::DidChangeTextDocument>(DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier { uri: document_uri, version: 2 },
+            text_document: VersionedTextDocumentIdentifier { uri: document_uri.clone(), version: 2 },
             content_changes: vec![TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
@@ -219,9 +259,59 @@ async fn fixing_a_malformed_document_clears_its_diagnostics() {
             }],
         })
         .expect("didChange should be queued");
+    // WELL_FORMED parses (unlike the MALFORMED text still stored until the spawned reparse
+    // lands), so a non-`None` response is proof the reparse has landed.
+    wait_for_reparse(&server, document_uri.clone(), |response| response.is_some()).await;
+    server
+        .notify::<notification::DidSaveTextDocument>(DidSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri: document_uri },
+            text: None,
+        })
+        .expect("didSave should be queued");
     let second = next_diagnostics(&mut rx).await;
     assert!(second.diagnostics.is_empty(), "diagnostics must be cleared once the document is fixed");
     assert_eq!(second.version, Some(2));
+}
+
+/// The core of "check on save": editing a document without saving must not surface a diagnostic
+/// for it.
+#[tokio::test]
+async fn editing_without_saving_does_not_publish_diagnostics() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("edit-only.mcrl2");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), WELL_FORMED))
+        .expect("didOpen should be queued");
+    let opened = next_diagnostics(&mut rx).await;
+    assert!(opened.diagnostics.is_empty());
+
+    server
+        .notify::<notification::DidChangeTextDocument>(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier { uri: document_uri.clone(), version: 2 },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: MALFORMED.to_string(),
+            }],
+        })
+        .expect("didChange should be queued");
+
+    // The change above introduced a parse error, but with no `didSave` yet, no notification
+    // should follow it.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), next_diagnostics(&mut rx)).await.is_err(),
+        "didChange must not publish diagnostics on its own"
+    );
+
+    server
+        .notify::<notification::DidSaveTextDocument>(DidSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri: document_uri },
+            text: None,
+        })
+        .expect("didSave should be queued");
+    let saved = next_diagnostics(&mut rx).await;
+    assert_eq!(saved.diagnostics.len(), 1, "didSave should publish the diagnostics for the unsaved edit");
 }
 
 #[tokio::test]
@@ -348,21 +438,12 @@ async fn hover_reports_a_sort_references_declaration() {
     assert!(content.value.contains("sort D;"), "expected hover text to show the sort declaration, got {}", content.value);
 }
 
-#[tokio::test]
-async fn completion_offers_declared_names_and_keywords() {
-    let (server, _result, mut rx) = start().await;
-    let document_uri = uri("completion.mcrl2");
-
-    server
-        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), WITH_A_MAPPING))
-        .expect("didOpen should be queued");
-    let _ = next_diagnostics(&mut rx).await;
-
+async fn completion_at(server: &ServerSocket, document_uri: Url, position: Position) -> Vec<lsp_types::CompletionItem> {
     let response = server
         .request::<request::Completion>(CompletionParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier { uri: document_uri },
-                position: position_of(WITH_A_MAPPING, "f(x) = x"),
+                position,
             },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
@@ -374,10 +455,48 @@ async fn completion_offers_declared_names_and_keywords() {
     let Some(CompletionResponse::Array(items)) = response else {
         panic!("expected a completion item array, got {response:?}");
     };
+    items
+}
+
+/// The cursor sits on the left-hand side of an equation — a data-expression position, so
+/// completion should offer the declared mapping and a data keyword, but neither a section
+/// keyword like `proc` (irrelevant mid-expression) nor a sort name (`D` is not a valid value).
+#[tokio::test]
+async fn completion_in_a_data_expression_is_scoped_to_data_values() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("completion.mcrl2");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), WITH_A_MAPPING))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let items = completion_at(&server, document_uri, position_of(WITH_A_MAPPING, "f(x) = x")).await;
+
     let mapping = items.iter().find(|item| item.label == "f").expect("expected 'f' among the completions");
     assert_eq!(mapping.kind, Some(CompletionItemKind::FUNCTION));
-    let keyword = items.iter().find(|item| item.label == "proc").expect("expected a 'proc' keyword completion");
-    assert_eq!(keyword.kind, Some(CompletionItemKind::KEYWORD));
+    assert!(items.iter().any(|item| item.label == "true"), "expected a data keyword like 'true'");
+    assert!(!items.iter().any(|item| item.label == "proc"), "a section keyword does not belong in a data expression");
+    assert!(!items.iter().any(|item| item.label == "D"), "a sort name is not a valid data value");
+}
+
+/// The cursor sits in the sort position of a `map` signature — completion should offer the
+/// declared sort and the built-in sorts, but neither the mapping itself nor a data keyword.
+#[tokio::test]
+async fn completion_in_a_sort_expression_is_scoped_to_sorts() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("sort-completion.mcrl2");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), WITH_A_MAPPING))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let items = completion_at(&server, document_uri, position_of(WITH_A_MAPPING, "-> D;")).await;
+
+    assert!(items.iter().any(|item| item.label == "D"), "expected the declared sort 'D'");
+    assert!(items.iter().any(|item| item.label == "Nat"), "expected a built-in sort");
+    assert!(!items.iter().any(|item| item.label == "f"), "a mapping is not a valid sort");
 }
 
 /// A `.pbes` document is routed to `UntypedPbes::parse` (via `SpecKind::from_uri`), not the plain

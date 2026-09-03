@@ -1,43 +1,12 @@
 //! Builds `textDocument/semanticTokens/full` output from a parsed [`UntypedProcessSpecification`]
 //! ([`semantic_tokens`]), [`UntypedPbes`] ([`pbes_semantic_tokens`]), or [`UntypedPres`]
 //! ([`pres_semantic_tokens`]).
-//!
-//! This is required for mCRL2 since the grammar is ambiguous, for example a(f)
-//! could be a function application, an action instantiation, or a process
-//! instantiation depending on the context.
 //! 
 //! A system sort (`Bool`, `Nat`, …, and the parameterized
 //! `List`/`Set`/`Bag`/`FSet`/`FBag`) is tagged [`TokenKind::Type`] like any
 //! other sort reference, but with [`MODIFIER_DEFAULT_LIBRARY`] set, so a theme
 //! can still tell it apart from a user's own `sort` declaration.
-//!
-//! Deliberately unscoped: identifiers are classified against one flat table of
-//! declared names (see [`SymbolTable`]), not full lexical scoping. A bound
-//! variable therefore reads as [`TokenKind::Variable`] both at its binder and
-//! at every use — same as a free/global variable — since telling them apart
-//! needs real name resolution, which nothing upstream exposes yet for
-//! process/action bodies (see `PLAN.md`). Only the `declaration` modifier marks
-//! a binder site specifically. This still recovers everything a TextMate
-//! grammar structurally cannot.
-//!
-//! [`TokenKind::Parameter`] is the one exception to "flat table": a `proc`
-//! declaration's (or PBES equation's) own parameters *are* scoped to that one
-//! declaration's body, via the `current_params` threaded through
-//! [`walk_process_expr`]/[`walk_pbes_expr`]/[`walk_data_expr`] — a name that is
-//! merely some *other* declaration's parameter falls back to
-//! [`TokenKind::Variable`] instead, rather than lighting up everywhere that
-//! name happens to appear.
-//!
-//! One grammar quirk the symbol table also has to paper over: a process
-//! reference with no arguments and no parentheses (the overwhelmingly common
-//! case — `proc P = a . P;`'s recursive `P`) is *not* parsed as
-//! [`ProcessExprKind::Id`]. `ProcExprId` in the grammar requires parentheses
-//! (even empty ones, `P()`); a bare `P` instead falls through to the same
-//! `Action` rule a real action instantiation uses, landing as
-//! [`ProcessExprKind::Action`]. So that variant is looked up against *both* the
-//! declared action names and the declared process names before deciding
-//! [`TokenKind::Event`] vs [`TokenKind::Method`] — this is the one place a
-//! `ProcessExprKind::Action` might actually name a process, not an action.
+
 
 use std::collections::HashSet;
 use std::ops::ControlFlow;
@@ -73,39 +42,28 @@ use crate::convert::is_identifier_byte;
 enum TokenKind {
     Type = 0,
     Variable = 1,
-    /// A process reference, whether a `proc` declaration itself or an instantiation of one — see
-    /// [`SymbolTable::classify_action`]. Deliberately kept a distinct token type from
-    /// [`TokenKind::Event`], so a theme colors a process instantiation differently from an action
-    /// instantiation even though both can parse as the same [`ProcessExprKind::Action`] shape
-    /// (see the module docs above).
+    /// A process reference, whether a `proc` declaration itself or an
+    /// instantiation of one. Deliberately kept a distinct token type from
+    /// [`TokenKind::Event`], so a theme colors a process instantiation
+    /// differently from an action instantiation even though both can parse as
+    /// the same [`ProcessExprKind::Action`] shape (see the module docs above).
     Method = 2,
-    /// An action declaration or instantiation — see [`SymbolTable::classify_action`]. Kept a
-    /// separate token type from [`TokenKind::Method`] specifically so actions and processes don't
-    /// end up the same color.
+    /// An action declaration or instantiation. Kept a separate token type from
+    /// [`TokenKind::Method`] specifically so actions and processes don't end up
+    /// the same color.
     Event = 3,
     EnumMember = 4,
-    /// A `proc` declaration's own parameter (or a PBES equation's), or any reference to one —
-    /// the assignment-form `x` in `P(x = e)`, an ordinary positional use like `P(x)` or a
-    /// condition's `x == 0`, all alike (see [`SymbolTable::classify_data_id`]) — distinct from
-    /// [`TokenKind::Variable`], which covers every *bound* variable (`sum`/`dist`/`forall`/
-    /// `exists`/`lambda`/comprehension) and `var`/`glob` declaration instead.
+    /// A `proc` declaration's own parameter (or a PBES equation's), or any reference to one.
     Parameter = 5,
     /// A reserved mCRL2 word (`sort`, `proc`, `sum`, `true`, …) — see [`tag_keywords`].
     Keyword = 6,
 }
 
 const MODIFIER_DECLARATION: u32 = 1 << 0;
-/// Marks a system-defined sort (`Bool`, `Nat`, …, and the parameterized `List`/`Set`/`Bag`/
-/// `FSet`/`FBag`) — mCRL2's own reserved sort names, as distinct from a user's own `sort`
-/// declaration, via the standard [`SemanticTokenModifier::DEFAULT_LIBRARY`]. See
-/// [`walk_sort_expression`].
+/// Marks a system-defined sort, as distinct from a user's own `sort`
+/// declaration, via the standard [`SemanticTokenModifier::DEFAULT_LIBRARY`].
 const MODIFIER_DEFAULT_LIBRARY: u32 = 1 << 1;
-/// Marks a constructor or accessor function implicitly declared by a `sort D = struct
-/// c1(a: S)?is_c1 | c2;` alternative — `c1`/`c2` themselves ([`TokenKind::EnumMember`]) and their
-/// accessor functions `a`/`is_c1` ([`TokenKind::Method`]) — as distinct from the same kinds
-/// declared by a top-level `cons`/`map` block, via a custom [`SemanticTokenModifier`] (there's no
-/// standard LSP modifier for this). See [`walk_sort_expression`]'s `SortExpressionKind::Struct`
-/// arm.
+/// Marks a constructor or accessor function by its own variant.
 const MODIFIER_STRUCT_VARIANT: u32 = 1 << 2;
 
 /// The legend advertised by `capabilities::server_capabilities`; must list types/modifiers in the
@@ -143,10 +101,7 @@ pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcess
     }
 
     for decl in &spec.action_declarations {
-        // `decl.span` covers the whole declaration (`a: Nat # Bool`, shared with every sibling in
-        // a grouped `act a, b: Nat;` too) — `decl.identifier.span` is just the name, which is all
-        // a declaration-modifier token should cover (its argument sorts get their own `Type`
-        // tokens right below, which `decl.span` would otherwise overlap).
+        // `decl.identifier.span` is just the name.
         builder.push(&decl.identifier.span, TokenKind::Event, true);
         for arg in &decl.args {
             walk_sort_expression(arg, &mut builder);
