@@ -1,7 +1,19 @@
-//! Converts a document's [`ParseOutcome`] and [`TypecheckOutcome`] into LSP [`Diagnostic`]s.
+//! Converts a document's [`ParseOutcome`] and [`TypecheckOutcome`] into LSP
+//! [`Diagnostic`]s.
+//!
+//! An undeclared-name error additionally gets a "did you mean '...'?" suffix,
+//! built by searching the document's own declared names scoped to the same
+//! category of name the error is about, the same categories
+//! [`crate::completion_context`] classifies a cursor position into.
 
 use merc_syntax::Rule;
 use merc_syntax::Span;
+use merc_syntax::UntypedPbes;
+use merc_syntax::UntypedProcessSpecification;
+use merc_typecheck::InferenceError;
+use merc_typecheck::PbesError;
+use merc_typecheck::ProcessError;
+use merc_typecheck::WellTypedError;
 use merc_utilities::MercError;
 use lsp_types::Diagnostic;
 use lsp_types::DiagnosticSeverity;
@@ -11,6 +23,8 @@ use pest::error::InputLocation;
 
 use crate::convert::LineIndex;
 use crate::convert::is_identifier_byte;
+use crate::edit_distance;
+use crate::names;
 use crate::parse::ParseOutcome;
 use crate::typecheck::PbesTypecheckOutcome;
 use crate::typecheck::TypecheckOutcome;
@@ -34,24 +48,83 @@ pub fn diagnostics(text: &str, line_index: &LineIndex, outcome: &ParseOutcome) -
 }
 
 /// Builds the type-checking diagnostics list for a document's process specification, from the
-/// result of typechecking it. Only performed after a successful parse.
+/// result of typechecking it. Only performed after a successful parse — `spec` is that same
+/// successful parse, used only to build an undeclared-name suggestion (see the module docs), not
+/// to re-derive anything `outcome` already carries.
 ///
 /// Returns an empty vector for [`TypecheckOutcome::Ok`], for the same reason [`diagnostics`]
 /// does for [`ParseOutcome::Ok`].
-pub fn type_diagnostics(text: &str, line_index: &LineIndex, outcome: &TypecheckOutcome) -> Vec<Diagnostic> {
+pub fn type_diagnostics(
+    text: &str,
+    line_index: &LineIndex,
+    outcome: &TypecheckOutcome,
+    spec: &UntypedProcessSpecification,
+) -> Vec<Diagnostic> {
     match outcome {
         TypecheckOutcome::Ok(_) => Vec::new(),
-        TypecheckOutcome::Error(error) => vec![error_diagnostic(text, line_index, error.span(), error.to_string())],
+        TypecheckOutcome::Error(error) => {
+            let message = error.to_string() + &suggestion_for_process_error(error, spec);
+            vec![error_diagnostic(text, line_index, error.span(), message)]
+        }
         TypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
     }
 }
 
 /// As [`type_diagnostics`], for a PBES document's [`PbesTypecheckOutcome`].
-pub fn pbes_type_diagnostics(text: &str, line_index: &LineIndex, outcome: &PbesTypecheckOutcome) -> Vec<Diagnostic> {
+pub fn pbes_type_diagnostics(text: &str, line_index: &LineIndex, outcome: &PbesTypecheckOutcome, spec: &UntypedPbes) -> Vec<Diagnostic> {
     match outcome {
         PbesTypecheckOutcome::Ok(_) => Vec::new(),
-        PbesTypecheckOutcome::Error(error) => vec![error_diagnostic(text, line_index, error.span(), error.to_string())],
+        PbesTypecheckOutcome::Error(error) => {
+            let message = error.to_string() + &suggestion_for_pbes_error(error, spec);
+            vec![error_diagnostic(text, line_index, error.span(), message)]
+        }
         PbesTypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
+    }
+}
+
+/// A `" — did you mean '...'?"` suffix for `error`, if it names an undeclared identifier and a
+/// close-enough candidate exists among `spec`'s own declarations — an empty string otherwise
+/// (including for every error variant that isn't "undeclared" shaped at all, like a duplicate
+/// declaration or an arity mismatch, which no typo fix would address).
+///
+/// One arm per undeclared-name-shaped variant, matched through the `WellTyped`/`Inference`
+/// wrapper variants a data-specification-level error arrives through as well as the two
+/// [`ProcessError`] raises directly — see `merc_typecheck`'s `ProcessError`/`WellTypedError`/
+/// `InferenceError` doc comments for why the nesting looks like this.
+fn suggestion_for_process_error(error: &ProcessError, spec: &UntypedProcessSpecification) -> String {
+    match error {
+        ProcessError::WellTyped(WellTypedError::UndefinedSort { sort, .. }) => {
+            edit_distance::suggestion(sort, names::process_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))
+        }
+        ProcessError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, .. }))
+        | ProcessError::Inference(InferenceError::UndeclaredName { name, .. }) => {
+            edit_distance::suggestion(name, names::process_data_value_names(spec))
+        }
+        ProcessError::UndeclaredActionOrProcess { name, .. } => {
+            edit_distance::suggestion(name, names::process_action_or_process_names(spec))
+        }
+        ProcessError::UndeclaredAction { name, .. } => edit_distance::suggestion(name, names::process_action_names(spec)),
+        ProcessError::UnknownProcessParameter { process, name, .. } => {
+            edit_distance::suggestion(name, names::process_parameter_names(spec, process))
+        }
+        _ => String::new(),
+    }
+}
+
+/// As [`suggestion_for_process_error`], for a [`PbesError`].
+fn suggestion_for_pbes_error(error: &PbesError, spec: &UntypedPbes) -> String {
+    match error {
+        PbesError::WellTyped(WellTypedError::UndefinedSort { sort, .. }) => {
+            edit_distance::suggestion(sort, names::pbes_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))
+        }
+        PbesError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, .. }))
+        | PbesError::Inference(InferenceError::UndeclaredName { name, .. }) => {
+            edit_distance::suggestion(name, names::pbes_data_value_names(spec))
+        }
+        PbesError::UndeclaredPropositionalVariable { name, .. } => {
+            edit_distance::suggestion(name, names::pbes_propositional_variable_names(spec))
+        }
+        _ => String::new(),
     }
 }
 
@@ -169,17 +242,19 @@ mod tests {
     #[tokio::test]
     async fn well_typed_specification_yields_no_type_diagnostics() {
         let text = "sort D;\ncons c: D;\ninit delta;";
-        let outcome = crate::typecheck::typecheck(process_specification_for(text).await).await;
+        let spec = process_specification_for(text).await;
+        let outcome = crate::typecheck::typecheck(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        assert!(type_diagnostics(text, &line_index, &outcome).is_empty());
+        assert!(type_diagnostics(text, &line_index, &outcome, &spec).is_empty());
     }
 
     #[tokio::test]
     async fn ill_typed_specification_produces_a_located_type_diagnostic_with_a_distinct_source() {
         let text = "map f: Bool;\neqn f = undeclared;\ninit delta;";
-        let outcome = crate::typecheck::typecheck(process_specification_for(text).await).await;
+        let spec = process_specification_for(text).await;
+        let outcome = crate::typecheck::typecheck(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        let diags = type_diagnostics(text, &line_index, &outcome);
+        let diags = type_diagnostics(text, &line_index, &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         let diag = &diags[0];
@@ -192,13 +267,66 @@ mod tests {
     async fn ill_typed_process_produces_a_located_type_diagnostic() {
         // `a` is not declared as an action anywhere.
         let text = "init a;";
-        let outcome = crate::typecheck::typecheck(process_specification_for(text).await).await;
+        let spec = process_specification_for(text).await;
+        let outcome = crate::typecheck::typecheck(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        let diags = type_diagnostics(text, &line_index, &outcome);
+        let diags = type_diagnostics(text, &line_index, &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         let diag = &diags[0];
         assert_eq!(diag.source.as_deref(), Some(TYPE_SOURCE));
         assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
+    }
+
+    #[tokio::test]
+    async fn undeclared_sort_gets_a_did_you_mean_suggestion() {
+        let text = "sort Bool2;\nmap f: Bol;\ninit delta;";
+        let spec = process_specification_for(text).await;
+        let outcome = crate::typecheck::typecheck(spec.clone()).await;
+        let line_index = LineIndex::new(text);
+        let diags = type_diagnostics(text, &line_index, &outcome, &spec);
+
+        assert_eq!(diags.len(), 1);
+        // "Bol" is one edit away from the built-in "Bool" — closer than the declared "Bool2".
+        assert!(diags[0].message.contains("did you mean 'Bool'?"), "message was: {}", diags[0].message);
+    }
+
+    #[tokio::test]
+    async fn undeclared_action_gets_a_did_you_mean_suggestion() {
+        let text = "act ready: Bool;\ninit redy(true);";
+        let spec = process_specification_for(text).await;
+        let outcome = crate::typecheck::typecheck(spec.clone()).await;
+        let line_index = LineIndex::new(text);
+        let diags = type_diagnostics(text, &line_index, &outcome, &spec);
+
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("did you mean 'ready'?"), "message was: {}", diags[0].message);
+    }
+
+    #[tokio::test]
+    async fn no_suggestion_when_nothing_is_close_enough() {
+        let text = "init xyzzy;";
+        let spec = process_specification_for(text).await;
+        let outcome = crate::typecheck::typecheck(spec.clone()).await;
+        let line_index = LineIndex::new(text);
+        let diags = type_diagnostics(text, &line_index, &outcome, &spec);
+
+        assert_eq!(diags.len(), 1);
+        assert!(!diags[0].message.contains("did you mean"), "message was: {}", diags[0].message);
+    }
+
+    #[tokio::test]
+    async fn pbes_undeclared_propositional_variable_gets_a_did_you_mean_suggestion() {
+        let text = "pbes mu Ready = true;\ninit Redy;";
+        let outcome = crate::typecheck::typecheck_pbes(text.to_string()).await;
+        let spec = match merc_syntax::UntypedPbes::parse(text) {
+            Ok(spec) => spec,
+            Err(error) => panic!("fixture failed to parse: {error}"),
+        };
+        let line_index = LineIndex::new(text);
+        let diags = pbes_type_diagnostics(text, &line_index, &outcome, &spec);
+
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("did you mean 'Ready'?"), "message was: {}", diags[0].message);
     }
 }

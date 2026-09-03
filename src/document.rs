@@ -60,11 +60,18 @@ impl Document {
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
         let mut diags = diagnostics::diagnostics(&self.text, &self.line_index, &self.parsed);
         match &self.checked {
+            // `checked` is only ever `Some(CheckedOutcome::Process(_))`/`Some(CheckedOutcome::Pbes(_))`
+            // when `parsed` is the matching `ParseOutcome::Ok(Specification::Process(_)/Pbes(_))` —
+            // see this struct's own doc comment and `backend::on_change` — so the raw parse is
+            // always available here to build an undeclared-name suggestion from (see
+            // `diagnostics.rs`'s module docs).
             Some(CheckedOutcome::Process(outcome)) => {
-                diags.extend(diagnostics::type_diagnostics(&self.text, &self.line_index, outcome));
+                let spec = self.parsed_process_specification().expect("checked implies a parsed process specification");
+                diags.extend(diagnostics::type_diagnostics(&self.text, &self.line_index, outcome, spec));
             }
             Some(CheckedOutcome::Pbes(outcome)) => {
-                diags.extend(diagnostics::pbes_type_diagnostics(&self.text, &self.line_index, outcome));
+                let spec = self.parsed_pbes_specification().expect("checked implies a parsed PBES");
+                diags.extend(diagnostics::pbes_type_diagnostics(&self.text, &self.line_index, outcome, spec));
             }
             None => {}
         }

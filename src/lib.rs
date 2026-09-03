@@ -13,15 +13,17 @@
 mod backend;
 mod capabilities;
 mod completion;
+mod completion_context;
 mod convert;
 mod diagnostics;
 mod document;
+mod edit_distance;
 mod goto_definition;
 mod hover;
 mod inlay_hints;
+mod names;
 mod parse;
 mod semantic_tokens;
-mod sort_ref;
 mod symbols;
 mod typecheck;
 
