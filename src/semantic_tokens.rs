@@ -576,6 +576,38 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, current_params: 
             ProcessExprKind::At { operand, .. } => {
                 walk_data_expr(operand, symbols, current_params, builder);
             }
+            // `hide`/`block`/`allow`/`comm`/`rename`'s own action-name sets: unlike
+            // `ProcessExprKind::Action`, the grammar allows only an action name here (never a
+            // process), so each is tagged `Event` directly rather than through
+            // `classify_action` — no `TokenKind::Method` disambiguation to make. `operand` itself
+            // isn't handled here: `Traverse` already descends into it like any other nested
+            // `ProcessExpr`, so it comes back through this same `visit` closure as its own node.
+            ProcessExprKind::Hide { actions, .. } | ProcessExprKind::Block { actions, .. } => {
+                for action in actions {
+                    builder.push(&action.span, TokenKind::Event, false);
+                }
+            }
+            ProcessExprKind::Allow { actions, .. } => {
+                for label in actions {
+                    for action in &label.actions {
+                        builder.push(&action.span, TokenKind::Event, false);
+                    }
+                }
+            }
+            ProcessExprKind::Comm { comm, .. } => {
+                for c in comm {
+                    for action in &c.from.actions {
+                        builder.push(&action.span, TokenKind::Event, false);
+                    }
+                    builder.push(&c.to.span, TokenKind::Event, false);
+                }
+            }
+            ProcessExprKind::Rename { renames, .. } => {
+                for rename in renames {
+                    builder.push(&rename.from.span, TokenKind::Event, false);
+                    builder.push(&rename.to.span, TokenKind::Event, false);
+                }
+            }
             _ => {}
         }
         ControlFlow::Continue(())
@@ -792,6 +824,50 @@ mod tests {
             && ty == TokenKind::Method as u32));
         // `f` (a mapping) is deliberately left uncolored: no token starts at its use site.
         assert!(!positions.iter().any(|&(l, c, ..)| l == mapping_pos.line && c == mapping_pos.character));
+    }
+
+    #[tokio::test]
+    async fn tags_action_names_inside_hide_block_allow_comm_and_rename() {
+        // `hide`/`block`/`allow`/`comm`/`rename`'s own action-name sets are never process
+        // references — the grammar allows only an action name there — so every name in them
+        // should be tagged `Event` directly, the same as a bare action instantiation.
+        let text = "act a, b, c: Nat;\nproc P(n: Nat) = a(n)|b(n);\n\
+                    init hide({a}, block({a}, allow({a|b}, comm({a|b -> c}, rename({a -> b}, P(1))))));";
+        let tokens = tokens_for(text).await;
+        let positions = absolute(&tokens);
+        let line_index = LineIndex::new(text);
+
+        let kind_at = |offset: usize| -> Option<u32> {
+            let pos = line_index.position(text, offset);
+            positions
+                .iter()
+                .find(|&&(l, c, ..)| l == pos.line && c == pos.character)
+                .map(|&(.., ty, _)| ty)
+        };
+
+        let hide_a = text.find("hide({a}").unwrap() + "hide({".len();
+        let block_a = text.find("block({a}").unwrap() + "block({".len();
+        let allow_a = text.find("allow({a|b}").unwrap() + "allow({".len();
+        let allow_b = allow_a + "a|".len();
+        let comm_a = text.find("comm({a|b -> c}").unwrap() + "comm({".len();
+        let comm_b = comm_a + "a|".len();
+        let comm_c = text.find("-> c}").unwrap() + "-> ".len();
+        let rename_a = text.find("rename({a -> b}").unwrap() + "rename({".len();
+        let rename_b = text.find("-> b}").unwrap() + "-> ".len();
+
+        for (name, offset) in [
+            ("hide's a", hide_a),
+            ("block's a", block_a),
+            ("allow's a", allow_a),
+            ("allow's b", allow_b),
+            ("comm's a", comm_a),
+            ("comm's b", comm_b),
+            ("comm's target c", comm_c),
+            ("rename's a", rename_a),
+            ("rename's target b", rename_b),
+        ] {
+            assert_eq!(kind_at(offset), Some(TokenKind::Event as u32), "{name} should be tagged Event");
+        }
     }
 
     #[tokio::test]

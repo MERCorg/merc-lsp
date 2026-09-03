@@ -66,7 +66,7 @@ pub async fn typecheck(spec: UntypedProcessSpecification) -> TypecheckOutcome {
 /// holds (for `symbols`/`semantic_tokens`) *and* hand a second one to
 /// `PbesSpecification::from_untyped`, which consumes its argument. Re-parsing is the simplest way
 /// around that without an upstream change — `text` has already parsed successfully once by the
-/// time this is called (see `backend::on_change`), so the re-parse is not expected to fail; if it
+/// time this is called (see `backend::analyze`), so the re-parse is not expected to fail; if it
 /// somehow does, that is reported the same way a join failure is, not treated as a type error.
 pub async fn typecheck_pbes(text: String) -> PbesTypecheckOutcome {
     let outcome = tokio::task::spawn_blocking(move || match UntypedPbes::parse(&text) {
