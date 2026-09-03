@@ -35,6 +35,7 @@ use lsp_types::InitializedParams;
 use lsp_types::OneOf;
 use lsp_types::Position;
 use lsp_types::PublishDiagnosticsParams;
+use lsp_types::SemanticToken;
 use lsp_types::SemanticTokensParams;
 use lsp_types::SemanticTokensResult;
 use lsp_types::SemanticTokensServerCapabilities;
@@ -114,26 +115,22 @@ async fn next_diagnostics(rx: &mut UnboundedReceiver<PublishDiagnosticsParams>) 
         .expect("drain channel closed unexpectedly")
 }
 
-/// `didChange` hands the actual reparse off to a spawned task and returns
-/// immediately `didSave`'s handler, unlike `didChange`'s, can't be `.await`ed
-/// by the test.
-async fn wait_for_reparse(server: &ServerSocket, document_uri: Url, mut predicate: impl FnMut(&Option<DocumentSymbolResponse>) -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let response = server
-            .request::<request::DocumentSymbolRequest>(DocumentSymbolParams {
-                text_document: TextDocumentIdentifier { uri: document_uri.clone() },
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
-            })
-            .await
-            .expect("documentSymbol should succeed");
-        if predicate(&response) {
-            return;
-        }
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for the didChange reparse to land");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+/// Requests `textDocument/semanticTokens/full` for `uri` and returns its token data (panicking if
+/// the server has nothing to report at all — a bare `None` response, distinct from the empty
+/// `Vec` an unhighlighted-but-parsed document would yield).
+async fn request_tokens(server: &ServerSocket, uri: &Url) -> Vec<SemanticToken> {
+    let response = server
+        .request::<request::SemanticTokensFullRequest>(SemanticTokensParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .expect("semanticTokens/full should succeed");
+    let Some(SemanticTokensResult::Tokens(tokens)) = response else {
+        panic!("expected a semanticTokens/full response, got {response:?}");
+    };
+    tokens.data
 }
 
 fn did_open(uri: Url, text: &str) -> DidOpenTextDocumentParams {
@@ -259,9 +256,8 @@ async fn fixing_a_malformed_document_clears_its_diagnostics() {
             }],
         })
         .expect("didChange should be queued");
-    // WELL_FORMED parses (unlike the MALFORMED text still stored until the spawned reparse
-    // lands), so a non-`None` response is proof the reparse has landed.
-    wait_for_reparse(&server, document_uri.clone(), |response| response.is_some()).await;
+    // `didChange` only records WELL_FORMED as pending text — parsing/type checking happen on the
+    // spawned `didSave` analysis below, awaited via `next_diagnostics`, not here.
     server
         .notify::<notification::DidSaveTextDocument>(DidSaveTextDocumentParams {
             text_document: TextDocumentIdentifier { uri: document_uri },
@@ -367,6 +363,68 @@ async fn semantic_tokens_full_returns_tokens_for_a_parsed_document() {
     // `D` (a sort declaration) and `a` (an action instantiation in `init a;`) should each yield a
     // token; the exact classification is `semantic_tokens.rs`'s own unit tests' job.
     assert!(tokens.data.len() >= 2, "expected at least a sort and an action token, got {:?}", tokens.data);
+}
+
+/// The semantic-tokens counterpart of `editing_without_saving_does_not_publish_diagnostics`: an
+/// unsaved `didChange` — whether it breaks parsing outright or just introduces a new declaration —
+/// must leave the previously reported semantic tokens untouched; only a `didSave` may refresh them.
+#[tokio::test]
+async fn semantic_tokens_do_not_blank_out_on_an_unsaved_edit_and_only_refresh_on_save() {
+    let (server, _result, mut rx) = start().await;
+    let document_uri = uri("tokens-stable.mcrl2");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), "sort D;\nact a;\ninit a;"))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let initial = request_tokens(&server, &document_uri).await;
+    assert!(!initial.is_empty(), "expected tokens for the initial well-formed document");
+
+    // An unsaved edit that breaks parsing outright: `didChange` only ever records it as pending
+    // text (see `Document::pending_text`), never reparses, so this must not blank out the tokens
+    // already reported. No need to wait for anything to "land" — `didChange` does no async work
+    // at all any more.
+    server
+        .notify::<notification::DidChangeTextDocument>(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier { uri: document_uri.clone(), version: 2 },
+            content_changes: vec![TextDocumentContentChangeEvent { range: None, range_length: None, text: MALFORMED.to_string() }],
+        })
+        .expect("didChange should be queued");
+    assert_eq!(
+        request_tokens(&server, &document_uri).await,
+        initial,
+        "semantic tokens must not blank out on an unsaved edit that breaks parsing"
+    );
+
+    // An unsaved edit back to something well-formed, but different — still just `didChange`, no
+    // `didSave` yet, so the tokens reported must still be the stale, pre-edit ones.
+    let grown = "sort D;\nact a;\nact b;\ninit a;";
+    server
+        .notify::<notification::DidChangeTextDocument>(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier { uri: document_uri.clone(), version: 3 },
+            content_changes: vec![TextDocumentContentChangeEvent { range: None, range_length: None, text: grown.to_string() }],
+        })
+        .expect("didChange should be queued");
+    assert_eq!(
+        request_tokens(&server, &document_uri).await,
+        initial,
+        "an unsaved edit must not refresh semantic tokens even once it parses again"
+    );
+
+    // Only now, on `didSave`, should the new declaration's tokens show up.
+    server
+        .notify::<notification::DidSaveTextDocument>(DidSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri: document_uri.clone() },
+            text: None,
+        })
+        .expect("didSave should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+    assert_ne!(
+        request_tokens(&server, &document_uri).await,
+        initial,
+        "saving should finally refresh semantic tokens to reflect the new declaration"
+    );
 }
 
 /// mCRL2 text used by the hover/goto-definition tests below: a mapping `f` used once in its own

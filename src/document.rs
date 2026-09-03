@@ -3,6 +3,7 @@
 
 use dashmap::DashMap;
 use lsp_types::Diagnostic;
+use lsp_types::SemanticToken;
 use lsp_types::Url;
 use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedProcessSpecification;
@@ -13,22 +14,39 @@ use merc_typecheck::TypingInfo;
 use crate::convert::LineIndex;
 use crate::diagnostics;
 use crate::parse::ParseOutcome;
+use crate::parse::Specification;
+use crate::semantic_tokens;
 use crate::typecheck::PbesTypecheckOutcome;
 use crate::typecheck::TypecheckOutcome;
 
 /// A single open (or otherwise tracked) document.
 ///
-/// `text`, `line_index`, and `parsed` are always kept consistent with each other. `checked` is
+/// `text`, `line_index`, `parsed`, `checked`, and `semantic_tokens` are the last *analyzed*
+/// snapshot — always mutually consistent, all five updated together, only by `backend::analyze`
+/// (on `did_open` or `did_save`) — and every completion/hover/goto-definition/inlay-hint/
+/// semantic-tokens/document-symbol request reads exactly this snapshot, stale or not. `checked` is
 /// `None` whenever `parsed` isn't [`ParseOutcome::Ok`] (type checking only makes sense once
 /// parsing has already succeeded) or the parsed kind has no type checker at all yet
 /// ([`ParseOutcome::Ok(Specification::Pres(_))`](crate::parse::Specification::Pres) — see
-/// `backend::on_change`).
+/// `backend::analyze`).
+///
+/// `pending_text`/`pending_version` are the separate, *unanalyzed* half: the latest buffer
+/// contents `did_change` has recorded (see `backend::router`), updated on every keystroke — cheap
+/// bookkeeping only, never parsed or type checked until the next `did_save` hands them to
+/// `backend::analyze`, which is deliberately the only place mCRL2 parsing/type checking happens.
+/// That's expensive enough that re-running it on every edit would make typing sluggish for no
+/// benefit, since none of the analyzed fields above are shown to the client before a save anyway —
+/// see `backend::analyze`'s doc comment.
 pub struct Document {
     pub text: String,
     pub version: i32,
     pub line_index: LineIndex,
     pub parsed: ParseOutcome,
     pub checked: Option<CheckedOutcome>,
+    /// The `textDocument/semanticTokens/full` payload for `text`/`parsed` above.
+    pub semantic_tokens: Vec<SemanticToken>,
+    pub pending_text: String,
+    pub pending_version: i32,
 }
 
 /// The result of type checking a document, tagged by which kind of specification it checked —
@@ -46,11 +64,20 @@ impl Document {
     pub fn new(text: String, version: i32, parsed: ParseOutcome, checked: Option<CheckedOutcome>) -> Self {
         let line_index = LineIndex::new(&text);
         Document {
+            // A freshly analyzed document has nothing pending beyond what it was just analyzed
+            // from — `backend::analyze` may still overwrite this immediately after construction if
+            // `did_change` recorded a newer edit while the analysis it just finished was in
+            // flight; see its doc comment.
+            pending_text: text.clone(),
+            pending_version: version,
             text,
             version,
             line_index,
             parsed,
             checked,
+            // Left empty here; callers fill this in via `compute_semantic_tokens` once the rest of
+            // the snapshot above is in place (it reads `text`/`line_index`/`parsed`).
+            semantic_tokens: Vec::new(),
         }
     }
 
@@ -62,7 +89,7 @@ impl Document {
         match &self.checked {
             // `checked` is only ever `Some(CheckedOutcome::Process(_))`/`Some(CheckedOutcome::Pbes(_))`
             // when `parsed` is the matching `ParseOutcome::Ok(Specification::Process(_)/Pbes(_))` —
-            // see this struct's own doc comment and `backend::on_change` — so the raw parse is
+            // see this struct's own doc comment and `backend::analyze` — so the raw parse is
             // always available here to build an undeclared-name suggestion from (see
             // `diagnostics.rs`'s module docs).
             Some(CheckedOutcome::Process(outcome)) => {
@@ -132,6 +159,22 @@ impl Document {
         match &self.parsed {
             ParseOutcome::Ok(spec) => spec.as_pbes(),
             _ => None,
+        }
+    }
+
+    /// Computes a fresh `textDocument/semanticTokens/full` payload from `self.parsed`/`self.text`
+    /// as they stand right now — empty if `parsed` isn't [`ParseOutcome::Ok`], same "no parse,
+    /// nothing to offer" rule every other AST-driven accessor here follows. Callers decide when
+    /// this is worth calling and assign the result to `self.semantic_tokens`; see that field's own
+    /// doc comment for why it isn't simply recomputed inline on every access.
+    pub fn compute_semantic_tokens(&self) -> Vec<SemanticToken> {
+        let ParseOutcome::Ok(spec) = &self.parsed else {
+            return Vec::new();
+        };
+        match spec {
+            Specification::Process(spec) => semantic_tokens::semantic_tokens(&self.text, &self.line_index, spec),
+            Specification::Pbes(spec) => semantic_tokens::pbes_semantic_tokens(&self.text, &self.line_index, spec),
+            Specification::Pres(spec) => semantic_tokens::pres_semantic_tokens(&self.text, &self.line_index, spec),
         }
     }
 
