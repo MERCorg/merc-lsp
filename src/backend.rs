@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use async_lsp::ClientSocket;
 use async_lsp::router::Router;
+use dashmap::Entry;
 use lsp_types::CompletionParams;
 use lsp_types::CompletionResponse;
 use lsp_types::Diagnostic;
@@ -35,6 +36,7 @@ use lsp_types::ServerInfo;
 use lsp_types::Url;
 use lsp_types::notification;
 use lsp_types::request;
+use merc_typecheck::ModalSpecification;
 use merc_typecheck::ProcessSpecification;
 
 use crate::capabilities::server_capabilities;
@@ -56,9 +58,9 @@ use crate::typecheck;
 
 /// Per-connection server state backing the [`Router`] built by [`router`].
 ///
-/// `documents` is `Arc`-wrapped (rather than owned directly, as it was in the `tower-lsp`
-/// version's `Backend`) because notification handlers can't `.await`, so parsing happens on a
-/// spawned task that outlives the handler call and needs its own shared handle to the store.
+/// `documents` is `Arc`-wrapped because notification handlers can't `.await`,
+/// so parsing happens on a spawned task that outlives the handler call and
+/// needs its own shared handle to the store.
 pub struct Backend {
     client: ClientSocket,
     documents: Arc<DocumentStore>,
@@ -87,7 +89,7 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         })
         // `async_lsp::server::LifecycleLayer` handles the `initialize`/`shutdown`/`exit`
         // lifecycle state machine itself, but it still forwards `shutdown` down to us as an
-        // ordinary request (falling through to `unhandled_request`'s METHOD_NOT_FOUND otherwise).
+        // ordinary request.
         .request::<request::Shutdown, _>(|_, ()| async move { Ok(()) })
         .request::<request::DocumentSymbolRequest, _>(|state, params| {
             let documents = state.documents.clone();
@@ -131,10 +133,7 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         })
         .notification::<notification::DidChangeTextDocument>(|state, params| {
             // Deliberately *not* a reparse: just records the latest buffer text/version on the
-            // existing document for whenever the next `did_save` comes in — see `analyze`'s doc
-            // comment for why parsing/type checking never run here. `TextDocumentSyncKind::FULL`
-            // (advertised in `capabilities::server_capabilities`) means the client always sends
-            // exactly one change event containing the whole new text.
+            // existing document for whenever the next `did_save` comes in.
             let uri = params.text_document.uri;
             if let Some(change) = params.content_changes.into_iter().next()
                 && let Some(mut document) = state.documents.get_mut(&uri)
@@ -175,22 +174,20 @@ fn document_symbol(documents: &DocumentStore, params: DocumentSymbolParams) -> O
         Specification::Process(spec) => symbols::document_symbols(&document.text, &document.line_index, spec),
         Specification::Pbes(spec) => symbols::pbes_symbols(&document.text, &document.line_index, spec),
         Specification::Pres(spec) => symbols::pres_symbols(&document.text, &document.line_index, spec),
+        Specification::Modal(spec) => symbols::modal_symbols(&document.text, &document.line_index, spec),
     };
     Some(DocumentSymbolResponse::Nested(symbols))
 }
 
 fn completion_request(documents: &DocumentStore, params: CompletionParams) -> Option<CompletionResponse> {
     let document = documents.get(&params.text_document_position.text_document.uri)?;
-    // Same "no parse, nothing to offer" rule as `document_symbol`/`semantic_tokens_full` — but,
-    // unlike semantic tokens, PRES gets its own pass too here: completion works off the raw parse,
-    // not a checked specification, so PRES having no type checker upstream doesn't block it (see
-    // `completion.rs`'s module docs).
+    // Same "no parse, nothing to offer" rule as `document_symbol`/`semantic_tokens_full`.
     let ParseOutcome::Ok(spec) = &document.parsed else {
         return None;
     };
+    
     // Falls back to `CompletionCategory::Unscoped` whenever the position
-    // doesn't resolve to a byte offset at all — a client sending a position
-    // outside the document is not reason enough to offer nothing.
+    // doesn't resolve to a byte offset at all.
     let offset = document.line_index.offset(&document.text, params.text_document_position.position);
     let items = match spec {
         Specification::Process(spec) => {
@@ -205,13 +202,15 @@ fn completion_request(documents: &DocumentStore, params: CompletionParams) -> Op
             let category = offset.map_or(CompletionCategory::Unscoped, |offset| completion_context::pres_category(spec, offset));
             completion::pres_completions(spec, category)
         }
+        Specification::Modal(spec) => {
+            let category = offset.map_or(CompletionCategory::Unscoped, |offset| completion_context::modal_category(spec, offset));
+            completion::modal_completions(spec, category)
+        }
     };
     Some(CompletionResponse::Array(items))
 }
 
-/// Serves whatever `document.semantic_tokens` currently holds — deliberately *not* a fresh
-/// recomputation off the live `document.parsed`/`document.text`; see that field's own doc comment
-/// for why it lags a `did_change` on purpose.
+/// Serves whatever `document.semantic_tokens` currently holds.
 fn semantic_tokens_full(documents: &DocumentStore, params: SemanticTokensParams) -> Option<SemanticTokensResult> {
     let document = documents.get(&params.text_document.uri)?;
     Some(SemanticTokensResult::Tokens(SemanticTokens {
@@ -220,15 +219,22 @@ fn semantic_tokens_full(documents: &DocumentStore, params: SemanticTokensParams)
     }))
 }
 
-/// `typing_info()` memoizes internally but still needs `&mut Document` to call (see
-/// [`crate::document::Document::typing_info`]) — every handler below reaches its document through
-/// `get_mut`, not `get`, for exactly that reason, even though only this one line needs the
-/// mutable borrow.
+/// `typing_info()` memoizes internally but still needs `&mut Document` to call
+/// — every handler below reaches its document through `get_mut`, not `get`, for
+/// exactly that reason, even though only this one line needs the mutable
+/// borrow.
 fn hover_request(documents: &DocumentStore, params: HoverParams) -> Option<Hover> {
     let uri = &params.text_document_position_params.text_document.uri;
     let mut document = documents.get_mut(uri)?;
     let typing_info = document.typing_info()?;
-    let actions = document.checked_process_specification().map_or(&[][..], ProcessSpecification::action_declarations);
+
+    // Process and modal specifications are the only kinds with `act` declarations to show, and a
+    // document is checked as at most one kind at a time (see `document::CheckedOutcome`).
+    let actions = document
+        .checked_process_specification()
+        .map(ProcessSpecification::action_declarations)
+        .or_else(|| document.checked_modal_specification().map(ModalSpecification::action_declarations))
+        .unwrap_or(&[]);
     let processes = document.checked_process_specification().map_or(&[][..], ProcessSpecification::process_declarations);
     let spec = match &document.parsed {
         ParseOutcome::Ok(spec) => Some(spec),
@@ -272,13 +278,25 @@ fn inlay_hint_request(documents: &DocumentStore, params: InlayHintParams) -> Opt
     let uri = &params.text_document.uri;
     let mut document = documents.get_mut(uri)?;
     let typing_info = document.typing_info()?;
+
     if let Some(spec) = document.checked_process_specification() {
         let sort_declarations = &document.parsed_process_specification()?.data_specification.sort_declarations;
         return Some(inlay_hints::inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range));
     }
-    let spec = document.checked_pbes_specification()?;
-    let sort_declarations = &document.parsed_pbes_specification()?.data_specification.sort_declarations;
-    Some(inlay_hints::pbes_inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range))
+
+    if let Some(spec) = document.checked_pbes_specification() {
+        let sort_declarations = &document.parsed_pbes_specification()?.data_specification.sort_declarations;
+        return Some(inlay_hints::pbes_inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range));
+    }
+
+    if let Some(spec) = document.checked_pres_specification() {
+        let sort_declarations = &document.parsed_pres_specification()?.data_specification.sort_declarations;
+        return Some(inlay_hints::pres_inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range));
+    }
+
+    let spec = document.checked_modal_specification()?;
+    let sort_declarations = &document.parsed_modal_specification()?.data_specification.sort_declarations;
+    Some(inlay_hints::modal_inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range))
 }
 
 /// Clones out of `state` whatever [`analyze`] needs and spawns it, so parsing/type checking can
@@ -290,75 +308,56 @@ fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refr
     tokio::spawn(analyze(client, documents, uri, text, version, refresh_tokens));
 }
 
-/// Parses `text` at `version` for `uri` (as whichever [`SpecKind`] its extension selects), type
-/// checks it if parsing succeeded and a type checker exists for the kind (a process specification
-/// or a PBES; PRES has none upstream yet — see [`crate::parse`]'s docs), and commits the result —
-/// text, parse, type check, and semantic tokens alike — as the document's new analyzed snapshot,
-/// then publishes its diagnostics.
-///
-/// This is deliberately the *only* place any of that (expensive) work happens: `did_open` calls it
-/// immediately, and `did_save` calls it on whatever `did_change` has been recording as
-/// `Document::pending_text`/`pending_version` in the meantime — `did_change` itself never does,
-/// see `router`'s `DidChangeTextDocument` handler. Re-parsing and type checking mCRL2 on every
-/// keystroke would make editing sluggish for no benefit, since none of the analyzed snapshot is
-/// shown to the client before a save anyway.
-///
-/// `refresh_tokens` asks the client (via [`request_semantic_tokens_refresh`]) to re-pull semantic
-/// tokens once this lands — needed after a `did_save`, which unlike a `did_change` gives the
-/// client no reason of its own to re-request them; `did_open`'s first analysis needs no such nudge,
-/// since the client's own initial semantic-tokens request comes after this call is spawned.
+/// Parses `text` at `version` for `uri` (as whichever [`SpecKind`] its
+/// extension selects), type checks it if parsing succeeded (every kind has a
+/// type checker now — see [`crate::typecheck`]), and commits the result — text,
+/// parse, type check, and semantic tokens alike — as the document's new
+/// analyzed snapshot, then publishes its diagnostics.
+/// 
+/// We don't type check on every keystroke; only when this function is called,
+/// which happens on save.
 async fn analyze(client: ClientSocket, documents: Arc<DocumentStore>, uri: Url, text: String, version: i32, refresh_tokens: bool) {
     let outcome = parse::parse(SpecKind::from_uri(&uri), text.clone()).await;
 
-    // Only meaningful once parsing succeeded. Cloned (rather than moved) out of `outcome`: the
-    // original stays in `outcome` below, since `symbols`/`semantic_tokens` need the raw AST
-    // regardless of whether type checking succeeds. A PBES re-parses `text` itself internally
-    // instead of cloning an already-parsed `UntypedPbes` — see `typecheck::typecheck_pbes`'s doc
-    // comment for why.
+    // Only meaningful once parsing succeeded.
     let checked = match &outcome {
         ParseOutcome::Ok(Specification::Process(spec)) => {
             Some(CheckedOutcome::Process(typecheck::typecheck((**spec).clone()).await))
         }
-        ParseOutcome::Ok(Specification::Pbes(_)) => Some(CheckedOutcome::Pbes(typecheck::typecheck_pbes(text.clone()).await)),
-        ParseOutcome::Ok(Specification::Pres(_)) => None,
+        ParseOutcome::Ok(Specification::Pbes(spec)) => Some(CheckedOutcome::Pbes(typecheck::typecheck_pbes((**spec).clone()).await)),
+        ParseOutcome::Ok(Specification::Pres(spec)) => Some(CheckedOutcome::Pres(typecheck::typecheck_pres((**spec).clone()).await)),
+        ParseOutcome::Ok(Specification::Modal(spec)) => Some(CheckedOutcome::Modal(typecheck::typecheck_modal((**spec).clone()).await)),
         ParseOutcome::ParseError(_) | ParseOutcome::Internal(_) => None,
     };
 
     let mut document = Document::new(text, version, outcome, checked);
     document.semantic_tokens = document.compute_semantic_tokens();
-    // Computed now, off `document` as just built, before it's handed to the map below — a
-    // `did_save` later reads diagnostics straight off `document.diagnostics()` too, but this
-    // publish is the only mandatory one: an empty `diags` is what clears any diagnostics left
-    // over from a previous, failing parse, so it always has to go out, even when there's nothing
-    // to report.
+    // Computed now, off `document` as just built, before it's handed to the map below.
     let diags = document.diagnostics();
 
-    // Only `did_save` calls this (`did_open` runs once, against a document nothing else has
-    // touched yet), and only ever with the *current* `pending_version` it just read — but by the
-    // time this `.await`-heavy parse/type check finishes, a `did_change` can easily have recorded
-    // a newer edit past it. Discard this result outright if it's for an outright older version
-    // than what's already committed (out-of-order saves); otherwise commit it, but keep whichever
-    // of the two `pending_*` pairs is newer, so a save in flight never erases an edit `did_change`
-    // recorded after it started.
+    // Discard this analysis if it's for an older version than what's already committed.
     match documents.entry(uri.clone()) {
-        dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+        Entry::Occupied(mut occupied) => {
             let existing = occupied.get();
             if existing.version > version {
                 log::debug!("discarding stale analysis of {uri} (version {version}, have {})", existing.version);
                 return;
             }
+
             if existing.pending_version > version {
                 document.pending_text = existing.pending_text.clone();
                 document.pending_version = existing.pending_version;
             }
+
             *occupied.get_mut() = document;
         }
-        dashmap::mapref::entry::Entry::Vacant(vacant) => {
+        Entry::Vacant(vacant) => {
             vacant.insert(document);
         }
     }
 
     publish_diagnostics(&client, uri, diags, version);
+
     if refresh_tokens {
         request_semantic_tokens_refresh(&client);
     }
@@ -372,12 +371,7 @@ fn publish_diagnostics(client: &ClientSocket, uri: Url, diagnostics: Vec<Diagnos
 }
 
 /// Nudges the client to re-pull semantic tokens for its open editors, via the standalone
-/// `workspace/semanticTokens/refresh` request. Needed because `document.semantic_tokens` (see its
-/// doc comment) only actually changes on a `did_save`, which is not itself an event a client's own
-/// semantic-tokens machinery would otherwise treat as a reason to re-request — unlike a
-/// `did_change`, which every editor already re-requests tokens after on its own. Fire-and-forget:
-/// a client with no interest in semantic tokens at all is free to not implement this request, so a
-/// failure here is unremarkable, not worth surfacing above `debug`.
+/// `workspace/semanticTokens/refresh` request.
 fn request_semantic_tokens_refresh(client: &ClientSocket) {
     let client = client.clone();
     tokio::spawn(async move {

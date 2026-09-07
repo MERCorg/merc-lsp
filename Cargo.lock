@@ -185,9 +185,9 @@ checksum = "1582e1c9e755dd6ad6b224dcffb135d199399a4568d454bd89fe515ca8425695"
 
 [[package]]
 name = "cc"
-version = "1.4.4"
+version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ad534f4357a5264cce5019c989cf66a4f0dc4e0d1b1d15f8aacec0ff7360273"
+checksum = "005ec2760ca554fae18df7a11195552ec576cd665632a881bc011d5bb2fd4d80"
 dependencies = [
  "find-msvc-tools",
  "shlex 2.0.1",
@@ -247,9 +247,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-utils"
-version = "0.8.22"
+version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
+checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "dashmap"
@@ -329,7 +329,7 @@ checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -394,9 +394,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
+checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
 
 [[package]]
 name = "foldhash"
@@ -475,7 +475,7 @@ checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -870,7 +870,7 @@ dependencies = [
 [[package]]
 name = "merc_aterm"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "allocator-api2 0.4.0",
  "delegate",
@@ -896,7 +896,7 @@ dependencies = [
 [[package]]
 name = "merc_collections"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bitvec",
  "delegate",
@@ -911,7 +911,7 @@ dependencies = [
 [[package]]
 name = "merc_data"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "ahash",
  "delegate",
@@ -926,7 +926,7 @@ dependencies = [
 [[package]]
 name = "merc_io"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bitstream-io",
  "log",
@@ -942,7 +942,7 @@ dependencies = [
 [[package]]
 name = "merc_lts"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bindgen",
  "bumpalo",
@@ -966,17 +966,17 @@ dependencies = [
 [[package]]
 name = "merc_macros"
 version = "2.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.5",
 ]
 
 [[package]]
 name = "merc_number"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bitstream-io",
  "merc_utilities",
@@ -1008,7 +1008,7 @@ dependencies = [
 [[package]]
 name = "merc_reduction"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -1026,7 +1026,7 @@ dependencies = [
 [[package]]
 name = "merc_refinement"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -1044,7 +1044,7 @@ dependencies = [
 [[package]]
 name = "merc_sharedmutex"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "crossbeam-utils",
  "delegate",
@@ -1055,7 +1055,7 @@ dependencies = [
 [[package]]
 name = "merc_syntax"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "itertools 0.15.0",
  "log",
@@ -1072,7 +1072,7 @@ dependencies = [
 [[package]]
 name = "merc_typecheck"
 version = "2.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "ena",
  "indoc",
@@ -1088,7 +1088,7 @@ dependencies = [
 [[package]]
 name = "merc_unsafety"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "allocator-api2 0.4.0",
  "crossbeam-utils",
@@ -1109,7 +1109,7 @@ dependencies = [
 [[package]]
 name = "merc_utilities"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=9abbbc815d75bb3881f85377d4fcba221c0f462d#9abbbc815d75bb3881f85377d4fcba221c0f462d"
+source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "crossbeam-utils",
  "env_logger",
@@ -1279,9 +1279,9 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pest"
-version = "2.9.0"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a07a60cc7a4d00c91f95c685609d1d2f79050e6804b70ebedd7650f0b839bcf"
+checksum = "6d45aeb61b4bf818e12d4205f2466f8c4748f85f4fce0146d1c03d69d753f0ad"
 dependencies = [
  "memchr",
  "ucd-trie",
@@ -1289,9 +1289,9 @@ dependencies = [
 
 [[package]]
 name = "pest_derive"
-version = "2.9.0"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3a83744a5c8455b8b3e0dc5031362780a347c878bdd11584d1a8984228cc88d"
+checksum = "89cc5a242e25ed4e7704d0be240f2cfbe20a8c27e7e252d94835be93d92dc39f"
 dependencies = [
  "pest",
  "pest_generator",
@@ -1299,9 +1299,9 @@ dependencies = [
 
 [[package]]
 name = "pest_generator"
-version = "2.9.0"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0cd3451aa3de60d4b9a1e736885e4dea6b31617598026f12256ad566d63304a"
+checksum = "7abf21475cc3820fe4b2ca2dc2142902f67a02189f3b5b3a229f4febc01a43e5"
 dependencies = [
  "pest",
  "pest_meta",
@@ -1312,9 +1312,9 @@ dependencies = [
 
 [[package]]
 name = "pest_meta"
-version = "2.9.0"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e04d3a0849e241d7dfce834c83b1c5edc8622009e8dd51a12ba1927c32f05496"
+checksum = "adba4db388f687393c18c51348d44a41d870ca9df71a2c98172ea3035dc6936e"
 dependencies = [
  "pest",
 ]
@@ -1333,9 +1333,9 @@ checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "portable-atomic-util"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
+checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
 dependencies = [
  "portable-atomic",
 ]
@@ -1514,7 +1514,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -1538,7 +1538,7 @@ checksum = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -1609,9 +1609,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.4"
+version = "3.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6275cddf4610d1775e6d1fe9469b2e77d0f39fd98fb7450901b821e0c53649f"
+checksum = "12df2e0110f65b775f769bb17ef989067a1d931b2eb822bd4346631eeada89f9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1665,7 +1665,7 @@ checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -1710,7 +1710,7 @@ checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -2096,7 +2096,7 @@ checksum = "34df6fc39dbd26ddc9c10e6a2984476e13acce22e64e4487636ef494369225da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.5",
 ]
 
 [[package]]
