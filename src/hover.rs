@@ -9,8 +9,12 @@ use lsp_types::Position;
 use lsp_types::Url;
 use merc_syntax::ActDecl;
 use merc_syntax::ProcDecl;
+use merc_syntax::PropVarDecl;
 use merc_syntax::SortDecl;
 use merc_syntax::Span;
+use merc_syntax::StateFrm;
+use merc_syntax::StateFrmKind;
+use merc_syntax::StateVarDecl;
 use merc_typecheck::ResolvedName;
 use merc_typecheck::TypedNode;
 use merc_typecheck::TypingInfo;
@@ -65,7 +69,7 @@ pub fn hover(ctx: &HoverContext, position: Position) -> Option<Hover> {
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: hover_markdown(node, actions, processes, doc_uri, line_index, text),
+            value: hover_markdown(node, actions, processes, spec, doc_uri, line_index, text),
         }),
         range: Some(line_index.range(text, &node.span)),
     })
@@ -79,8 +83,57 @@ fn find_sort_declaration<'a>(spec: &'a Specification, name: &str) -> Option<&'a 
         Specification::Process(spec) => &spec.data_specification.sort_declarations,
         Specification::Pbes(spec) => &spec.data_specification.sort_declarations,
         Specification::Pres(spec) => &spec.data_specification.sort_declarations,
+        Specification::Modal(spec) => &spec.data_specification.sort_declarations,
     };
     declarations.iter().find(|decl| decl.identifier == name)
+}
+
+/// The `PropVarDecl` (a PBES/PRES equation's own declaration, `identifier(params)`) whose
+/// identifier span is exactly `declaration_span` — the span a [`ResolvedName::PropositionalVariable`]
+/// occurrence's own `declaration` carries. `None` for a process specification or a modal formula,
+/// neither of which has any propositional-variable equation to find.
+fn find_prop_var_declaration<'a>(spec: &'a Specification, declaration_span: &Span) -> Option<&'a PropVarDecl> {
+    match spec {
+        Specification::Pbes(spec) => spec.equations.iter().map(|eqn| &eqn.variable).find(|decl| &decl.identifier.span == declaration_span),
+        Specification::Pres(spec) => spec.equations.iter().map(|eqn| &eqn.variable).find(|decl| &decl.identifier.span == declaration_span),
+        Specification::Process(_) | Specification::Modal(_) => None,
+    }
+}
+
+/// The `StateVarDecl` (a modal formula's own `mu`/`nu X(...)` declaration) whose own span is
+/// exactly `declaration_span` — the span a [`ResolvedName::StateVariable`] occurrence's own
+/// `declaration` carries (the whole `StateVarDecl`, not just its name — see that variant's own doc
+/// comment upstream). Recurses through the formula tree by hand: unlike a PBES/PRES's `equations`,
+/// a modal formula's fixpoint variables aren't listed anywhere flat (mirrors `symbols.rs`'s own
+/// `collect_fixed_points` walk). `None` for anything but a modal formula.
+fn find_state_var_declaration<'a>(spec: &'a Specification, declaration_span: &Span) -> Option<&'a StateVarDecl> {
+    let Specification::Modal(spec) = spec else { return None };
+    find_state_var_in_formula(&spec.formula, declaration_span)
+}
+
+fn find_state_var_in_formula<'a>(formula: &'a StateFrm, declaration_span: &Span) -> Option<&'a StateVarDecl> {
+    match &formula.node {
+        StateFrmKind::FixedPoint { variable, body, .. } => {
+            if &variable.span == declaration_span {
+                Some(variable)
+            } else {
+                find_state_var_in_formula(body, declaration_span)
+            }
+        }
+        StateFrmKind::Unary { expr, .. } | StateFrmKind::Modality { expr, .. } => find_state_var_in_formula(expr, declaration_span),
+        StateFrmKind::Binary { lhs, rhs, .. } => {
+            find_state_var_in_formula(lhs, declaration_span).or_else(|| find_state_var_in_formula(rhs, declaration_span))
+        }
+        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => find_state_var_in_formula(body, declaration_span),
+        StateFrmKind::DataValExprLeftMult(_, expr) | StateFrmKind::DataValExprRightMult(expr, _) => find_state_var_in_formula(expr, declaration_span),
+        StateFrmKind::True
+        | StateFrmKind::False
+        | StateFrmKind::Delay(_)
+        | StateFrmKind::Yaled(_)
+        | StateFrmKind::Id(_, _)
+        | StateFrmKind::Resolved(_, _, _)
+        | StateFrmKind::DataValExpr(_) => None,
+    }
 }
 
 /// Renders the sort declaration as Markdown.
@@ -103,6 +156,7 @@ fn hover_markdown(
     node: &TypedNode,
     actions: &[ActDecl],
     processes: &[ProcDecl],
+    spec: Option<&Specification>,
     doc_uri: Option<&Url>,
     line_index: &LineIndex,
     text: &str,
@@ -126,6 +180,32 @@ fn hover_markdown(
         return match decl.filter(|decl| !decl.params.is_empty()) {
             Some(decl) => {
                 let params = decl.params.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+                format!("```mcrl2\n{name}({params})\n```\n{kind}{link}")
+            }
+            None => format!("```mcrl2\n{name}\n```\n{kind}{link}"),
+        };
+    }
+
+    if let Some(ResolvedName::PropositionalVariable { name, declaration }) = &node.name {
+        let decl = declaration.as_ref().and_then(|span| spec.and_then(|spec| find_prop_var_declaration(spec, span)));
+        let link = declaration.as_ref().map_or(String::new(), |span| goto_def_link(span, doc_uri, line_index, text));
+        let kind = "propositional variable";
+        return match decl.filter(|decl| !decl.parameters.is_empty()) {
+            Some(decl) => {
+                let params = decl.parameters.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+                format!("```mcrl2\n{name}({params})\n```\n{kind}{link}")
+            }
+            None => format!("```mcrl2\n{name}\n```\n{kind}{link}"),
+        };
+    }
+
+    if let Some(ResolvedName::StateVariable { name, declaration }) = &node.name {
+        let decl = declaration.as_ref().and_then(|span| spec.and_then(|spec| find_state_var_declaration(spec, span)));
+        let link = declaration.as_ref().map_or(String::new(), |span| goto_def_link(span, doc_uri, line_index, text));
+        let kind = "state variable";
+        return match decl.filter(|decl| !decl.arguments.is_empty()) {
+            Some(decl) => {
+                let params = decl.arguments.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
                 format!("```mcrl2\n{name}({params})\n```\n{kind}{link}")
             }
             None => format!("```mcrl2\n{name}\n```\n{kind}{link}"),
@@ -442,5 +522,57 @@ mod tests {
         let offset = text.find("Bool").unwrap();
         let position = line_index.position(text, offset);
         assert!(hover(&ctx, position).is_none());
+    }
+
+    #[tokio::test]
+    async fn hovers_a_propositional_variable_reference_with_its_parameters() {
+        let text = "pbes mu X(n: Bool) = val(n);\ninit X(true);";
+        let raw = match parse(SpecKind::Pbes, text.to_string()).await {
+            ParseOutcome::Ok(spec @ Specification::Pbes(_)) => spec,
+            _ => panic!("fixture failed to parse"),
+        };
+        let typing_info = match crate::typecheck::typecheck_pbes((*raw.as_pbes().unwrap()).clone()).await {
+            crate::typecheck::PbesTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
+            crate::typecheck::PbesTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
+            crate::typecheck::PbesTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+        };
+        let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &[], processes: &[], spec: Some(&raw), doc_uri: None };
+
+        let offset = text.find("X(true)").unwrap();
+        let position = line_index.position(text, offset);
+        let hover = hover(&ctx, position).expect("expected hover content");
+
+        let HoverContents::Markup(content) = hover.contents else {
+            panic!("expected markup content");
+        };
+        assert!(content.value.contains("X(n: Bool)"), "unexpected hover text: {}", content.value);
+        assert!(content.value.contains("propositional variable"));
+    }
+
+    #[tokio::test]
+    async fn hovers_a_state_variable_reference_with_its_parameters() {
+        let text = "act a: Nat;\nform nu X(n: Nat = 0) . [a(n)]X(n);";
+        let raw = match parse(SpecKind::Modal, text.to_string()).await {
+            ParseOutcome::Ok(spec @ Specification::Modal(_)) => spec,
+            _ => panic!("fixture failed to parse"),
+        };
+        let typing_info = match crate::typecheck::typecheck_modal((*raw.as_modal().unwrap()).clone()).await {
+            crate::typecheck::ModalTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
+            crate::typecheck::ModalTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
+            crate::typecheck::ModalTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+        };
+        let line_index = LineIndex::new(text);
+        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &[], processes: &[], spec: Some(&raw), doc_uri: None };
+
+        let offset = text.rfind("X(n)").unwrap();
+        let position = line_index.position(text, offset);
+        let hover = hover(&ctx, position).expect("expected hover content");
+
+        let HoverContents::Markup(content) = hover.contents else {
+            panic!("expected markup content");
+        };
+        assert!(content.value.contains("X(n : Nat = 0)"), "unexpected hover text: {}", content.value);
+        assert!(content.value.contains("state variable"));
     }
 }

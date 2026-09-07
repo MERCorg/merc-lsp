@@ -16,10 +16,13 @@
 
 use lsp_types::CompletionItem;
 use lsp_types::CompletionItemKind;
+use merc_syntax::StateFrm;
+use merc_syntax::StateFrmKind;
 use merc_syntax::UntypedDataSpecification;
 use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
+use merc_syntax::UntypedStateFrmSpec;
 
 pub use crate::completion_context::CompletionCategory;
 use crate::names::SYSTEM_SORTS;
@@ -37,6 +40,13 @@ const PROCESS_KEYWORDS: &[&str] = &["delta", "tau", "sum", "dist", "hide", "bloc
 /// Keywords that start or continue a PBES/PRES formula.
 const FORMULA_KEYWORDS: &[&str] = &["true", "false", "val", "forall", "exists"];
 
+/// Keywords that start or continue a modal formula's action-formula position (inside a
+/// `[...]`/`<...>` modality).
+const ACTION_KEYWORDS: &[&str] = &["true", "false", "val", "forall", "exists"];
+
+/// Keywords that start or continue a modal (mu-calculus) state formula.
+const STATE_FORMULA_KEYWORDS: &[&str] = &["true", "false", "val", "forall", "exists", "inf", "sup", "sum", "mu", "nu", "delay", "yaled"];
+
 /// The keywords relevant to `category` — a subset of [`crate::semantic_tokens::KEYWORDS`], except
 /// for [`CompletionCategory::Unscoped`], which offers all of them (matching this module's
 /// behavior before cursor context existed).
@@ -46,17 +56,23 @@ fn keywords_for(category: CompletionCategory) -> &'static [&'static str] {
         CompletionCategory::Data => DATA_KEYWORDS,
         CompletionCategory::ActionOrProcess => PROCESS_KEYWORDS,
         CompletionCategory::PropositionalVariable => FORMULA_KEYWORDS,
+        CompletionCategory::Action => ACTION_KEYWORDS,
+        CompletionCategory::StateVariable => STATE_FORMULA_KEYWORDS,
         CompletionCategory::Unscoped => crate::semantic_tokens::KEYWORDS,
     }
 }
 
 /// The built-in sort names relevant to `category`: only [`CompletionCategory::Sort`] and
 /// [`CompletionCategory::Unscoped`] have any use for one — a system sort is never a valid data
-/// value, action/process name, or propositional variable.
+/// value, action/process name, or propositional/state variable.
 fn system_sorts_for(category: CompletionCategory) -> &'static [&'static str] {
     match category {
         CompletionCategory::Sort | CompletionCategory::Unscoped => SYSTEM_SORTS,
-        CompletionCategory::Data | CompletionCategory::ActionOrProcess | CompletionCategory::PropositionalVariable => &[],
+        CompletionCategory::Data
+        | CompletionCategory::ActionOrProcess
+        | CompletionCategory::PropositionalVariable
+        | CompletionCategory::Action
+        | CompletionCategory::StateVariable => &[],
     }
 }
 
@@ -133,6 +149,61 @@ pub fn pres_completions(spec: &UntypedPres, category: CompletionCategory) -> Vec
     }
 
     items
+}
+
+/// As [`completions`], for a modal (mu-calculus) formula: no `proc`/PBES-style equation list, but
+/// `act` declarations (offered for [`CompletionCategory::Action`] rather than
+/// [`CompletionCategory::ActionOrProcess`] — see that variant's own doc comment) and fixpoint
+/// (`mu`/`nu`) variables (offered for [`CompletionCategory::StateVariable`]), the latter collected
+/// recursively since — unlike a PBES/PRES's `equations` — they aren't listed anywhere flat (see
+/// [`push_state_variable_items`]). [`UntypedStateFrmSpec`] declares no `glob`al variables of its
+/// own either, unlike a process specification/PBES/PRES.
+pub fn modal_completions(spec: &UntypedStateFrmSpec, category: CompletionCategory) -> Vec<CompletionItem> {
+    let mut items = base_items(category);
+
+    if matches!(category, CompletionCategory::Sort | CompletionCategory::Unscoped) {
+        push_sort_items(&spec.data_specification, &mut items);
+    }
+    if matches!(category, CompletionCategory::Data | CompletionCategory::Unscoped) {
+        push_data_value_items(&spec.data_specification, &mut items);
+    }
+    if matches!(category, CompletionCategory::Action | CompletionCategory::Unscoped) {
+        for decl in &spec.action_declarations {
+            items.push(item(&decl.identifier, CompletionItemKind::EVENT, sort_list_detail(&decl.args)));
+        }
+    }
+    if matches!(category, CompletionCategory::StateVariable | CompletionCategory::Unscoped) {
+        push_state_variable_items(&spec.formula, &mut items);
+    }
+
+    items
+}
+
+/// The [`CompletionItemKind::METHOD`] item per `mu`/`nu` fixpoint variable declared anywhere in
+/// `formula` — recursive, since (unlike a PBES/PRES's `equations`) they aren't listed anywhere
+/// flat; mirrors `symbols.rs`'s own `collect_fixed_points` walk.
+fn push_state_variable_items(formula: &StateFrm, items: &mut Vec<CompletionItem>) {
+    match &formula.node {
+        StateFrmKind::FixedPoint { variable, body, .. } => {
+            let detail = (!variable.arguments.is_empty()).then(|| variable.arguments.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "));
+            items.push(item(&variable.identifier, CompletionItemKind::METHOD, detail));
+            push_state_variable_items(body, items);
+        }
+        StateFrmKind::Unary { expr, .. } | StateFrmKind::Modality { expr, .. } => push_state_variable_items(expr, items),
+        StateFrmKind::Binary { lhs, rhs, .. } => {
+            push_state_variable_items(lhs, items);
+            push_state_variable_items(rhs, items);
+        }
+        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => push_state_variable_items(body, items),
+        StateFrmKind::DataValExprLeftMult(_, expr) | StateFrmKind::DataValExprRightMult(expr, _) => push_state_variable_items(expr, items),
+        StateFrmKind::True
+        | StateFrmKind::False
+        | StateFrmKind::Delay(_)
+        | StateFrmKind::Yaled(_)
+        | StateFrmKind::Id(_, _)
+        | StateFrmKind::Resolved(_, _, _)
+        | StateFrmKind::DataValExpr(_) => {}
+    }
 }
 
 /// The `sort` part of the completion list, shared by [`completions`], [`pbes_completions`], and
@@ -266,7 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn pres_equation_gets_a_completion_item() {
-        let text = "pres mu X(n: Bool) = 0;\ninit X(true);";
+        let text = "pres mu X(n: Bool) = true;\ninit X(true);";
         let items = match parse(SpecKind::Pres, text.to_string()).await {
             ParseOutcome::Ok(Specification::Pres(spec)) => pres_completions(&spec, CompletionCategory::Unscoped),
             _ => panic!("fixture failed to parse"),
@@ -330,5 +401,51 @@ mod tests {
         assert!(contains(&items, "X"));
         assert!(contains(&items, "val"), "a formula keyword belongs in a formula");
         assert!(!contains(&items, "Bool"), "a built-in sort is not a propositional variable");
+    }
+
+    async fn modal_completions_for(text: &str, category: CompletionCategory) -> Vec<CompletionItem> {
+        match parse(SpecKind::Modal, text.to_string()).await {
+            ParseOutcome::Ok(Specification::Modal(spec)) => modal_completions(&spec, category),
+            _ => panic!("fixture failed to parse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn modal_action_gets_a_completion_item() {
+        let text = "act a: Nat;\nform nu X . [a(1)]X;";
+        let items = modal_completions_for(text, CompletionCategory::Unscoped).await;
+        let action = find(&items, "a");
+        assert_eq!(action.kind, Some(CompletionItemKind::EVENT));
+        assert_eq!(action.detail.as_deref(), Some("Nat"));
+    }
+
+    #[tokio::test]
+    async fn modal_nested_fixed_point_gets_a_completion_item() {
+        let text = "form mu X . (nu Y(n: Nat = 0) . X) && true;";
+        let items = modal_completions_for(text, CompletionCategory::Unscoped).await;
+        assert_eq!(find(&items, "X").kind, Some(CompletionItemKind::METHOD));
+        let inner = find(&items, "Y");
+        assert_eq!(inner.kind, Some(CompletionItemKind::METHOD));
+        assert!(inner.detail.is_some(), "expected 'Y' to show its own parameter");
+    }
+
+    #[tokio::test]
+    async fn action_category_excludes_state_variables_and_data_values() {
+        let text = "act a: Nat;\nform nu X . [a(1)]X;";
+        let items = modal_completions_for(text, CompletionCategory::Action).await;
+
+        assert!(contains(&items, "a"));
+        assert!(!contains(&items, "X"), "a fixpoint variable is not an action name");
+        assert!(!contains(&items, "Nat"), "a built-in sort is not an action name");
+    }
+
+    #[tokio::test]
+    async fn state_variable_category_excludes_actions_and_data_values() {
+        let text = "act a: Nat;\nform nu X . [a(1)]X;";
+        let items = modal_completions_for(text, CompletionCategory::StateVariable).await;
+
+        assert!(contains(&items, "X"));
+        assert!(contains(&items, "nu"), "a state-formula keyword belongs in a state formula");
+        assert!(!contains(&items, "a"), "an action name is not a fixpoint variable");
     }
 }

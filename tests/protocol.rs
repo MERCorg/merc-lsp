@@ -604,6 +604,67 @@ async fn did_open_with_ill_typed_pbes_document_publishes_a_type_diagnostic() {
     assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
 }
 
+/// A well-formed `.pres` document should publish no diagnostics — `PresSpecification::from_untyped`
+/// via `typecheck::typecheck_pres` now type checks it the same way a `.pbes` document's own
+/// `typecheck_pbes` does.
+#[tokio::test]
+async fn did_open_with_well_formed_pres_document_publishes_no_diagnostics() {
+    let (server, _result, mut rx) = start().await;
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(uri("well-formed.pres"), "pres mu X = true;\ninit X;"))
+        .expect("didOpen should be queued");
+
+    let diagnostics = next_diagnostics(&mut rx).await;
+    assert!(diagnostics.diagnostics.is_empty());
+}
+
+/// A `.pres` document that parses cleanly but doesn't type check (an undeclared propositional
+/// variable) should publish a type diagnostic too, same distinct `"merc-lsp:types"` source as
+/// every other kind's own type errors.
+#[tokio::test]
+async fn did_open_with_ill_typed_pres_document_publishes_a_type_diagnostic() {
+    let (server, _result, mut rx) = start().await;
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(uri("ill-typed.pres"), "pres mu X = Y;\ninit X;"))
+        .expect("didOpen should be queued");
+
+    let diagnostics = next_diagnostics(&mut rx).await;
+    assert_eq!(diagnostics.diagnostics.len(), 1);
+    assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
+}
+
+/// A `.mcf` document is routed to `UntypedStateFrmSpec::parse` (via `SpecKind::from_uri`) — a
+/// well-formed modal formula should parse and type check cleanly, publishing no diagnostics.
+#[tokio::test]
+async fn did_open_with_well_formed_modal_document_publishes_no_diagnostics() {
+    let (server, _result, mut rx) = start().await;
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(uri("well-formed.mcf"), "act a: Nat;\nform nu X . [a(0)]X;"))
+        .expect("didOpen should be queued");
+
+    let diagnostics = next_diagnostics(&mut rx).await;
+    assert!(diagnostics.diagnostics.is_empty());
+}
+
+/// A `.mcf` document that parses cleanly but doesn't type check (an undeclared action) should
+/// publish a type diagnostic too, via `typecheck::typecheck_modal` — same distinct
+/// `"merc-lsp:types"` source as every other kind's own type errors.
+#[tokio::test]
+async fn did_open_with_ill_typed_modal_document_publishes_a_type_diagnostic() {
+    let (server, _result, mut rx) = start().await;
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(uri("ill-typed.mcf"), "act a: Nat;\nform nu X . [b(0)]X;"))
+        .expect("didOpen should be queued");
+
+    let diagnostics = next_diagnostics(&mut rx).await;
+    assert_eq!(diagnostics.diagnostics.len(), 1);
+    assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
+}
+
 /// mCRL2 PBES text used by the hover/goto-definition tests below: an equation `X` with a parameter
 /// `n`, referencing itself with `n` as the argument — the same "argument resolves back to its own
 /// binder" shape [`WITH_A_MAPPING`] exercises for a process specification.

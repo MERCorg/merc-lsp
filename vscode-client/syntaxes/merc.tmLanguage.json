@@ -2,7 +2,7 @@
 	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
 	"name": "merc",
 	"scopeName": "source.merc",
-	"comment": "A minimal TextMate grammar covering keywords/comments/operators/numbers only — deliberately not a full parser (that's what merc-lsp's semantic tokens are for; see semantic_tokens.rs's module docs). This is purely the coloring fallback for clients/moments a TextMate grammar can reach that the LSP can't: before the language server has started, on a document that fails to parse, or in a client with no semantic tokens support at all. Shared by the merc/merc-pbes/merc-pres language contributions in package.json — merc, PBES, and PRES source share one lexical layer (comments, operators, identifiers, numbers) and almost all of the same keyword set; PBES/PRES only add a handful of their own ('pbes', 'pres', 'mu', 'nu').",
+	"comment": "A minimal TextMate grammar covering keywords/comments/operators/numbers only — deliberately not a full parser (that's what merc-lsp's semantic tokens are for; see semantic_tokens.rs's module docs). This is purely the coloring fallback for clients/moments a TextMate grammar can reach that the LSP can't: before the language server has started, on a document that fails to parse, or in a client with no semantic tokens support at all. Shared by the merc/merc-pbes/merc-pres/merc-mcf language contributions in package.json — process specification, PBES, PRES, and modal-formula source share one lexical layer (comments, operators, identifiers, numbers) and almost all of the same keyword set; PBES/PRES/modal formulas only add a handful of their own ('pbes', 'pres', 'mu', 'nu', 'form', 'delay', 'yaled', 'inf', 'sup').",
 	"patterns": [
 		{ "include": "#comments" },
 		{ "include": "#keywords" },
@@ -19,8 +19,8 @@
 		"keywords": {
 			"patterns": [
 				{
-					"comment": "Structural/block-introducing keywords — shared by process specifications, PBES, and PRES. Word-bounded so e.g. 'sortable' isn't matched.",
-					"match": "\\b(sort|cons|map|glob|act|proc|init|var|eqn|struct|whr|end|forall|exists|lambda|sum|dist|val|hide|block|allow|comm|rename|pbes|pres|mu|nu)\\b",
+					"comment": "Structural/block-introducing keywords — shared by process specifications, PBES, PRES, and modal formulas. Word-bounded so e.g. 'sortable' isn't matched.",
+					"match": "\\b(sort|cons|map|glob|act|proc|init|var|eqn|struct|whr|end|forall|exists|lambda|sum|dist|val|hide|block|allow|comm|rename|pbes|pres|mu|nu|form|delay|yaled|inf|sup)\\b",
 					"name": "keyword.control.merc"
 				},
 				{

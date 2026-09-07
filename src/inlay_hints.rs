@@ -47,18 +47,29 @@ use lsp_types::InlayHintKind;
 use lsp_types::InlayHintLabel;
 use lsp_types::Position;
 use lsp_types::Range;
+use merc_syntax::ActFrm;
+use merc_syntax::ActFrmKind;
 use merc_syntax::DataExpr;
 use merc_syntax::DataExprKind;
 use merc_syntax::PbesExpr;
 use merc_syntax::PbesExprKind;
+use merc_syntax::PresExpr;
+use merc_syntax::PresExprKind;
 use merc_syntax::ProcessExpr;
 use merc_syntax::ProcessExprKind;
+use merc_syntax::RegFrm;
+use merc_syntax::RegFrmKind;
 use merc_syntax::SortDecl;
 use merc_syntax::SortExpression;
 use merc_syntax::SortExpressionKind;
 use merc_syntax::Span;
+use merc_syntax::StateFrm;
+use merc_syntax::StateFrmKind;
+use merc_syntax::StateVarDecl;
 use merc_syntax::Traverse;
+use merc_typecheck::ModalSpecification;
 use merc_typecheck::PbesSpecification;
+use merc_typecheck::PresSpecification;
 use merc_typecheck::ProcessSpecification;
 use merc_typecheck::ResolvedName;
 use merc_typecheck::TypingInfo;
@@ -172,6 +183,84 @@ pub fn pbes_inlay_hints(
     ctx.hints
 }
 
+/// As [`pbes_inlay_hints`], for a PRES: [`PresSpecification`] has the identical shape one level
+/// down (see `crate::completion::pres_completions`'s doc comment), so this differs only in walking
+/// [`PresExpr`] instead of [`PbesExpr`] for each equation's formula.
+pub fn pres_inlay_hints(
+    text: &str,
+    line_index: &LineIndex,
+    spec: &PresSpecification,
+    sort_declarations: &[SortDecl],
+    typing_info: &TypingInfo,
+    range: Range,
+) -> Vec<InlayHint> {
+    let mut ctx = Ctx {
+        text,
+        line_index,
+        sort_declarations,
+        typing_info,
+        hints: Vec::new(),
+    };
+
+    for eqn in spec.equations() {
+        walk_pres_expr(&eqn.formula, spec, &mut ctx);
+    }
+    let init = spec.init();
+    let param_names = pres_propvarinst_param_names(spec, &init.node.identifier, init.node.arguments.len());
+    emit_call_hints(&init.node.arguments, param_names.as_deref(), false, &mut ctx);
+
+    for eqn_spec in &spec
+        .data_specification()
+        .data_specification()
+        .equation_declarations
+    {
+        for eqn in &eqn_spec.node.equations {
+            walk_struct_applications(&eqn.lhs, &mut ctx);
+            walk_struct_applications(&eqn.rhs, &mut ctx);
+        }
+    }
+
+    ctx.hints.retain(|hint| within_range(hint.position, range));
+    ctx.hints
+}
+
+/// As [`pbes_inlay_hints`]/[`pres_inlay_hints`], for a modal (mu-calculus) formula: no flat
+/// top-level equation list to walk — a fixpoint variable's own reference/declaration is found
+/// recursively instead (see [`walk_state_frm`]/[`resolved_state_var_param_names`]), the same way
+/// `symbols.rs`'s own `collect_fixed_points` has to.
+pub fn modal_inlay_hints(
+    text: &str,
+    line_index: &LineIndex,
+    spec: &ModalSpecification,
+    sort_declarations: &[SortDecl],
+    typing_info: &TypingInfo,
+    range: Range,
+) -> Vec<InlayHint> {
+    let mut ctx = Ctx {
+        text,
+        line_index,
+        sort_declarations,
+        typing_info,
+        hints: Vec::new(),
+    };
+
+    walk_state_frm(spec.formula(), spec, &mut ctx);
+
+    for eqn_spec in &spec
+        .data_specification()
+        .data_specification()
+        .equation_declarations
+    {
+        for eqn in &eqn_spec.node.equations {
+            walk_struct_applications(&eqn.lhs, &mut ctx);
+            walk_struct_applications(&eqn.rhs, &mut ctx);
+        }
+    }
+
+    ctx.hints.retain(|hint| within_range(hint.position, range));
+    ctx.hints
+}
+
 /// Walks every `ProcessExpr` in `expr`'s subtree, picking out each node's `DataExpr`-bearing
 /// fields — the ones `Traverse` itself won't reach — and hinting them.
 fn walk_process_expr(expr: &ProcessExpr, spec: &ProcessSpecification, ctx: &mut Ctx) {
@@ -216,6 +305,114 @@ fn walk_pbes_expr(expr: &PbesExpr, spec: &PbesSpecification, ctx: &mut Ctx) {
         }
         ControlFlow::Continue(())
     });
+}
+
+/// As [`walk_pbes_expr`], for a [`PresExpr`] tree — a `val(...)` expression and a `PropVarInst` are
+/// hinted the same way; each side of a scalar multiplication
+/// (`PresExprKind::RightConstantMultiply`/`LeftConstantMultiply`) carries its own `constant`, a
+/// `DataExpr` `Traverse` doesn't reach on its own, so it's hinted the same way too. `Equal`'s and
+/// `Condition`'s own tag fields carry no `DataExpr` at all; their `body`/`lhs`/`then`/`else_`
+/// children are plain `PresExpr` nodes `Traverse` already recurses into.
+fn walk_pres_expr(expr: &PresExpr, spec: &PresSpecification, ctx: &mut Ctx) {
+    expr.visit::<(), _>(|node| {
+        match &node.node {
+            PresExprKind::DataValExpr(value) => walk_struct_applications(value, ctx),
+            PresExprKind::PropVarInst(inst) => {
+                let param_names = pres_propvarinst_param_names(spec, &inst.node.identifier, inst.node.arguments.len());
+                emit_call_hints(&inst.node.arguments, param_names.as_deref(), false, ctx);
+            }
+            PresExprKind::RightConstantMultiply { constant, .. } | PresExprKind::LeftConstantMultiply { constant, .. } => {
+                walk_struct_applications(constant, ctx);
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    });
+}
+
+/// Walks a modal (mu-calculus) state formula's own tree by hand, hinting a fixpoint-variable
+/// reference's arguments the same way [`walk_process_expr`]/[`walk_pbes_expr`] hint a process/
+/// propositional-variable call's — descends by hand (rather than via `Traverse::visit`, the way
+/// `walk_process_expr`/`walk_pbes_expr` do) for the same reason `symbols.rs`'s own
+/// `collect_fixed_points` and `semantic_tokens.rs`'s own `walk_state_frm` do: `Traverse` doesn't
+/// cross into the `RegFrm`/`ActFrm` a modality carries either.
+fn walk_state_frm(formula: &StateFrm, spec: &ModalSpecification, ctx: &mut Ctx) {
+    match &formula.node {
+        StateFrmKind::True | StateFrmKind::False => {}
+        StateFrmKind::Delay(time) | StateFrmKind::Yaled(time) => {
+            if let Some(time) = time {
+                walk_struct_applications(time, ctx);
+            }
+        }
+        StateFrmKind::Id(_, arguments) | StateFrmKind::Resolved(_, arguments, _) => {
+            let param_names = resolved_state_var_param_names(spec, ctx, &formula.span);
+            emit_call_hints(arguments, param_names.as_deref(), false, ctx);
+        }
+        StateFrmKind::DataValExpr(expr) => walk_struct_applications(expr, ctx),
+        StateFrmKind::DataValExprLeftMult(constant, expr) => {
+            walk_struct_applications(constant, ctx);
+            walk_state_frm(expr, spec, ctx);
+        }
+        StateFrmKind::DataValExprRightMult(expr, constant) => {
+            walk_state_frm(expr, spec, ctx);
+            walk_struct_applications(constant, ctx);
+        }
+        StateFrmKind::Modality { formula: reg, expr, .. } => {
+            walk_reg_frm(reg, ctx);
+            walk_state_frm(expr, spec, ctx);
+        }
+        StateFrmKind::Unary { expr, .. } => walk_state_frm(expr, spec, ctx),
+        StateFrmKind::Binary { lhs, rhs, .. } => {
+            walk_state_frm(lhs, spec, ctx);
+            walk_state_frm(rhs, spec, ctx);
+        }
+        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => walk_state_frm(body, spec, ctx),
+        StateFrmKind::FixedPoint { variable, body, .. } => {
+            // Each parameter's own initial value is checked in the *outer* scope (mirrors a
+            // process instantiation's assignment value) — never sort-suffixed (it's not a call
+            // argument), but still worth descending into for a nested struct application.
+            for argument in &variable.arguments {
+                walk_struct_applications(&argument.expr, ctx);
+            }
+            walk_state_frm(body, spec, ctx);
+        }
+    }
+}
+
+/// As [`walk_state_frm`], for a modality's regular formula (`[a*]X`'s `a*`).
+fn walk_reg_frm(formula: &RegFrm, ctx: &mut Ctx) {
+    match &formula.node {
+        RegFrmKind::Action(action) => walk_act_frm(action, ctx),
+        RegFrmKind::Iteration(inner) | RegFrmKind::Plus(inner) => walk_reg_frm(inner, ctx),
+        RegFrmKind::Sequence { lhs, rhs } | RegFrmKind::Choice { lhs, rhs } => {
+            walk_reg_frm(lhs, ctx);
+            walk_reg_frm(rhs, ctx);
+        }
+    }
+}
+
+/// As [`walk_reg_frm`], for an action formula (`a(1) && !b`) — an action's own arguments are never
+/// hinted with a name or sort suffix (see the module doc comment), only descended into for a
+/// nested struct application, the same way [`walk_process_expr`]'s `ProcessExprKind::Action`
+/// arguments never get a top-level hint of their own either (`emit_call_hints` isn't called here).
+fn walk_act_frm(formula: &ActFrm, ctx: &mut Ctx) {
+    match &formula.node {
+        ActFrmKind::True | ActFrmKind::False => {}
+        ActFrmKind::MultAct(multi_action) => {
+            for action in &multi_action.actions {
+                for argument in &action.args {
+                    walk_struct_applications(argument, ctx);
+                }
+            }
+        }
+        ActFrmKind::DataExprVal(expr) => walk_struct_applications(expr, ctx),
+        ActFrmKind::Negation(inner) => walk_act_frm(inner, ctx),
+        ActFrmKind::Quantifier { body, .. } => walk_act_frm(body, ctx),
+        ActFrmKind::Binary { lhs, rhs, .. } => {
+            walk_act_frm(lhs, ctx);
+            walk_act_frm(rhs, ctx);
+        }
+    }
 }
 
 /// Hints `args`, the positional arguments of an action instance, process instantiation, or PBES
@@ -337,6 +534,66 @@ fn propvarinst_param_names<'a>(
                 .map(|param| param.identifier.as_str())
                 .collect()
         })
+}
+
+/// As [`propvarinst_param_names`], for a PRES.
+fn pres_propvarinst_param_names<'a>(spec: &'a PresSpecification, name: &str, arity: usize) -> Option<Vec<&'a str>> {
+    spec.equations()
+        .iter()
+        .find(|eqn| eqn.variable.identifier.as_str() == name && eqn.variable.parameters.len() == arity)
+        .map(|eqn| {
+            eqn.variable
+                .parameters
+                .iter()
+                .map(|param| param.identifier.as_str())
+                .collect()
+        })
+}
+
+/// As [`resolved_process_param_names`], for a modal formula's fixpoint-variable reference — the
+/// parameter names of the `mu`/`nu` declaration the `TypingInfo` resolved `occurrence_span` (the
+/// whole `Id`/`Resolved` node — see [`merc_typecheck::ResolvedName::StateVariable`]'s own doc
+/// comment for why there is no narrower span) to. `None` when it resolves to nothing (shouldn't
+/// arise for a checked specification, but degrading to a sort-only hint is safer than a wrong one).
+fn resolved_state_var_param_names<'a>(spec: &'a ModalSpecification, ctx: &Ctx, occurrence_span: &Span) -> Option<Vec<&'a str>> {
+    let decl_span = ctx.typing_info.nodes().iter().find_map(|node| {
+        if node.span.start == occurrence_span.start
+            && node.span.end == occurrence_span.end
+            && let Some(ResolvedName::StateVariable { declaration, .. }) = &node.name
+        {
+            declaration.clone()
+        } else {
+            None
+        }
+    })?;
+    find_state_var_decl(spec.formula(), &decl_span).map(|decl| decl.arguments.iter().map(|argument| argument.identifier.as_str()).collect())
+}
+
+/// The `StateVarDecl` whose own span is exactly `decl_span`, found by recursing through the
+/// formula tree by hand — mirrors `crate::hover::find_state_var_in_formula` and `symbols.rs`'s own
+/// `collect_fixed_points`: a modal formula's fixpoint variables aren't listed anywhere flat the way
+/// a PBES/PRES's `equations` are.
+fn find_state_var_decl<'a>(formula: &'a StateFrm, decl_span: &Span) -> Option<&'a StateVarDecl> {
+    match &formula.node {
+        StateFrmKind::FixedPoint { variable, body, .. } => {
+            if &variable.span == decl_span {
+                Some(variable)
+            } else {
+                find_state_var_decl(body, decl_span)
+            }
+        }
+        StateFrmKind::Unary { expr, .. } | StateFrmKind::Modality { expr, .. } => find_state_var_decl(expr, decl_span),
+        StateFrmKind::Binary { lhs, rhs, .. } => find_state_var_decl(lhs, decl_span).or_else(|| find_state_var_decl(rhs, decl_span)),
+        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => find_state_var_decl(body, decl_span),
+        StateFrmKind::DataValExprLeftMult(_, expr) | StateFrmKind::DataValExprRightMult(expr, _) => find_state_var_decl(expr, decl_span),
+        StateFrmKind::True
+        | StateFrmKind::False
+        | StateFrmKind::Delay(_)
+        | StateFrmKind::Yaled(_)
+        | StateFrmKind::Id(_, _)
+        | StateFrmKind::Resolved(_, _, _)
+        | StateFrmKind::DataValExpr(_) => None,
+    }
 }
 
 /// The field names of the struct constructor named `name` with exactly `arity` fields, if one is
@@ -517,7 +774,7 @@ mod tests {
             _ => panic!("fixture failed to parse"),
         };
         let sort_declarations = spec.data_specification.sort_declarations.clone();
-        let mut checked = match typecheck_pbes(text.to_string()).await {
+        let mut checked = match typecheck_pbes(spec.clone()).await {
             PbesTypecheckOutcome::Ok(checked) => checked,
             PbesTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
             PbesTypecheckOutcome::Internal(message) => {
@@ -544,6 +801,27 @@ mod tests {
             &typing_info,
             whole_document,
         );
+        (hints, line_index)
+    }
+
+    async fn modal_hints_for(text: &str) -> (Vec<InlayHint>, LineIndex) {
+        let spec = match parse(SpecKind::Modal, text.to_string()).await {
+            ParseOutcome::Ok(Specification::Modal(spec)) => *spec,
+            _ => panic!("fixture failed to parse"),
+        };
+        let sort_declarations = spec.data_specification.sort_declarations.clone();
+        let mut checked = match crate::typecheck::typecheck_modal(spec.clone()).await {
+            crate::typecheck::ModalTypecheckOutcome::Ok(checked) => checked,
+            crate::typecheck::ModalTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
+            crate::typecheck::ModalTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+        };
+        let line_index = LineIndex::new(text);
+        let typing_info = checked.typing_info();
+        let whole_document = Range {
+            start: Position { line: 0, character: 0 },
+            end: Position { line: u32::MAX, character: u32::MAX },
+        };
+        let hints = modal_inlay_hints(text, &line_index, &checked, &sort_declarations, &typing_info, whole_document);
         (hints, line_index)
     }
 
@@ -744,5 +1022,33 @@ mod tests {
             .expect("expected a hint before '5' inside val(...)");
         assert_eq!(label(hint), "n:");
         assert_eq!(hint.kind, Some(InlayHintKind::PARAMETER));
+    }
+
+    #[tokio::test]
+    async fn state_variable_reference_argument_gets_a_name_prefix_hint() {
+        let text = "act a: Nat;\nform nu X(n: Nat = 0) . [a(n)]X(1);";
+        let (hints, line_index) = modal_hints_for(text).await;
+
+        let one_start = text.rfind('1').unwrap();
+        let expected = line_index.position(text, one_start);
+        let hint = hints
+            .iter()
+            .find(|h| h.position == expected)
+            .expect("expected a hint before the reference argument '1'");
+        assert_eq!(label(hint), "n:");
+        assert_eq!(hint.kind, Some(InlayHintKind::PARAMETER));
+    }
+
+    #[tokio::test]
+    async fn modal_action_argument_gets_no_type_suffix_hint() {
+        let text = "act a: Nat;\nform nu X . [a(1)]X;";
+        let (hints, line_index) = modal_hints_for(text).await;
+
+        let one_end = text.find("1)]").unwrap() + 1;
+        let unwanted = line_index.position(text, one_end);
+        assert!(
+            hints.iter().all(|h| h.position != unwanted),
+            "did not expect a type suffix hint after a modality's action argument"
+        );
     }
 }

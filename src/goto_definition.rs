@@ -5,18 +5,19 @@
 //! | c2;` alternative, which resolves to `c1`/`a`/`is_c1`'s own name within the `struct` expression
 //! (`merc_syntax::ConstructorDecl` carries a real span for each of those now, not just a top-level
 //! `cons`/`map` declaration) — a variable (an equation's own `var`-block, a process/PBES parameter,
-//! a `sum`/`dist`/quantifier binder), an action/process reference, a sort-name reference (`D`
-//! in `map f: D -> D;`, a sort alias's own right-hand side, …) — `TypingInfo` indexes those
-//! directly too now, via [`ResolvedName::Sort`], the same way as every other reference here — and a
-//! bare action name inside a `hide`/`block`/`allow`/`comm`/`rename` action set
-//! ([`ResolvedName::ActionSet`]), which carries every `act` declaration sharing that name rather
-//! than a single span (unlike every other variant here, which resolves to exactly one overload
-//! already), so this can return more than one range for it. A built-in or a symbol declared only
-//! on the system-defined specification has no declaration site `merc_typecheck` exposes at all, so
-//! those resolve to no ranges at all — same as a binder with no real span of its own
-//! (`declaration: None`; see `ResolvedName`'s doc comment upstream). Shares [`crate::hover`]'s
-//! scoping caveat: a checked specification is only available once the whole process specification
-//! type checks.
+//! a `sum`/`dist`/quantifier binder), an action/process reference, a PBES/PRES propositional-variable
+//! reference ([`ResolvedName::PropositionalVariable`]), a modal-formula fixpoint-variable reference
+//! ([`ResolvedName::StateVariable`]), a sort-name reference (`D` in `map f: D -> D;`, a sort
+//! alias's own right-hand side, …) — `TypingInfo` indexes those directly too now, via
+//! [`ResolvedName::Sort`], the same way as every other reference here — and a bare action name
+//! inside a `hide`/`block`/`allow`/`comm`/`rename` action set ([`ResolvedName::ActionSet`]), which
+//! carries every `act` declaration sharing that name rather than a single span (unlike every other
+//! variant here, which resolves to exactly one overload already), so this can return more than one
+//! range for it. A built-in or a symbol declared only on the system-defined specification has no
+//! declaration site `merc_typecheck` exposes at all, so those resolve to no ranges at all — same
+//! as a binder with no real span of its own (`declaration: None`; see `ResolvedName`'s doc comment
+//! upstream). Shares [`crate::hover`]'s scoping caveat: a checked specification is only available
+//! once the whole specification type checks.
 
 use lsp_types::Position;
 use lsp_types::Range;
@@ -43,6 +44,8 @@ pub fn definition_ranges(text: &str, line_index: &LineIndex, typing_info: &Typin
         | Some(ResolvedName::Variable { declaration, .. })
         | Some(ResolvedName::Action { declaration, .. })
         | Some(ResolvedName::Process { declaration, .. })
+        | Some(ResolvedName::PropositionalVariable { declaration, .. })
+        | Some(ResolvedName::StateVariable { declaration, .. })
         | Some(ResolvedName::Sort { declaration, .. }) => declaration.iter().cloned().collect(),
         Some(ResolvedName::ActionSet { declarations, .. }) => declarations.clone(),
         _ => Vec::new(),
@@ -276,6 +279,46 @@ mod tests {
         let range = single(definition_ranges(text, &line_index, &typing_info, position));
 
         let declaration_offset = text.find("act a, b").unwrap() + "act a, ".len();
+        let expected = line_index.position(text, declaration_offset);
+        assert_eq!(range.start, expected);
+    }
+
+    #[tokio::test]
+    async fn jumps_from_a_propositional_variable_use_to_its_equation() {
+        let text = "pbes mu X(n: Bool) = val(n);\ninit X(true);";
+        let spec = merc_syntax::UntypedPbes::parse(text).unwrap_or_else(|error| panic!("fixture failed to parse: {error}"));
+        let typing_info = match crate::typecheck::typecheck_pbes(spec).await {
+            crate::typecheck::PbesTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
+            crate::typecheck::PbesTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
+            crate::typecheck::PbesTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+        };
+        let line_index = LineIndex::new(text);
+
+        let use_offset = text.find("X(true)").unwrap();
+        let position = line_index.position(text, use_offset);
+        let range = single(definition_ranges(text, &line_index, &typing_info, position));
+
+        let declaration_offset = text.find("mu X").unwrap() + "mu ".len();
+        let expected = line_index.position(text, declaration_offset);
+        assert_eq!(range.start, expected);
+    }
+
+    #[tokio::test]
+    async fn jumps_from_a_state_variable_use_to_its_fixpoint_declaration() {
+        let text = "act a: Nat;\nform nu X(n: Nat = 0) . [a(n)]X(n);";
+        let spec = merc_syntax::UntypedStateFrmSpec::parse(text).unwrap_or_else(|error| panic!("fixture failed to parse: {error}"));
+        let typing_info = match crate::typecheck::typecheck_modal(spec).await {
+            crate::typecheck::ModalTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
+            crate::typecheck::ModalTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
+            crate::typecheck::ModalTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+        };
+        let line_index = LineIndex::new(text);
+
+        let use_offset = text.rfind("X(n)").unwrap();
+        let position = line_index.position(text, use_offset);
+        let range = single(definition_ranges(text, &line_index, &typing_info, position));
+
+        let declaration_offset = text.find("nu X").unwrap() + "nu ".len();
         let expected = line_index.position(text, declaration_offset);
         assert_eq!(range.start, expected);
     }

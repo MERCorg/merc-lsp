@@ -9,9 +9,13 @@
 use merc_syntax::Rule;
 use merc_syntax::Span;
 use merc_syntax::UntypedPbes;
+use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
+use merc_syntax::UntypedStateFrmSpec;
 use merc_typecheck::InferenceError;
+use merc_typecheck::ModalError;
 use merc_typecheck::PbesError;
+use merc_typecheck::PresError;
 use merc_typecheck::ProcessError;
 use merc_typecheck::WellTypedError;
 use merc_utilities::MercError;
@@ -26,7 +30,9 @@ use crate::convert::is_identifier_byte;
 use crate::edit_distance;
 use crate::names;
 use crate::parse::ParseOutcome;
+use crate::typecheck::ModalTypecheckOutcome;
 use crate::typecheck::PbesTypecheckOutcome;
+use crate::typecheck::PresTypecheckOutcome;
 use crate::typecheck::TypecheckOutcome;
 
 const SOURCE: &str = "merc-lsp";
@@ -82,6 +88,30 @@ pub fn pbes_type_diagnostics(text: &str, line_index: &LineIndex, outcome: &PbesT
     }
 }
 
+/// As [`type_diagnostics`], for a PRES document's [`PresTypecheckOutcome`].
+pub fn pres_type_diagnostics(text: &str, line_index: &LineIndex, outcome: &PresTypecheckOutcome, spec: &UntypedPres) -> Vec<Diagnostic> {
+    match outcome {
+        PresTypecheckOutcome::Ok(_) => Vec::new(),
+        PresTypecheckOutcome::Error(error) => {
+            let message = error.to_string() + &suggestion_for_pres_error(error, spec);
+            vec![error_diagnostic(text, line_index, error.span(), message)]
+        }
+        PresTypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
+    }
+}
+
+/// As [`type_diagnostics`], for a modal-formula document's [`ModalTypecheckOutcome`].
+pub fn modal_type_diagnostics(text: &str, line_index: &LineIndex, outcome: &ModalTypecheckOutcome, spec: &UntypedStateFrmSpec) -> Vec<Diagnostic> {
+    match outcome {
+        ModalTypecheckOutcome::Ok(_) => Vec::new(),
+        ModalTypecheckOutcome::Error(error) => {
+            let message = error.to_string() + &suggestion_for_modal_error(error, spec);
+            vec![error_diagnostic(text, line_index, error.span(), message)]
+        }
+        ModalTypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
+    }
+}
+
 /// A `" — did you mean '...'?"` suffix for `error`, if it names an undeclared identifier and a
 /// close-enough candidate exists among `spec`'s own declarations — an empty string otherwise
 /// (including for every error variant that isn't "undeclared" shaped at all, like a duplicate
@@ -128,8 +158,46 @@ fn suggestion_for_pbes_error(error: &PbesError, spec: &UntypedPbes) -> String {
     }
 }
 
-/// Builds a located type-error [`Diagnostic`], shared by [`type_diagnostics`] and
-/// [`pbes_type_diagnostics`].
+/// As [`suggestion_for_pbes_error`], for a [`PresError`] — [`PresError`] mirrors [`PbesError`]'s
+/// shape one level down (see `typecheck.rs`'s module docs), so this is the identical match, just
+/// against a [`UntypedPres`] for its candidate names.
+fn suggestion_for_pres_error(error: &PresError, spec: &UntypedPres) -> String {
+    match error {
+        PresError::WellTyped(WellTypedError::UndefinedSort { sort, .. }) => {
+            edit_distance::suggestion(sort, names::pres_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))
+        }
+        PresError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, .. }))
+        | PresError::Inference(InferenceError::UndeclaredName { name, .. }) => {
+            edit_distance::suggestion(name, names::pres_data_value_names(spec))
+        }
+        PresError::UndeclaredPropositionalVariable { name, .. } => {
+            edit_distance::suggestion(name, names::pres_propositional_variable_names(spec))
+        }
+        _ => String::new(),
+    }
+}
+
+/// As [`suggestion_for_process_error`], for a [`ModalError`] — a modal formula's undeclared-name
+/// shapes are a sort (as everywhere else), a data value, an action (`ModalError::UndeclaredAction`,
+/// the modal counterpart of [`ProcessError::UndeclaredAction`]), or a fixpoint variable
+/// (`ModalError::UndeclaredStateVariable`).
+fn suggestion_for_modal_error(error: &ModalError, spec: &UntypedStateFrmSpec) -> String {
+    match error {
+        ModalError::WellTyped(WellTypedError::UndefinedSort { sort, .. }) => {
+            edit_distance::suggestion(sort, names::modal_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))
+        }
+        ModalError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, .. }))
+        | ModalError::Inference(InferenceError::UndeclaredName { name, .. }) => {
+            edit_distance::suggestion(name, names::modal_data_value_names(spec))
+        }
+        ModalError::UndeclaredAction { name, .. } => edit_distance::suggestion(name, names::modal_action_names(spec)),
+        ModalError::UndeclaredStateVariable { name, .. } => edit_distance::suggestion(name, names::modal_state_variable_names(spec)),
+        _ => String::new(),
+    }
+}
+
+/// Builds a located type-error [`Diagnostic`], shared by [`type_diagnostics`],
+/// [`pbes_type_diagnostics`], [`pres_type_diagnostics`], and [`modal_type_diagnostics`].
 fn error_diagnostic(text: &str, line_index: &LineIndex, span: Option<&Span>, message: String) -> Diagnostic {
     let range = span.map(|span| line_index.range(text, span)).unwrap_or_default();
     Diagnostic {
@@ -318,13 +386,58 @@ mod tests {
     #[tokio::test]
     async fn pbes_undeclared_propositional_variable_gets_a_did_you_mean_suggestion() {
         let text = "pbes mu Ready = true;\ninit Redy;";
-        let outcome = crate::typecheck::typecheck_pbes(text.to_string()).await;
         let spec = match merc_syntax::UntypedPbes::parse(text) {
             Ok(spec) => spec,
             Err(error) => panic!("fixture failed to parse: {error}"),
         };
+        let outcome = crate::typecheck::typecheck_pbes(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = pbes_type_diagnostics(text, &line_index, &outcome, &spec);
+
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("did you mean 'Ready'?"), "message was: {}", diags[0].message);
+    }
+
+    #[tokio::test]
+    async fn pres_undeclared_propositional_variable_gets_a_did_you_mean_suggestion() {
+        let text = "pres mu Ready = true;\ninit Redy;";
+        let spec = match merc_syntax::UntypedPres::parse(text) {
+            Ok(spec) => spec,
+            Err(error) => panic!("fixture failed to parse: {error}"),
+        };
+        let outcome = crate::typecheck::typecheck_pres(spec.clone()).await;
+        let line_index = LineIndex::new(text);
+        let diags = pres_type_diagnostics(text, &line_index, &outcome, &spec);
+
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("did you mean 'Ready'?"), "message was: {}", diags[0].message);
+    }
+
+    #[tokio::test]
+    async fn modal_undeclared_action_gets_a_did_you_mean_suggestion() {
+        let text = "act ready: Bool;\nform nu X . [redy(true)]X;";
+        let spec = match merc_syntax::UntypedStateFrmSpec::parse(text) {
+            Ok(spec) => spec,
+            Err(error) => panic!("fixture failed to parse: {error}"),
+        };
+        let outcome = crate::typecheck::typecheck_modal(spec.clone()).await;
+        let line_index = LineIndex::new(text);
+        let diags = modal_type_diagnostics(text, &line_index, &outcome, &spec);
+
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("did you mean 'ready'?"), "message was: {}", diags[0].message);
+    }
+
+    #[tokio::test]
+    async fn modal_undeclared_state_variable_gets_a_did_you_mean_suggestion() {
+        let text = "act a: Bool;\nform nu Ready . [a(true)]Redy;";
+        let spec = match merc_syntax::UntypedStateFrmSpec::parse(text) {
+            Ok(spec) => spec,
+            Err(error) => panic!("fixture failed to parse: {error}"),
+        };
+        let outcome = crate::typecheck::typecheck_modal(spec.clone()).await;
+        let line_index = LineIndex::new(text);
+        let diags = modal_type_diagnostics(text, &line_index, &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("did you mean 'Ready'?"), "message was: {}", diags[0].message);

@@ -6,8 +6,12 @@ use lsp_types::Diagnostic;
 use lsp_types::SemanticToken;
 use lsp_types::Url;
 use merc_syntax::UntypedPbes;
+use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
+use merc_syntax::UntypedStateFrmSpec;
+use merc_typecheck::ModalSpecification;
 use merc_typecheck::PbesSpecification;
+use merc_typecheck::PresSpecification;
 use merc_typecheck::ProcessSpecification;
 use merc_typecheck::TypingInfo;
 
@@ -16,7 +20,9 @@ use crate::diagnostics;
 use crate::parse::ParseOutcome;
 use crate::parse::Specification;
 use crate::semantic_tokens;
+use crate::typecheck::ModalTypecheckOutcome;
 use crate::typecheck::PbesTypecheckOutcome;
+use crate::typecheck::PresTypecheckOutcome;
 use crate::typecheck::TypecheckOutcome;
 
 /// A single open (or otherwise tracked) document.
@@ -25,9 +31,8 @@ use crate::typecheck::TypecheckOutcome;
 /// snapshot — always mutually consistent, all five updated together, only by `backend::analyze`
 /// (on `did_open` or `did_save`) — and every completion/hover/goto-definition/inlay-hint/
 /// semantic-tokens/document-symbol request reads exactly this snapshot, stale or not. `checked` is
-/// `None` whenever `parsed` isn't [`ParseOutcome::Ok`] (type checking only makes sense once
-/// parsing has already succeeded) or the parsed kind has no type checker at all yet
-/// ([`ParseOutcome::Ok(Specification::Pres(_))`](crate::parse::Specification::Pres) — see
+/// `None` only when `parsed` isn't [`ParseOutcome::Ok`] — type checking only makes sense once
+/// parsing has already succeeded — since every parsed kind now has a type checker (see
 /// `backend::analyze`).
 ///
 /// `pending_text`/`pending_version` are the separate, *unanalyzed* half: the latest buffer
@@ -50,11 +55,12 @@ pub struct Document {
 }
 
 /// The result of type checking a document, tagged by which kind of specification it checked —
-/// mirrors [`crate::parse::Specification`] one level down, for whichever half of that enum has a
-/// type checker upstream at all (mCRL2 process specifications and PBES; not PRES yet).
+/// mirrors [`crate::parse::Specification`] one level down, one variant per document kind.
 pub enum CheckedOutcome {
     Process(TypecheckOutcome),
     Pbes(PbesTypecheckOutcome),
+    Pres(PresTypecheckOutcome),
+    Modal(ModalTypecheckOutcome),
 }
 
 impl Document {
@@ -83,15 +89,13 @@ impl Document {
 
     /// All diagnostics for this document: parse errors (if any), plus — once parsing has
     /// succeeded — any type errors (tagged with a distinct `source`; see
-    /// [`crate::diagnostics::type_diagnostics`]/[`crate::diagnostics::pbes_type_diagnostics`]).
+    /// [`crate::diagnostics::type_diagnostics`] and its PBES/PRES/modal-formula counterparts).
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
         let mut diags = diagnostics::diagnostics(&self.text, &self.line_index, &self.parsed);
         match &self.checked {
-            // `checked` is only ever `Some(CheckedOutcome::Process(_))`/`Some(CheckedOutcome::Pbes(_))`
-            // when `parsed` is the matching `ParseOutcome::Ok(Specification::Process(_)/Pbes(_))` —
-            // see this struct's own doc comment and `backend::analyze` — so the raw parse is
-            // always available here to build an undeclared-name suggestion from (see
-            // `diagnostics.rs`'s module docs).
+            // `checked`'s variant always matches `parsed`'s (see this struct's own doc comment
+            // and `backend::analyze`), so the raw parse is always available here to build an
+            // undeclared-name suggestion from (see `diagnostics.rs`'s module docs).
             Some(CheckedOutcome::Process(outcome)) => {
                 let spec = self.parsed_process_specification().expect("checked implies a parsed process specification");
                 diags.extend(diagnostics::type_diagnostics(&self.text, &self.line_index, outcome, spec));
@@ -99,6 +103,14 @@ impl Document {
             Some(CheckedOutcome::Pbes(outcome)) => {
                 let spec = self.parsed_pbes_specification().expect("checked implies a parsed PBES");
                 diags.extend(diagnostics::pbes_type_diagnostics(&self.text, &self.line_index, outcome, spec));
+            }
+            Some(CheckedOutcome::Pres(outcome)) => {
+                let spec = self.parsed_pres_specification().expect("checked implies a parsed PRES");
+                diags.extend(diagnostics::pres_type_diagnostics(&self.text, &self.line_index, outcome, spec));
+            }
+            Some(CheckedOutcome::Modal(outcome)) => {
+                let spec = self.parsed_modal_specification().expect("checked implies a parsed modal formula");
+                diags.extend(diagnostics::modal_type_diagnostics(&self.text, &self.line_index, outcome, spec));
             }
             None => {}
         }
@@ -114,8 +126,9 @@ impl Document {
     /// [`crate::typecheck`]) has no partial-success entry point that would let these features keep
     /// working on the data-specification subtree alone while the rest of the document is still
     /// broken — so, for now, they simply go quiet document-wide until the whole thing checks
-    /// again. `None` for a PBES/PRES document too — see [`Self::checked_pbes_specification`] for
-    /// the PBES half of that, and `PLAN.md` for PRES (no type checker upstream at all yet).
+    /// again. `None` for a PBES/PRES/modal-formula document too — see
+    /// [`Self::checked_pbes_specification`]/[`Self::checked_pres_specification`]/
+    /// [`Self::checked_modal_specification`] for those.
     pub fn checked_process_specification(&self) -> Option<&ProcessSpecification> {
         match &self.checked {
             Some(CheckedOutcome::Process(TypecheckOutcome::Ok(spec))) => Some(spec),
@@ -132,6 +145,25 @@ impl Document {
     pub fn checked_pbes_specification(&self) -> Option<&PbesSpecification> {
         match &self.checked {
             Some(CheckedOutcome::Pbes(PbesTypecheckOutcome::Ok(spec))) => Some(spec),
+            _ => None,
+        }
+    }
+
+    /// As [`Self::checked_pbes_specification`], for a PRES document — backs
+    /// [`crate::inlay_hints::pres_inlay_hints`]'s equation-parameter-name lookup.
+    pub fn checked_pres_specification(&self) -> Option<&PresSpecification> {
+        match &self.checked {
+            Some(CheckedOutcome::Pres(PresTypecheckOutcome::Ok(spec))) => Some(spec),
+            _ => None,
+        }
+    }
+
+    /// As [`Self::checked_pbes_specification`], for a modal-formula document — backs
+    /// [`crate::hover`]'s action-declaration lookup and
+    /// [`crate::inlay_hints::modal_inlay_hints`]'s fixpoint-variable-parameter-name lookup.
+    pub fn checked_modal_specification(&self) -> Option<&ModalSpecification> {
+        match &self.checked {
+            Some(CheckedOutcome::Modal(ModalTypecheckOutcome::Ok(spec))) => Some(spec),
             _ => None,
         }
     }
@@ -162,6 +194,22 @@ impl Document {
         }
     }
 
+    /// As [`Self::parsed_pbes_specification`], for a PRES document.
+    pub fn parsed_pres_specification(&self) -> Option<&UntypedPres> {
+        match &self.parsed {
+            ParseOutcome::Ok(spec) => spec.as_pres(),
+            _ => None,
+        }
+    }
+
+    /// As [`Self::parsed_pbes_specification`], for a modal-formula document.
+    pub fn parsed_modal_specification(&self) -> Option<&UntypedStateFrmSpec> {
+        match &self.parsed {
+            ParseOutcome::Ok(spec) => spec.as_modal(),
+            _ => None,
+        }
+    }
+
     /// Computes a fresh `textDocument/semanticTokens/full` payload from `self.parsed`/`self.text`
     /// as they stand right now — empty if `parsed` isn't [`ParseOutcome::Ok`], same "no parse,
     /// nothing to offer" rule every other AST-driven accessor here follows. Callers decide when
@@ -175,16 +223,17 @@ impl Document {
             Specification::Process(spec) => semantic_tokens::semantic_tokens(&self.text, &self.line_index, spec),
             Specification::Pbes(spec) => semantic_tokens::pbes_semantic_tokens(&self.text, &self.line_index, spec),
             Specification::Pres(spec) => semantic_tokens::pres_semantic_tokens(&self.text, &self.line_index, spec),
+            Specification::Modal(spec) => semantic_tokens::modal_semantic_tokens(&self.text, &self.line_index, spec),
         }
     }
 
     /// Every checked expression's typing across the whole document (see
-    /// [`ProcessSpecification::typing_info`]/[`PbesSpecification::typing_info`]), if a checked
-    /// specification of either kind is available.
+    /// `ProcessSpecification::typing_info` and its PBES/PRES/modal-formula counterparts), if a
+    /// checked specification of any kind is available.
     ///
     /// Computed lazily, on demand — not cached eagerly at typecheck time. `ProcessSpecification`/
     /// `DataSpecification` already memoize the expensive half internally (an `Arc`-cached
-    /// singleton in each's own context — `PbesSpecification`'s own `typing_info` isn't memoized
+    /// singleton in each's own context — the other three kinds' own `typing_info` isn't memoized
     /// the same way upstream yet, but is still cheap: just an already-computed clone), so a first
     /// call per edit does the real work and every later call in the same request burst (hover,
     /// then goto-def, then inlay hints, all against the same unedited document) is cheap. Takes
@@ -194,6 +243,8 @@ impl Document {
         match &mut self.checked {
             Some(CheckedOutcome::Process(TypecheckOutcome::Ok(spec))) => Some(spec.typing_info()),
             Some(CheckedOutcome::Pbes(PbesTypecheckOutcome::Ok(spec))) => Some(spec.typing_info()),
+            Some(CheckedOutcome::Pres(PresTypecheckOutcome::Ok(spec))) => Some(spec.typing_info()),
+            Some(CheckedOutcome::Modal(ModalTypecheckOutcome::Ok(spec))) => Some(spec.typing_info()),
             _ => None,
         }
     }
@@ -209,14 +260,34 @@ mod tests {
     use crate::parse::SpecKind;
     use crate::parse::Specification;
     use crate::parse::parse;
+    use crate::typecheck::typecheck_modal;
     use crate::typecheck::typecheck_pbes;
+    use crate::typecheck::typecheck_pres;
 
     async fn pbes_document_for(text: &str) -> Document {
         let outcome = parse(SpecKind::Pbes, text.to_string()).await;
-        let ParseOutcome::Ok(Specification::Pbes(_)) = &outcome else {
+        let ParseOutcome::Ok(Specification::Pbes(spec)) = &outcome else {
             panic!("fixture failed to parse as a PBES");
         };
-        let checked = Some(CheckedOutcome::Pbes(typecheck_pbes(text.to_string()).await));
+        let checked = Some(CheckedOutcome::Pbes(typecheck_pbes((**spec).clone()).await));
+        Document::new(text.to_string(), 0, outcome, checked)
+    }
+
+    async fn pres_document_for(text: &str) -> Document {
+        let outcome = parse(SpecKind::Pres, text.to_string()).await;
+        let ParseOutcome::Ok(Specification::Pres(spec)) = &outcome else {
+            panic!("fixture failed to parse as a PRES");
+        };
+        let checked = Some(CheckedOutcome::Pres(typecheck_pres((**spec).clone()).await));
+        Document::new(text.to_string(), 0, outcome, checked)
+    }
+
+    async fn modal_document_for(text: &str) -> Document {
+        let outcome = parse(SpecKind::Modal, text.to_string()).await;
+        let ParseOutcome::Ok(Specification::Modal(spec)) = &outcome else {
+            panic!("fixture failed to parse as a modal formula");
+        };
+        let checked = Some(CheckedOutcome::Modal(typecheck_modal((**spec).clone()).await));
         Document::new(text.to_string(), 0, outcome, checked)
     }
 
@@ -232,6 +303,34 @@ mod tests {
     async fn checked_pbes_specification_is_none_for_an_ill_typed_pbes_document() {
         let document = pbes_document_for("pbes mu X = Y;\ninit X;").await;
         assert!(document.checked_pbes_specification().is_none());
+        assert!(!document.diagnostics().is_empty());
+    }
+
+    #[tokio::test]
+    async fn checked_pres_specification_is_available_once_a_pres_document_type_checks() {
+        let document = pres_document_for("pres mu X = true;\ninit X;").await;
+        assert!(document.checked_pres_specification().is_some());
+        assert!(document.checked_process_specification().is_none());
+    }
+
+    #[tokio::test]
+    async fn checked_pres_specification_is_none_for_an_ill_typed_pres_document() {
+        let document = pres_document_for("pres mu X = Y;\ninit X;").await;
+        assert!(document.checked_pres_specification().is_none());
+        assert!(!document.diagnostics().is_empty());
+    }
+
+    #[tokio::test]
+    async fn checked_modal_specification_is_available_once_a_modal_document_type_checks() {
+        let document = modal_document_for("act a: Nat;\nform nu X . [a(0)]X;").await;
+        assert!(document.checked_modal_specification().is_some());
+        assert!(document.checked_process_specification().is_none());
+    }
+
+    #[tokio::test]
+    async fn checked_modal_specification_is_none_for_an_ill_typed_modal_document() {
+        let document = modal_document_for("act a: Nat;\nform nu X . [b(0)]X;").await;
+        assert!(document.checked_modal_specification().is_none());
         assert!(!document.diagnostics().is_empty());
     }
 }

@@ -58,6 +58,17 @@
 					".pres"
 				],
 				"configuration": "./language-configuration.json"
+			},
+			{
+				"id": "merc-mcf",
+				"aliases": [
+					"Modal formula",
+					"mcf"
+				],
+				"extensions": [
+					".mcf"
+				],
+				"configuration": "./language-configuration.json"
 			}
 		],
 		"grammars": [
@@ -73,6 +84,11 @@
 			},
 			{
 				"language": "merc-pres",
+				"scopeName": "source.merc",
+				"path": "./syntaxes/merc.tmLanguage.json"
+			},
+			{
+				"language": "merc-mcf",
 				"scopeName": "source.merc",
 				"path": "./syntaxes/merc.tmLanguage.json"
 			}
@@ -106,6 +122,19 @@
 			},
 			{
 				"language": "merc-pres",
+				"scopes": {
+					"type": ["entity.name.type"],
+					"type.defaultLibrary": ["support.type"],
+					"variable": ["variable.other"],
+					"method": ["entity.name.function"],
+					"event": ["entity.name.tag"],
+					"enumMember": ["variable.other.enummember"],
+					"parameter": ["variable.parameter"],
+					"keyword": ["keyword.control"]
+				}
+			},
+			{
+				"language": "merc-mcf",
 				"scopes": {
 					"type": ["entity.name.type"],
 					"type.defaultLibrary": ["support.type"],

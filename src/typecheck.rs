@@ -10,11 +10,21 @@
 //! Diagnostics from this module are still tagged with a distinct `source` (see
 //! [`crate::diagnostics`]): communication sort-compatibility isn't checked yet (see the
 //! `merc_typecheck` crate README), so "no errors" here is not a full guarantee.
+//!
+//! [`typecheck_pbes`]/[`typecheck_pres`]/[`typecheck_modal`] are the PBES/PRES/modal-formula
+//! counterparts, each checking their own whole specification (`glob`/equations/`init` for PBES and
+//! PRES; `act` declarations and the formula itself for a modal specification) the same way.
 
 use merc_syntax::UntypedPbes;
+use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
+use merc_syntax::UntypedStateFrmSpec;
+use merc_typecheck::ModalError;
+use merc_typecheck::ModalSpecification;
 use merc_typecheck::PbesError;
 use merc_typecheck::PbesSpecification;
+use merc_typecheck::PresError;
+use merc_typecheck::PresSpecification;
 use merc_typecheck::ProcessError;
 use merc_typecheck::ProcessSpecification;
 
@@ -40,6 +50,20 @@ pub enum PbesTypecheckOutcome {
     Internal(String),
 }
 
+/// As [`TypecheckOutcome`], for a PRES document.
+pub enum PresTypecheckOutcome {
+    Ok(Box<PresSpecification>),
+    Error(PresError),
+    Internal(String),
+}
+
+/// As [`TypecheckOutcome`], for a modal (mu-calculus) formula document.
+pub enum ModalTypecheckOutcome {
+    Ok(Box<ModalSpecification>),
+    Error(ModalError),
+    Internal(String),
+}
+
 /// Type checks `spec`, off the async executor.
 ///
 /// Takes `spec` by value (rather than borrowing) because the work is moved onto a blocking thread
@@ -58,29 +82,15 @@ pub async fn typecheck(spec: UntypedProcessSpecification) -> TypecheckOutcome {
     }
 }
 
-/// Type checks `text` as a PBES, off the async executor.
+/// Type checks `spec`, off the async executor.
 ///
-/// Unlike [`typecheck`], this takes the document's raw `text` and re-parses it internally rather
-/// than an already-parsed `UntypedPbes`: `UntypedPbes` doesn't derive `Clone` upstream (unlike
-/// `UntypedProcessSpecification`), so there is no cheap way to keep the copy `document.parsed`
-/// holds (for `symbols`/`semantic_tokens`) *and* hand a second one to
-/// `PbesSpecification::from_untyped`, which consumes its argument. Re-parsing is the simplest way
-/// around that without an upstream change — `text` has already parsed successfully once by the
-/// time this is called (see `backend::analyze`), so the re-parse is not expected to fail; if it
-/// somehow does, that is reported the same way a join failure is, not treated as a type error.
-pub async fn typecheck_pbes(text: String) -> PbesTypecheckOutcome {
-    let outcome = tokio::task::spawn_blocking(move || match UntypedPbes::parse(&text) {
-        Ok(spec) => PbesSpecification::from_untyped(spec).map_err(TypecheckPbesError::Type),
-        Err(error) => Err(TypecheckPbesError::Reparse(error)),
-    })
-    .await;
-    match outcome {
+/// Takes the already-parsed `UntypedPbes` by value, same as [`typecheck`] — `UntypedPbes` now
+/// derives `Clone` upstream, so the caller can hand this a cheap clone of the copy
+/// `document.parsed` holds (for `symbols`/`semantic_tokens`) instead of re-parsing `text` here.
+pub async fn typecheck_pbes(spec: UntypedPbes) -> PbesTypecheckOutcome {
+    match tokio::task::spawn_blocking(move || PbesSpecification::from_untyped(spec)).await {
         Ok(Ok(checked)) => PbesTypecheckOutcome::Ok(Box::new(checked)),
-        Ok(Err(TypecheckPbesError::Type(error))) => PbesTypecheckOutcome::Error(error),
-        Ok(Err(TypecheckPbesError::Reparse(error))) => {
-            log::error!("PBES re-parse for type checking unexpectedly failed: {error}");
-            PbesTypecheckOutcome::Internal(format!("internal error: PBES re-parse failed unexpectedly: {error}"))
-        }
+        Ok(Err(error)) => PbesTypecheckOutcome::Error(error),
         Err(join_error) => {
             log::error!("pbes typecheck task failed to join: {join_error}");
             PbesTypecheckOutcome::Internal(format!("internal error: typecheck task did not complete ({join_error})"))
@@ -88,12 +98,30 @@ pub async fn typecheck_pbes(text: String) -> PbesTypecheckOutcome {
     }
 }
 
-/// [`typecheck_pbes`]'s two failure modes, kept distinct so the re-parse case (should not happen,
-/// logged loudly) is never confused with an ordinary [`PbesError`] (an expected, user-facing
-/// outcome).
-enum TypecheckPbesError {
-    Reparse(merc_utilities::MercError),
-    Type(PbesError),
+/// As [`typecheck_pbes`], for a PRES — same reasoning throughout, just against
+/// [`PresSpecification::from_untyped`].
+pub async fn typecheck_pres(spec: UntypedPres) -> PresTypecheckOutcome {
+    match tokio::task::spawn_blocking(move || PresSpecification::from_untyped(spec)).await {
+        Ok(Ok(checked)) => PresTypecheckOutcome::Ok(Box::new(checked)),
+        Ok(Err(error)) => PresTypecheckOutcome::Error(error),
+        Err(join_error) => {
+            log::error!("pres typecheck task failed to join: {join_error}");
+            PresTypecheckOutcome::Internal(format!("internal error: typecheck task did not complete ({join_error})"))
+        }
+    }
+}
+
+/// As [`typecheck_pbes`], for a modal (mu-calculus) formula — same reasoning, just against
+/// [`ModalSpecification::from_untyped`].
+pub async fn typecheck_modal(spec: UntypedStateFrmSpec) -> ModalTypecheckOutcome {
+    match tokio::task::spawn_blocking(move || ModalSpecification::from_untyped(spec)).await {
+        Ok(Ok(checked)) => ModalTypecheckOutcome::Ok(Box::new(checked)),
+        Ok(Err(error)) => ModalTypecheckOutcome::Error(error),
+        Err(join_error) => {
+            log::error!("modal typecheck task failed to join: {join_error}");
+            ModalTypecheckOutcome::Internal(format!("internal error: typecheck task did not complete ({join_error})"))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -107,6 +135,27 @@ mod tests {
     async fn process_specification_for(text: &str) -> UntypedProcessSpecification {
         match parse(SpecKind::Process, text.to_string()).await {
             ParseOutcome::Ok(Specification::Process(spec)) => *spec,
+            _ => panic!("fixture failed to parse"),
+        }
+    }
+
+    async fn pbes_specification_for(text: &str) -> UntypedPbes {
+        match parse(SpecKind::Pbes, text.to_string()).await {
+            ParseOutcome::Ok(Specification::Pbes(spec)) => *spec,
+            _ => panic!("fixture failed to parse"),
+        }
+    }
+
+    async fn pres_specification_for(text: &str) -> UntypedPres {
+        match parse(SpecKind::Pres, text.to_string()).await {
+            ParseOutcome::Ok(Specification::Pres(spec)) => *spec,
+            _ => panic!("fixture failed to parse"),
+        }
+    }
+
+    async fn modal_specification_for(text: &str) -> UntypedStateFrmSpec {
+        match parse(SpecKind::Modal, text.to_string()).await {
+            ParseOutcome::Ok(Specification::Modal(spec)) => *spec,
             _ => panic!("fixture failed to parse"),
         }
     }
@@ -145,8 +194,8 @@ mod tests {
 
     #[tokio::test]
     async fn typechecks_well_formed_pbes() {
-        let text = "pbes mu X = true;\ninit X;".to_string();
-        match typecheck_pbes(text).await {
+        let spec = pbes_specification_for("pbes mu X = true;\ninit X;").await;
+        match typecheck_pbes(spec).await {
             PbesTypecheckOutcome::Ok(_) => {}
             PbesTypecheckOutcome::Error(error) => panic!("unexpected type error: {error}"),
             PbesTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
@@ -156,11 +205,53 @@ mod tests {
     #[tokio::test]
     async fn reports_type_error_for_ill_typed_pbes() {
         // `Y` is never declared as a propositional-variable equation.
-        let text = "pbes mu X = Y;\ninit X;".to_string();
-        match typecheck_pbes(text).await {
+        let spec = pbes_specification_for("pbes mu X = Y;\ninit X;").await;
+        match typecheck_pbes(spec).await {
             PbesTypecheckOutcome::Ok(_) => panic!("expected a type error"),
             PbesTypecheckOutcome::Error(_) => {}
             PbesTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn typechecks_well_formed_pres() {
+        let spec = pres_specification_for("pres mu X = true;\ninit X;").await;
+        match typecheck_pres(spec).await {
+            PresTypecheckOutcome::Ok(_) => {}
+            PresTypecheckOutcome::Error(error) => panic!("unexpected type error: {error}"),
+            PresTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reports_type_error_for_ill_typed_pres() {
+        // `Y` is never declared as a propositional-variable equation.
+        let spec = pres_specification_for("pres mu X = Y;\ninit X;").await;
+        match typecheck_pres(spec).await {
+            PresTypecheckOutcome::Ok(_) => panic!("expected a type error"),
+            PresTypecheckOutcome::Error(_) => {}
+            PresTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn typechecks_well_formed_modal_formula() {
+        let spec = modal_specification_for("act a: Nat;\nform nu X . [a(0)]X;").await;
+        match typecheck_modal(spec).await {
+            ModalTypecheckOutcome::Ok(_) => {}
+            ModalTypecheckOutcome::Error(error) => panic!("unexpected type error: {error}"),
+            ModalTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reports_type_error_for_ill_typed_modal_formula() {
+        // `b` is never declared as an action.
+        let spec = modal_specification_for("act a: Nat;\nform nu X . [b(0)]X;").await;
+        match typecheck_modal(spec).await {
+            ModalTypecheckOutcome::Ok(_) => panic!("expected a type error"),
+            ModalTypecheckOutcome::Error(_) => {}
+            ModalTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
         }
     }
 }

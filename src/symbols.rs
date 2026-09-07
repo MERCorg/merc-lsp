@@ -1,5 +1,5 @@
 //! Builds `textDocument/documentSymbol` output from a parsed [`UntypedProcessSpecification`],
-//! [`UntypedPbes`], or [`UntypedPres`].
+//! [`UntypedPbes`], [`UntypedPres`], or [`UntypedStateFrmSpec`].
 //!
 //! `merc_syntax::Traverse` doesn't apply here — it only covers expression-level node types and
 //! is deliberately not used to walk the specification's top-level declarations (sorts, maps,
@@ -15,6 +15,12 @@
 //! (`mu`/`nu`-tagged, named boolean/real formulas) and `init`, the latter now located via
 //! `PropVarInst::span` (upstream `merc_syntax` change) rather than a text search — see
 //! [`init_symbol`].
+//!
+//! [`modal_symbols`] shares the same data-specification part, adds the formula's own `act`
+//! declarations, then — since a modal formula has no flat top-level equation list the way a
+//! PBES/PRES does — recursively collects every `mu`/`nu` fixpoint variable declared anywhere in
+//! the formula (see [`collect_fixed_points`]), nesting a fixpoint's own children under it the same
+//! way the formula itself nests them.
 
 use lsp_types::DocumentSymbol;
 use lsp_types::Range;
@@ -24,10 +30,14 @@ use merc_syntax::ProcessExpr;
 use merc_syntax::PropVarInst;
 use merc_syntax::Span;
 use merc_syntax::SortDecl;
+use merc_syntax::StateFrm;
+use merc_syntax::StateFrmKind;
+use merc_syntax::StateVarAssignment;
 use merc_syntax::UntypedDataSpecification;
 use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
+use merc_syntax::UntypedStateFrmSpec;
 
 use crate::convert::LineIndex;
 
@@ -137,6 +147,77 @@ pub fn pres_symbols(text: &str, line_index: &LineIndex, spec: &UntypedPres) -> V
     symbols
 }
 
+/// Builds the outline for a parsed modal (mu-calculus) formula: the shared data-specification
+/// part, the formula's own `act` declarations, then every `mu`/`nu` fixpoint variable declared
+/// anywhere in the formula (see [`collect_fixed_points`]) — nested under whichever enclosing
+/// fixpoint declares it, the same structure the formula itself has. A formula with no fixpoint at
+/// all (`[a]true`, say) simply has no entries past the `act` declarations — there is no flat
+/// top-level list the way a PBES/PRES's equations are to fall back to.
+pub fn modal_symbols(text: &str, line_index: &LineIndex, spec: &UntypedStateFrmSpec) -> Vec<DocumentSymbol> {
+    let mut symbols = data_specification_symbols(text, line_index, &spec.data_specification);
+
+    for decl in &spec.action_declarations {
+        let detail = if decl.args.is_empty() {
+            None
+        } else {
+            Some(decl.args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" # "))
+        };
+        symbols.push(symbol_at(decl.identifier.node.clone(), detail, SymbolKind::EVENT, text, line_index, &decl.identifier.span, None));
+    }
+
+    collect_fixed_points(&spec.formula, text, line_index, &mut symbols);
+
+    symbols.sort_by_key(|symbol| (symbol.range.start.line, symbol.range.start.character));
+    symbols
+}
+
+/// Recursively finds every `mu`/`nu X(...) = ...` declared anywhere within `formula`, appending
+/// one [`DocumentSymbol`] per declaration to `out` — a sibling fixpoint (`mu X = ... && mu Y =
+/// ...`) becomes a sibling entry, while one nested inside another's own body (`mu X = nu Y = ...`)
+/// becomes a child of it, found by recursing into `body` as that fixpoint's own `out` list instead
+/// of the caller's. Mirrors [`data_specification_symbols`]'s `eqn` block in spirit — a container
+/// grouping declarations by nesting — but has to walk the formula tree by hand to find them, since
+/// (unlike a PBES/PRES's `equations`) they aren't listed anywhere flat.
+fn collect_fixed_points(formula: &StateFrm, text: &str, line_index: &LineIndex, out: &mut Vec<DocumentSymbol>) {
+    match &formula.node {
+        StateFrmKind::FixedPoint { operator, variable, body } => {
+            let mut children: Vec<DocumentSymbol> = variable.arguments.iter().map(|argument| state_var_assignment_symbol(text, line_index, argument)).collect();
+            collect_fixed_points(body, text, line_index, &mut children);
+            let detail = format!("{operator} {variable}");
+            out.push(symbol_at(variable.identifier.clone(), Some(detail), SymbolKind::FUNCTION, text, line_index, &variable.span, Some(children)));
+        }
+        StateFrmKind::Unary { expr, .. } | StateFrmKind::Modality { expr, .. } => collect_fixed_points(expr, text, line_index, out),
+        StateFrmKind::Binary { lhs, rhs, .. } => {
+            collect_fixed_points(lhs, text, line_index, out);
+            collect_fixed_points(rhs, text, line_index, out);
+        }
+        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => collect_fixed_points(body, text, line_index, out),
+        StateFrmKind::DataValExprLeftMult(_, expr) | StateFrmKind::DataValExprRightMult(expr, _) => collect_fixed_points(expr, text, line_index, out),
+        StateFrmKind::True
+        | StateFrmKind::False
+        | StateFrmKind::Delay(_)
+        | StateFrmKind::Yaled(_)
+        | StateFrmKind::Id(_, _)
+        | StateFrmKind::Resolved(_, _, _)
+        | StateFrmKind::DataValExpr(_) => {}
+    }
+}
+
+/// A fixpoint variable's own parameter (`n: Nat = 0` in `mu X(n: Nat = 0) = ...`), shown with its
+/// declared sort and initial value together as `detail` — unlike [`id_decl_symbol`]'s plain sort,
+/// since the initial value is as much a part of this declaration as the sort is.
+fn state_var_assignment_symbol(text: &str, line_index: &LineIndex, argument: &StateVarAssignment) -> DocumentSymbol {
+    symbol_at(
+        argument.identifier.node.clone(),
+        Some(format!("{} = {}", argument.sort, argument.expr)),
+        SymbolKind::VARIABLE,
+        text,
+        line_index,
+        &argument.identifier.span,
+        None,
+    )
+}
+
 /// The `sort`/`cons`/`map`/`eqn` part of the outline, shared by [`document_symbols`],
 /// [`pbes_symbols`], and [`pres_symbols`].
 fn data_specification_symbols(text: &str, line_index: &LineIndex, data: &UntypedDataSpecification) -> Vec<DocumentSymbol> {
@@ -164,7 +245,7 @@ fn data_specification_symbols(text: &str, line_index: &LineIndex, data: &Untyped
         let spans = eqn_spec
             .variables
             .iter()
-            .map(|decl| &decl.span)
+            .map(|decl| &decl.identifier.span)
             .chain(eqn_spec.equations.iter().map(|eqn| &eqn.span));
         let span = spans.fold(None::<Span>, |acc, span| match acc {
             Some(acc) => Some(Span {
@@ -197,7 +278,7 @@ fn sort_symbol(text: &str, line_index: &LineIndex, decl: &SortDecl) -> DocumentS
 }
 
 fn id_decl_symbol<Id>(text: &str, line_index: &LineIndex, decl: &IdDecl<Id>, kind: SymbolKind) -> DocumentSymbol {
-    symbol_at(decl.identifier.clone(), Some(decl.sort.to_string()), kind, text, line_index, &decl.span, None)
+    symbol_at(decl.identifier.node.clone(), Some(decl.sort.to_string()), kind, text, line_index, &decl.identifier.span, None)
 }
 
 fn init_symbol(text: &str, line_index: &LineIndex, init: &ProcessExpr) -> DocumentSymbol {
@@ -289,6 +370,15 @@ mod tests {
         }
     }
 
+    async fn modal_symbols_for(text: &str) -> Vec<DocumentSymbol> {
+        let outcome = parse(SpecKind::Modal, text.to_string()).await;
+        let line_index = LineIndex::new(text);
+        match outcome {
+            ParseOutcome::Ok(Specification::Modal(spec)) => modal_symbols(text, &line_index, &spec),
+            _ => panic!("fixture failed to parse"),
+        }
+    }
+
     #[tokio::test]
     async fn grouped_sort_declarations_get_distinct_selection_ranges() {
         let text = "sort A, B, C;\ninit delta;";
@@ -354,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn pres_equation_and_init_are_located() {
-        let text = "pres mu X(n: Bool) = 0;\ninit X(n);".to_string();
+        let text = "pres mu X(n: Bool) = true;\ninit X(n);".to_string();
         let symbols = pres_symbols_for(&text).await;
 
         let equation = symbols
@@ -383,5 +473,28 @@ mod tests {
 
         let init = symbols.iter().find(|s| s.name == "init").expect("expected an init symbol");
         assert_eq!(init.range.start.line, 3);
+    }
+
+    #[tokio::test]
+    async fn modal_fixed_point_and_action_are_located() {
+        let text = "act a: Nat;\nform nu X(n: Nat = 0) . [a(n)]X(n);".to_string();
+        let symbols = modal_symbols_for(&text).await;
+
+        let action = symbols.iter().find(|s| s.kind == SymbolKind::EVENT).expect("expected the act declaration as a symbol");
+        assert_eq!(action.name, "a");
+
+        let fixed_point = symbols.iter().find(|s| s.kind == SymbolKind::FUNCTION).expect("expected the fixpoint variable as a symbol");
+        assert_eq!(fixed_point.name, "X");
+        assert_eq!(fixed_point.children.as_ref().map(Vec::len), Some(1), "the fixpoint's own parameter should be a child");
+    }
+
+    #[tokio::test]
+    async fn nested_fixed_point_becomes_a_child_of_the_enclosing_one() {
+        let text = "form mu X . (nu Y . X) && true;".to_string();
+        let symbols = modal_symbols_for(&text).await;
+
+        let outer = symbols.iter().find(|s| s.name == "X").expect("expected the outer fixpoint as a top-level symbol");
+        let inner = outer.children.as_ref().and_then(|children| children.iter().find(|child| child.name == "Y"));
+        assert!(inner.is_some(), "expected 'Y' to be nested under 'X', got children: {:?}", outer.children);
     }
 }

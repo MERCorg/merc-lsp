@@ -87,10 +87,11 @@ function startClient(context: ExtensionContext): LanguageClient {
 		documentSelector: [
 			{ scheme: 'file', language: 'merc' },
 			{ scheme: 'file', language: 'merc-pbes' },
-			{ scheme: 'file', language: 'merc-pres' }
+			{ scheme: 'file', language: 'merc-pres' },
+			{ scheme: 'file', language: 'merc-mcf' }
 		],
 		synchronize: {
-			fileEvents: workspace.createFileSystemWatcher('**/*.{merc,pbes,pres}')
+			fileEvents: workspace.createFileSystemWatcher('**/*.{merc,pbes,pres,mcf}')
 		}
 	};
 

@@ -5,13 +5,18 @@
 //! expected (see [`crate::completion_context`]).
 //!
 //! Every function here mirrors, one level down, the identical `UntypedDataSpecification` subtree
-//! shared by a process specification, a PBES, and a PRES (see `completion.rs`'s module docs for
-//! why that sharing runs this deep) — so the `process_*`/`pbes_*` pairs below are the same
-//! extraction against two different top-level containers, not independently written code.
+//! shared by a process specification, a PBES, a PRES, and a modal formula (see `completion.rs`'s
+//! module docs for why that sharing runs this deep) — so the `process_*`/`pbes_*`/`pres_*`/
+//! `modal_*` groups below are the same extraction against different top-level containers, not
+//! independently written code.
 
+use merc_syntax::StateFrm;
+use merc_syntax::StateFrmKind;
 use merc_syntax::UntypedDataSpecification;
 use merc_syntax::UntypedPbes;
+use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
+use merc_syntax::UntypedStateFrmSpec;
 
 /// mCRL2's built-in sort names — the basic sorts plus the parameterized container sorts. Not
 /// discovered from the AST (unlike every other name here): a system sort is never *declared*, so
@@ -84,9 +89,73 @@ pub fn pbes_propositional_variable_names(spec: &UntypedPbes) -> impl Iterator<It
     spec.equations.iter().map(|eqn| eqn.variable.identifier.as_str())
 }
 
-// No `pres_*` counterparts: PRES has no type checker upstream yet (see `crate::typecheck`'s
-// module docs), so `diagnostics.rs` never has a PRES error to build a suggestion for — nothing
-// would call them.
+/// As [`pbes_sort_names`], for a PRES.
+pub fn pres_sort_names(spec: &UntypedPres) -> impl Iterator<Item = &str> {
+    sort_names(&spec.data_specification)
+}
+
+/// As [`pbes_data_value_names`], for a PRES.
+pub fn pres_data_value_names(spec: &UntypedPres) -> impl Iterator<Item = &str> {
+    let globals = spec.global_variables.iter().map(|decl| decl.identifier.as_str());
+    data_value_names(&spec.data_specification).chain(globals)
+}
+
+/// As [`pbes_propositional_variable_names`], for a PRES.
+pub fn pres_propositional_variable_names(spec: &UntypedPres) -> impl Iterator<Item = &str> {
+    spec.equations.iter().map(|eqn| eqn.variable.identifier.as_str())
+}
+
+/// As [`pbes_sort_names`], for a modal (mu-calculus) formula.
+pub fn modal_sort_names(spec: &UntypedStateFrmSpec) -> impl Iterator<Item = &str> {
+    sort_names(&spec.data_specification)
+}
+
+/// As [`pbes_data_value_names`], for a modal formula — no `glob`al variables to chain in, unlike a
+/// process specification/PBES/PRES: [`UntypedStateFrmSpec`] declares none of its own (a state
+/// formula's only own-declared names are its `act`ions and fixpoint variables).
+pub fn modal_data_value_names(spec: &UntypedStateFrmSpec) -> impl Iterator<Item = &str> {
+    data_value_names(&spec.data_specification)
+}
+
+/// The `act`-declared action names in scope for every modality in `spec`'s formula.
+pub fn modal_action_names(spec: &UntypedStateFrmSpec) -> impl Iterator<Item = &str> {
+    spec.action_declarations.iter().map(|decl| decl.identifier.as_str())
+}
+
+/// Every fixpoint (`mu`/`nu`) variable name declared anywhere in `spec`'s formula — unlike
+/// [`pbes_propositional_variable_names`]'s flat `spec.equations`, a modal formula's own
+/// `FixedPoint` declarations are nested arbitrarily deep inside the formula tree, so this walks it
+/// recursively rather than filtering one top-level list. Returns every declaration in the tree,
+/// even a shadowed one — same "no real lexical scoping" tradeoff `completion_context.rs`'s module
+/// docs describe for everything else in this crate.
+pub fn modal_state_variable_names(spec: &UntypedStateFrmSpec) -> Vec<&str> {
+    let mut names = Vec::new();
+    collect_state_variable_names(&spec.formula, &mut names);
+    names
+}
+
+fn collect_state_variable_names<'a>(formula: &'a StateFrm, names: &mut Vec<&'a str>) {
+    match &formula.node {
+        StateFrmKind::FixedPoint { variable, body, .. } => {
+            names.push(variable.identifier.as_str());
+            collect_state_variable_names(body, names);
+        }
+        StateFrmKind::Unary { expr, .. } | StateFrmKind::Modality { expr, .. } => collect_state_variable_names(expr, names),
+        StateFrmKind::Binary { lhs, rhs, .. } => {
+            collect_state_variable_names(lhs, names);
+            collect_state_variable_names(rhs, names);
+        }
+        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => collect_state_variable_names(body, names),
+        StateFrmKind::DataValExprLeftMult(_, expr) | StateFrmKind::DataValExprRightMult(expr, _) => collect_state_variable_names(expr, names),
+        StateFrmKind::True
+        | StateFrmKind::False
+        | StateFrmKind::Delay(_)
+        | StateFrmKind::Yaled(_)
+        | StateFrmKind::Id(_, _)
+        | StateFrmKind::Resolved(_, _, _)
+        | StateFrmKind::DataValExpr(_) => {}
+    }
+}
 
 #[cfg(test)]
 mod tests {

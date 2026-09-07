@@ -1,37 +1,40 @@
 # Overview
 
 `merc-lsp` is a Language Server (built on `async-lsp`) for mCRL2 specifications, plus a thin
-VS Code client that spawns it. It understands three document kinds, picked by file extension:
-plain process specifications (`.mcrl2`), PBES (`.pbes`), and PRES (`.pres`).
+VS Code client that spawns it. It understands four document kinds, picked by file extension: plain
+process specifications (`.mcrl2`), PBES (`.pbes`), PRES (`.pres`), and modal (mu-calculus) state
+formulas (`.mcf`).
 
 ## Current status
 
-- **Diagnostics** — syntax errors for all three document kinds, plus whole-specification type
-  errors (data, actions, processes, `init`) for `.mcrl2` and (`glob`, propositional-variable
-  equations, `init`) for `.pbes`. Communication sort-compatibility isn't checked yet, so "no
-  diagnostics" isn't a full well-typedness guarantee. `.pres` documents stay parse-only — there is
-  no PRES type checker upstream yet.
-- **Document outline** (`textDocument/documentSymbol`) — for all three document kinds.
-- **Semantic tokens** — AST-driven highlighting for `.mcrl2` and `.pbes` that resolves mCRL2's
+- **Diagnostics** — syntax errors for all four document kinds, plus whole-specification type
+  errors for each: data, actions, processes, and `init` for `.mcrl2`; `glob`, propositional-variable
+  equations, and `init` for `.pbes`/`.pres`; and `act` declarations plus the formula itself
+  (actions, fixpoint variables, and every `forall`/`exists`/`inf`/`sup`/`sum` binder) for `.mcf`.
+  Communication sort-compatibility isn't checked yet, so "no diagnostics" isn't a full
+  well-typedness guarantee.
+- **Document outline** (`textDocument/documentSymbol`) — for all four document kinds; a `.mcf`
+  document's outline nests every `mu`/`nu` fixpoint variable under whichever one encloses it, the
+  same structure the formula itself has.
+- **Semantic tokens** — AST-driven highlighting for all four document kinds that resolves mCRL2's
   structural ambiguities (e.g. `a(f)` as function application vs. action vs. process
-  instantiation); not yet scope-aware (a bound variable reads the same as a free one), and not yet
-  implemented for `.pres`.
-- **Hover** and **go-to-definition** — for `.mcrl2` and `.pbes`, driven by the checked
-  specification's typing info: mapping/constructor/action/process/propositional-variable uses, and
-  bound/global variables, each resolving to their declaration site. Requires the whole document to
-  currently type check (see `PLAN.md`); unavailable for `.pres`.
-- **Inlay hints** (`textDocument/inlayHint`) — for `.mcrl2` and `.pbes`: a `name:` prefix on a
-  call argument when the callee (a process, or a struct constructor) names that position, a
-  `: Sort` suffix otherwise (an action argument, a mapping argument, an equation's `eqn` LHS
-  pattern variable), covering process instantiations/action instances, PBES propositional-variable
-  instantiations, and `val(...)` expressions alike.
-- **Completion** (`textDocument/completion`) — for all three document kinds, including `.pres`
-  (it needs no type checker, see `PLAN.md`): every sort/constructor/mapping/action/process (or
-  propositional-variable equation)/variable the document declares, plus mCRL2's reserved keywords
-  and built-in sort names. Deliberately unscoped — a flat list, not real lexical scoping; an
-  editor's own fuzzy-match/prefix filtering narrows it down.
-
-See `PLAN.md` for the detailed, up-to-date list of finished and open work.
+  instantiation); not yet scope-aware (a bound variable reads the same as a free one).
+- **Hover** and **go-to-definition** — for all four document kinds, driven by the checked
+  specification's typing info: mapping/constructor/action/process/propositional-variable/state-variable
+  uses, and bound/global variables, each resolving to their declaration site. Requires the whole
+  document to currently type check.
+- **Inlay hints** (`textDocument/inlayHint`) — for all four document kinds: a `name:` prefix on a
+  call argument when the callee (a process, a struct constructor, or a fixpoint variable) names
+  that position, a `: Sort` suffix otherwise (an action argument, a mapping argument, an equation's
+  `eqn` LHS pattern variable), covering process instantiations/action instances,
+  PBES/PRES/modal-formula propositional- and state-variable instantiations, and `val(...)`
+  expressions alike.
+- **Completion** (`textDocument/completion`) — for all four document kinds: every
+  sort/constructor/mapping/action/process (or propositional-/state-variable)/variable the document
+  declares, plus mCRL2's reserved keywords and built-in sort names. Works off the raw parse, not a
+  checked specification, so it keeps working while a document is transiently ill-typed or mid-edit.
+  Deliberately unscoped — a flat list, not real lexical scoping; an editor's own
+  fuzzy-match/prefix filtering narrows it down.
 
 ## Building the server
 

@@ -1,7 +1,7 @@
 //! Builds `textDocument/semanticTokens/full` output from a parsed [`UntypedProcessSpecification`]
-//! ([`semantic_tokens`]), [`UntypedPbes`] ([`pbes_semantic_tokens`]), or [`UntypedPres`]
-//! ([`pres_semantic_tokens`]).
-//! 
+//! ([`semantic_tokens`]), [`UntypedPbes`] ([`pbes_semantic_tokens`]), [`UntypedPres`]
+//! ([`pres_semantic_tokens`]), or [`UntypedStateFrmSpec`] ([`modal_semantic_tokens`]).
+//!
 //! A system sort (`Bool`, `Nat`, …, and the parameterized
 //! `List`/`Set`/`Bag`/`FSet`/`FBag`) is tagged [`TokenKind::Type`] like any
 //! other sort reference, but with [`MODIFIER_DEFAULT_LIBRARY`] set, so a theme
@@ -15,8 +15,11 @@ use lsp_types::SemanticToken;
 use lsp_types::SemanticTokenModifier;
 use lsp_types::SemanticTokenType;
 use lsp_types::SemanticTokensLegend;
+use merc_syntax::ActFrm;
+use merc_syntax::ActFrmKind;
 use merc_syntax::DataExpr;
 use merc_syntax::DataExprKind;
+use merc_syntax::MultiAction;
 use merc_syntax::PbesExpr;
 use merc_syntax::PbesExprKind;
 use merc_syntax::PresExpr;
@@ -24,14 +27,19 @@ use merc_syntax::PresExprKind;
 use merc_syntax::ProcessExpr;
 use merc_syntax::ProcessExprKind;
 use merc_syntax::PropVarInst;
+use merc_syntax::RegFrm;
+use merc_syntax::RegFrmKind;
 use merc_syntax::SortExpression;
 use merc_syntax::SortExpressionKind;
 use merc_syntax::Span;
+use merc_syntax::StateFrm;
+use merc_syntax::StateFrmKind;
 use merc_syntax::Traverse;
 use merc_syntax::UntypedDataSpecification;
 use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
+use merc_syntax::UntypedStateFrmSpec;
 
 use crate::convert::LineIndex;
 use crate::convert::is_identifier_byte;
@@ -96,7 +104,7 @@ pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcess
     tag_data_specification(&spec.data_specification, &symbols, &mut builder);
 
     for decl in &spec.global_variables {
-        builder.push(&decl.span, TokenKind::Variable, true);
+        builder.push(&decl.identifier.span, TokenKind::Variable, true);
         walk_sort_expression(&decl.sort, &mut builder);
     }
 
@@ -115,7 +123,7 @@ pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcess
         builder.push(&decl.identifier.span, TokenKind::Method, true);
         let params: HashSet<&str> = decl.params.iter().map(|param| param.identifier.as_str()).collect();
         for param in &decl.params {
-            builder.push(&param.span, TokenKind::Parameter, true);
+            builder.push(&param.identifier.span, TokenKind::Parameter, true);
             walk_sort_expression(&param.sort, &mut builder);
         }
         walk_process_expr(&decl.body, &symbols, &params, &mut builder);
@@ -143,7 +151,7 @@ pub fn pbes_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPb
     tag_data_specification(&spec.data_specification, &symbols, &mut builder);
 
     for decl in &spec.global_variables {
-        builder.push(&decl.span, TokenKind::Variable, true);
+        builder.push(&decl.identifier.span, TokenKind::Variable, true);
         walk_sort_expression(&decl.sort, &mut builder);
     }
 
@@ -154,7 +162,7 @@ pub fn pbes_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPb
         builder.push(&eqn.variable.identifier.span, TokenKind::Method, true);
         let params: HashSet<&str> = eqn.variable.parameters.iter().map(|param| param.identifier.as_str()).collect();
         for param in &eqn.variable.parameters {
-            builder.push(&param.span, TokenKind::Parameter, true);
+            builder.push(&param.identifier.span, TokenKind::Parameter, true);
             walk_sort_expression(&param.sort, &mut builder);
         }
         walk_pbes_expr(&eqn.formula, &symbols, &params, &mut builder);
@@ -178,7 +186,7 @@ pub fn pres_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPr
     tag_data_specification(&spec.data_specification, &symbols, &mut builder);
 
     for decl in &spec.global_variables {
-        builder.push(&decl.span, TokenKind::Variable, true);
+        builder.push(&decl.identifier.span, TokenKind::Variable, true);
         walk_sort_expression(&decl.sort, &mut builder);
     }
 
@@ -189,7 +197,7 @@ pub fn pres_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPr
         builder.push(&eqn.variable.identifier.span, TokenKind::Method, true);
         let params: HashSet<&str> = eqn.variable.parameters.iter().map(|param| param.identifier.as_str()).collect();
         for param in &eqn.variable.parameters {
-            builder.push(&param.span, TokenKind::Parameter, true);
+            builder.push(&param.identifier.span, TokenKind::Parameter, true);
             walk_sort_expression(&param.sort, &mut builder);
         }
         walk_pres_expr(&eqn.formula, &symbols, &params, &mut builder);
@@ -197,6 +205,40 @@ pub fn pres_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPr
 
     // `init` is not an equation's own formula, so no parameter is in scope here.
     walk_prop_var_inst(&spec.init, &symbols, &HashSet::new(), &mut builder);
+
+    tag_keywords(text, &mut builder);
+
+    builder.finish()
+}
+
+/// As [`semantic_tokens`]/[`pbes_semantic_tokens`]/[`pres_semantic_tokens`], for a parsed modal
+/// (mu-calculus) state formula: the shared data-specification pass, then the formula's own `act`
+/// declarations (tagged the same way a process specification's are) and the formula itself.
+///
+/// Unlike every other tree this module walks, a state formula's fixpoint (`mu`/`nu`) variables
+/// genuinely nest arbitrarily deep, each introducing its own parameter scope — `mu X(n: Nat = 0) =
+/// nu Y(m: Nat = 0) . ...` has two, one inside the other — so [`walk_state_frm`] is a hand-written
+/// recursive descent rather than a `Traverse::visit` closure (which flattens the whole subtree into
+/// one callback with no way to change `current_params` partway through, the same limitation
+/// `completion_context.rs`'s module docs describe for its own cursor-context walk); the `RegFrm`/
+/// `ActFrm` a modality (`[...]`/`<...>`) carries are walked by hand for the same reason `Traverse`
+/// stops at a `RegFrmKind::Action` node (see `merc_syntax::traverse`'s own tests) rather than
+/// descending into it.
+pub fn modal_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedStateFrmSpec) -> Vec<SemanticToken> {
+    let symbols = SymbolTable::collect_modal(spec);
+    let mut builder = Builder::new(text, line_index);
+
+    tag_data_specification(&spec.data_specification, &symbols, &mut builder);
+
+    for decl in &spec.action_declarations {
+        builder.push(&decl.identifier.span, TokenKind::Event, true);
+        for arg in &decl.args {
+            walk_sort_expression(arg, &mut builder);
+        }
+    }
+
+    // No fixpoint variable is in scope at the formula's own top level.
+    walk_state_frm(&spec.formula, &symbols, &HashSet::new(), &mut builder);
 
     tag_keywords(text, &mut builder);
 
@@ -215,7 +257,7 @@ fn tag_data_specification(data: &UntypedDataSpecification, symbols: &SymbolTable
     }
 
     for decl in &data.constructor_declarations {
-        builder.push(&decl.span, TokenKind::EnumMember, true);
+        builder.push(&decl.identifier.span, TokenKind::EnumMember, true);
         walk_sort_expression(&decl.sort, builder);
     }
 
@@ -231,7 +273,7 @@ fn tag_data_specification(data: &UntypedDataSpecification, symbols: &SymbolTable
     let no_params = HashSet::new();
     for eqn_spec in &data.equation_declarations {
         for decl in &eqn_spec.variables {
-            builder.push(&decl.span, TokenKind::Variable, true);
+            builder.push(&decl.identifier.span, TokenKind::Variable, true);
             walk_sort_expression(&decl.sort, builder);
         }
         for eqn in &eqn_spec.equations {
@@ -279,6 +321,15 @@ impl<'a> SymbolTable<'a> {
 
     /// As [`Self::collect_pbes`], for a PRES — same reasoning, `processes` stays empty.
     fn collect_pres(spec: &'a UntypedPres) -> Self {
+        Self::collect_data(&spec.data_specification)
+    }
+
+    /// As [`Self::collect_pbes`]/[`Self::collect_pres`], for a modal formula — `processes` stays
+    /// empty too: a state formula's modalities only ever reference actions, so
+    /// [`Self::classify_action`]'s process/action disambiguation never applies to one (see
+    /// [`modal_semantic_tokens`], which tags every action reference directly instead of going
+    /// through it).
+    fn collect_modal(spec: &'a UntypedStateFrmSpec) -> Self {
         Self::collect_data(&spec.data_specification)
     }
 
@@ -514,12 +565,12 @@ fn walk_data_expr(expr: &DataExpr, symbols: &SymbolTable, current_params: &HashS
                 }
             }
             DataExprKind::SetBagComp { variable, .. } => {
-                builder.push(&variable.span, TokenKind::Variable, true);
+                builder.push(&variable.identifier.span, TokenKind::Variable, true);
                 walk_sort_expression(&variable.sort, builder);
             }
             DataExprKind::Lambda { variables, .. } | DataExprKind::Quantifier { variables, .. } => {
                 for variable in variables {
-                    builder.push(&variable.span, TokenKind::Variable, true);
+                    builder.push(&variable.identifier.span, TokenKind::Variable, true);
                     walk_sort_expression(&variable.sort, builder);
                 }
             }
@@ -559,13 +610,13 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, current_params: 
             }
             ProcessExprKind::Sum { variables, .. } => {
                 for variable in variables {
-                    builder.push(&variable.span, TokenKind::Variable, true);
+                    builder.push(&variable.identifier.span, TokenKind::Variable, true);
                     walk_sort_expression(&variable.sort, builder);
                 }
             }
             ProcessExprKind::Dist { variables, expr, .. } => {
                 for variable in variables {
-                    builder.push(&variable.span, TokenKind::Variable, true);
+                    builder.push(&variable.identifier.span, TokenKind::Variable, true);
                     walk_sort_expression(&variable.sort, builder);
                 }
                 walk_data_expr(expr, symbols, current_params, builder);
@@ -630,7 +681,7 @@ fn walk_pbes_expr(expr: &PbesExpr, symbols: &SymbolTable, current_params: &HashS
             PbesExprKind::DataValExpr(data_expr) => walk_data_expr(data_expr, symbols, current_params, builder),
             PbesExprKind::Quantifier { variables, .. } => {
                 for variable in variables {
-                    builder.push(&variable.span, TokenKind::Variable, true);
+                    builder.push(&variable.identifier.span, TokenKind::Variable, true);
                     walk_sort_expression(&variable.sort, builder);
                 }
             }
@@ -658,7 +709,7 @@ fn walk_pres_expr(expr: &PresExpr, symbols: &SymbolTable, current_params: &HashS
             }
             PresExprKind::Bound { variables, .. } => {
                 for variable in variables {
-                    builder.push(&variable.span, TokenKind::Variable, true);
+                    builder.push(&variable.identifier.span, TokenKind::Variable, true);
                     walk_sort_expression(&variable.sort, builder);
                 }
             }
@@ -681,6 +732,128 @@ fn walk_prop_var_inst(inst: &PropVarInst, symbols: &SymbolTable, current_params:
     }
 }
 
+/// Walks a state formula's own tree by hand rather than via `Traverse::visit` — see
+/// [`modal_semantic_tokens`]'s doc comment for why: a nested `mu`/`nu` genuinely shadows an outer
+/// one's own parameters, so `current_params` has to change partway through the walk, which
+/// `Traverse`'s flat callback cannot do.
+fn walk_state_frm(formula: &StateFrm, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+    match &formula.node {
+        StateFrmKind::True | StateFrmKind::False => {}
+        StateFrmKind::Delay(time) | StateFrmKind::Yaled(time) => {
+            if let Some(time) = time {
+                walk_data_expr(time, symbols, current_params, builder);
+            }
+        }
+        StateFrmKind::Id(name, arguments) | StateFrmKind::Resolved(name, arguments, _) => {
+            // A fixpoint-variable reference is this module's one "always Method" concept for a
+            // state formula, the same way a PBES/PRES `PropVarInst` always is (see
+            // `pbes_semantic_tokens`'s module note) — but unlike `PropVarInst`, neither `Id` nor
+            // `Resolved` carries a span narrower than the whole `name`/`name(args)` occurrence
+            // (see `merc_typecheck::ResolvedName::StateVariable`'s own doc comment), so the name's
+            // own span is sliced from the front of it the same way `walk_sort_expression` slices
+            // `SortExpressionKind::Complex`'s own keyword.
+            let name_span = Span { start: formula.span.start, end: formula.span.start + name.len() };
+            builder.push(&name_span, TokenKind::Method, false);
+            for argument in arguments {
+                walk_data_expr(argument, symbols, current_params, builder);
+            }
+        }
+        StateFrmKind::DataValExpr(expr) => walk_data_expr(expr, symbols, current_params, builder),
+        StateFrmKind::DataValExprLeftMult(constant, expr) => {
+            walk_data_expr(constant, symbols, current_params, builder);
+            walk_state_frm(expr, symbols, current_params, builder);
+        }
+        StateFrmKind::DataValExprRightMult(expr, constant) => {
+            walk_state_frm(expr, symbols, current_params, builder);
+            walk_data_expr(constant, symbols, current_params, builder);
+        }
+        StateFrmKind::Modality { formula: reg, expr, .. } => {
+            walk_reg_frm(reg, symbols, current_params, builder);
+            walk_state_frm(expr, symbols, current_params, builder);
+        }
+        StateFrmKind::Unary { expr, .. } => walk_state_frm(expr, symbols, current_params, builder),
+        StateFrmKind::Binary { lhs, rhs, .. } => {
+            walk_state_frm(lhs, symbols, current_params, builder);
+            walk_state_frm(rhs, symbols, current_params, builder);
+        }
+        StateFrmKind::Quantifier { variables, body, .. } | StateFrmKind::Bound { variables, body, .. } => {
+            for variable in variables {
+                builder.push(&variable.identifier.span, TokenKind::Variable, true);
+                walk_sort_expression(&variable.sort, builder);
+            }
+            walk_state_frm(body, symbols, current_params, builder);
+        }
+        StateFrmKind::FixedPoint { variable, body, .. } => {
+            // As `Id`/`Resolved` above: `StateVarDecl` carries no span of its own narrower than
+            // the whole `X(n: Nat = 0)` declaration, so the name's own span is sliced the same way.
+            let name_span = Span {
+                start: variable.span.start,
+                end: variable.span.start + variable.identifier.len(),
+            };
+            builder.push(&name_span, TokenKind::Method, true);
+            let params: HashSet<&str> = variable.arguments.iter().map(|argument| argument.identifier.as_str()).collect();
+            for argument in &variable.arguments {
+                builder.push(&argument.identifier.span, TokenKind::Parameter, true);
+                walk_sort_expression(&argument.sort, builder);
+                // The initial value is checked in the *outer* scope (mirrors a process
+                // instantiation's assignment value, see `merc_typecheck`'s `check_fixed_point`) —
+                // `current_params`, not this fixpoint's own `params`.
+                walk_data_expr(&argument.expr, symbols, current_params, builder);
+            }
+            walk_state_frm(body, symbols, &params, builder);
+        }
+    }
+}
+
+/// As [`walk_state_frm`], for a modality's regular formula (`[a*]X`'s `a*`) — descends by hand for
+/// the same reason: `Traverse` stops at `RegFrmKind::Action` rather than crossing into the `ActFrm`
+/// it carries (see `merc_syntax::traverse`'s own tests).
+fn walk_reg_frm(formula: &RegFrm, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+    match &formula.node {
+        RegFrmKind::Action(action) => walk_act_frm(action, symbols, current_params, builder),
+        RegFrmKind::Iteration(inner) | RegFrmKind::Plus(inner) => walk_reg_frm(inner, symbols, current_params, builder),
+        RegFrmKind::Sequence { lhs, rhs } | RegFrmKind::Choice { lhs, rhs } => {
+            walk_reg_frm(lhs, symbols, current_params, builder);
+            walk_reg_frm(rhs, symbols, current_params, builder);
+        }
+    }
+}
+
+/// As [`walk_reg_frm`], for an action formula (`a(1) && !b`).
+fn walk_act_frm(formula: &ActFrm, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+    match &formula.node {
+        ActFrmKind::True | ActFrmKind::False => {}
+        ActFrmKind::MultAct(multi_action) => walk_multi_action(multi_action, symbols, current_params, builder),
+        ActFrmKind::DataExprVal(expr) => walk_data_expr(expr, symbols, current_params, builder),
+        ActFrmKind::Negation(inner) => walk_act_frm(inner, symbols, current_params, builder),
+        ActFrmKind::Quantifier { variables, body, .. } => {
+            for variable in variables {
+                builder.push(&variable.identifier.span, TokenKind::Variable, true);
+                walk_sort_expression(&variable.sort, builder);
+            }
+            walk_act_frm(body, symbols, current_params, builder);
+        }
+        ActFrmKind::Binary { lhs, rhs, .. } => {
+            walk_act_frm(lhs, symbols, current_params, builder);
+            walk_act_frm(rhs, symbols, current_params, builder);
+        }
+    }
+}
+
+/// Tags every action occurrence in a multi-action (`a(1)|b(2)`) directly as [`TokenKind::Event`] —
+/// unlike [`SymbolTable::classify_action`]'s process/action disambiguation (used for a process
+/// specification's own `ProcessExprKind::Action`), a state formula's modality can only ever
+/// reference a declared action, never a process (see [`SymbolTable::collect_modal`]) — then walks
+/// each of its arguments.
+fn walk_multi_action(multi_action: &MultiAction, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+    for action in &multi_action.actions {
+        builder.push(&action.id.span, TokenKind::Event, false);
+        for argument in &action.args {
+            walk_data_expr(argument, symbols, current_params, builder);
+        }
+    }
+}
+
 /// Every word-like mCRL2 keyword relevant to a process/data specification, for [`tag_keywords`]
 /// (and, `pub(crate)`, for [`crate::completion`]'s keyword completion items). Built-in sort names
 /// (`Bool`, `List`, …) are deliberately not here: [`walk_sort_expression`] already tags those,
@@ -699,6 +872,10 @@ pub(crate) const KEYWORDS: &[&str] = &[
     "sort", "cons", "map", "glob", "act", "proc", "init", "var", "eqn", "struct", "whr", "end",
     "forall", "exists", "lambda", "sum", "dist", "val", "true", "false", "delta", "tau",
     "hide", "block", "allow", "comm", "rename", "pbes", "pres", "mu", "nu",
+    // Modal (mu-calculus) formula-only keywords: `form`'s own bare-formula section header, the
+    // "must eventually be able to" pseudo-actions `delay`/`yaled`, and the `inf`/`sup` real-valued
+    // binders (`sum` above doubles as both PRES's and a modal formula's summation binder).
+    "form", "delay", "yaled", "inf", "sup",
 ];
 
 /// Tags every occurrence of a reserved mCRL2 keyword (see [`KEYWORDS`]) as [`TokenKind::Keyword`].
