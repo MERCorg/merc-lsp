@@ -1,37 +1,35 @@
 //! `textDocument/definition`: resolves the identifier at a position to its declaration site(s).
-//!
-//! Covers every [`ResolvedName`] variant that carries a declaration span: a user-declared
-//! constructor or mapping — including one implicitly declared by a `sort D = struct c1(a: S)?is_c1
-//! | c2;` alternative, which resolves to `c1`/`a`/`is_c1`'s own name within the `struct` expression
-//! (`merc_syntax::ConstructorDecl` carries a real span for each of those now, not just a top-level
-//! `cons`/`map` declaration) — a variable (an equation's own `var`-block, a process/PBES parameter,
-//! a `sum`/`dist`/quantifier binder), an action/process reference, a PBES/PRES propositional-variable
-//! reference ([`ResolvedName::PropositionalVariable`]), a modal-formula fixpoint-variable reference
-//! ([`ResolvedName::StateVariable`]), a sort-name reference (`D` in `map f: D -> D;`, a sort
-//! alias's own right-hand side, …) — `TypingInfo` indexes those directly too now, via
-//! [`ResolvedName::Sort`], the same way as every other reference here — and a bare action name
-//! inside a `hide`/`block`/`allow`/`comm`/`rename` action set ([`ResolvedName::ActionSet`]), which
-//! carries every `act` declaration sharing that name rather than a single span (unlike every other
-//! variant here, which resolves to exactly one overload already), so this can return more than one
-//! range for it. A built-in or a symbol declared only on the system-defined specification has no
-//! declaration site `merc_typecheck` exposes at all, so those resolve to no ranges at all — same
-//! as a binder with no real span of its own (`declaration: None`; see `ResolvedName`'s doc comment
-//! upstream). Shares [`crate::hover`]'s scoping caveat: a checked specification is only available
-//! once the whole specification type checks.
 
+use std::path::Path;
+
+use lsp_types::Location;
 use lsp_types::Position;
 use lsp_types::Range;
+use lsp_types::Url;
+use merc_syntax::SourceMap;
 use merc_syntax::Span;
+use merc_syntax::scan_imports;
 use merc_typecheck::ResolvedName;
 use merc_typecheck::TypingInfo;
 
+use crate::convert;
 use crate::convert::LineIndex;
 
-/// The declaration range(s) for the identifier at `position` — empty if it doesn't resolve to a
-/// declaration site at all, one for almost every [`ResolvedName`] variant, or more than one only
+/// The declaration location(s) for the identifier at `position` — empty if it doesn't resolve to
+/// a declaration site at all, one for almost every [`ResolvedName`] variant, or more than one only
 /// for a [`ResolvedName::ActionSet`] naming several `act` declarations at once (see the module
-/// docs above).
-pub fn definition_ranges(text: &str, line_index: &LineIndex, typing_info: &TypingInfo, position: Position) -> Vec<Range> {
+/// docs above). `sources`/`line_indexes` are `document.sources`/`document.line_indexes` — see
+/// [`convert::location`], which resolves each declaration span through them; a location a span
+/// resolves to but that [`convert::location`] can't build a `Location` for (shouldn't arise in
+/// practice — see its own doc comment) is silently dropped rather than shown wrong.
+pub fn definition_locations(
+    text: &str,
+    line_index: &LineIndex,
+    sources: &SourceMap,
+    line_indexes: &[LineIndex],
+    typing_info: &TypingInfo,
+    position: Position,
+) -> Vec<Location> {
     let Some(offset) = line_index.offset(text, position) else {
         return Vec::new();
     };
@@ -41,16 +39,42 @@ pub fn definition_ranges(text: &str, line_index: &LineIndex, typing_info: &Typin
     let declarations: Vec<Span> = match &node.name {
         Some(ResolvedName::Constructor { declaration, .. })
         | Some(ResolvedName::Mapping { declaration, .. })
-        | Some(ResolvedName::Variable { declaration, .. })
         | Some(ResolvedName::Action { declaration, .. })
         | Some(ResolvedName::Process { declaration, .. })
         | Some(ResolvedName::PropositionalVariable { declaration, .. })
         | Some(ResolvedName::StateVariable { declaration, .. })
-        | Some(ResolvedName::Sort { declaration, .. }) => declaration.iter().cloned().collect(),
+        | Some(ResolvedName::Sort { declaration, .. })
+        | Some(ResolvedName::SystemDefined { declaration, .. })
+        | Some(ResolvedName::Variable { declaration, .. }) => declaration.iter().cloned().collect(),
         Some(ResolvedName::ActionSet { declarations, .. }) => declarations.clone(),
         _ => Vec::new(),
     };
-    declarations.iter().map(|declaration| line_index.range(text, declaration)).collect()
+    declarations.iter().filter_map(|declaration| convert::location(sources, line_indexes, declaration)).collect()
+}
+
+/// If `position` sits on an `%import "relative/path"` directive's own quoted path, resolves
+/// straight to that file's start, with no [`TypingInfo`] involved at all: `%import` is a purely
+/// syntactic, file-level relationship, so this works even when the document currently fails to
+/// type check. 
+/// 
+/// `None` when `position` isn't on a directive's path, or `doc_path` is `None` — an
+/// untitled/unsaved buffer has no directory a relative import path could resolve against, the same
+/// condition under which `parse.rs` doesn't resolve `%import` at all.
+pub fn import_directive_target(text: &str, line_index: &LineIndex, doc_path: Option<&Path>, position: Position) -> Option<Location> {
+    let doc_path = doc_path?;
+    let offset = line_index.offset(text, position)?;
+    let directive = scan_imports(text)
+        .into_iter()
+        .find(|directive| (directive.node.path_span.start..=directive.node.path_span.end).contains(&offset))?;
+
+    let directory = doc_path.parent().unwrap_or_else(|| Path::new("."));
+    let target = directory.join(&directive.node.path);
+    let target = target.canonicalize().unwrap_or(target);
+    let uri = Url::from_file_path(&target).ok()?;
+    Some(Location {
+        uri,
+        range: Range::default(),
+    })
 }
 
 #[cfg(test)]
@@ -59,9 +83,9 @@ mod tests {
     use crate::parse::ParseOutcome;
     use crate::parse::SpecKind;
     use crate::parse::Specification;
-    use crate::parse::parse;
+    use crate::parse::parse_ignoring_sources as parse;
     use crate::typecheck::TypecheckOutcome;
-    use crate::typecheck::typecheck;
+    use crate::typecheck::typecheck_ignoring_sources as typecheck;
 
     /// Asserts `ranges` resolves to exactly one range and returns it — every fixture below has a
     /// single declaration to jump to (an `ActionSet` naming several `act` declarations at once is
@@ -74,6 +98,20 @@ mod tests {
         *range
     }
 
+    /// Test convenience: [`definition_locations`] against a single-file `SourceMap` built from
+    /// `text` alone.
+    fn definition_ranges(text: &str, line_index: &LineIndex, typing_info: &TypingInfo, position: Position) -> Vec<Range> {
+        let mut sources = SourceMap::new();
+        // An absolute-looking (if fake) path: `convert::location` builds a `file://` URI via
+        // `Url::from_file_path`, which requires one.
+        sources.add_text("/test.mcrl2", text.to_string());
+        let line_indexes = vec![line_index.clone()];
+        definition_locations(text, line_index, &sources, &line_indexes, typing_info, position)
+            .into_iter()
+            .map(|location| location.range)
+            .collect()
+    }
+
     async fn typing_info_for(text: &str) -> TypingInfo {
         let spec = match parse(SpecKind::Process, text.to_string()).await {
             ParseOutcome::Ok(Specification::Process(spec)) => *spec,
@@ -84,6 +122,23 @@ mod tests {
             TypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
             TypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
         }
+    }
+
+    /// As [`typing_info_for`], but keeping the real `Document` instead of
+    /// discarding everything but the `TypingInfo` — needed by any fixture whose
+    /// declaration might resolve outside the current document.
+    async fn document_for(text: &str, path: Option<std::path::PathBuf>) -> crate::document::Document {
+        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.to_string(), path).await;
+        let (checked, sources) = match &outcome {
+            ParseOutcome::Ok(Specification::Process(spec)) => {
+                let (result, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
+                (Some(crate::document::CheckedOutcome::Process(result)), sources)
+            }
+            ParseOutcome::Ok(_) => panic!("fixture parsed as something other than a process specification"),
+            ParseOutcome::ParseError(error) => panic!("fixture failed to parse: {error}"),
+            ParseOutcome::Internal(message) => panic!("internal error parsing fixture: {message}"),
+        };
+        crate::document::Document::new(text.to_string(), 0, outcome, checked, sources)
     }
 
     #[tokio::test]
@@ -213,14 +268,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_definition_for_a_built_in_sort_reference() {
+    async fn jumps_from_a_built_in_sort_reference_to_its_bundled_template() {
         let text = "map f: Bool;\ninit delta;";
-        let typing_info = typing_info_for(text).await;
-        let line_index = LineIndex::new(text);
+        let mut document = document_for(text, None).await;
+        let typing_info = document.typing_info().expect("fixture should type check");
 
         let use_offset = text.find("Bool").unwrap();
-        let position = line_index.position(text, use_offset);
-        assert!(definition_ranges(text, &line_index, &typing_info, position).is_empty());
+        let position = document.line_index.position(text, use_offset);
+        let locations = definition_locations(
+            &document.text,
+            &document.line_index,
+            &document.sources,
+            &document.line_indexes,
+            &typing_info,
+            position,
+        );
+        let [location] = locations.as_slice() else {
+            panic!("expected exactly one definition, got {locations:?}");
+        };
+        assert_eq!(location.uri.scheme(), convert::VIRTUAL_DOCUMENT_SCHEME);
+        let decoded = convert::decode_virtual_uri(&location.uri).expect("should decode back to the registered name");
+        assert!(
+            decoded.contains("bool.mcrl2"),
+            "expected Bool to resolve into its own bundled template, got: {decoded}"
+        );
     }
 
     #[tokio::test]
@@ -307,7 +378,7 @@ mod tests {
     async fn jumps_from_a_state_variable_use_to_its_fixpoint_declaration() {
         let text = "act a: Nat;\nform nu X(n: Nat = 0) . [a(n)]X(n);";
         let spec = merc_syntax::UntypedStateFrmSpec::parse(text).unwrap_or_else(|error| panic!("fixture failed to parse: {error}"));
-        let typing_info = match crate::typecheck::typecheck_modal(spec).await {
+        let typing_info = match crate::typecheck::typecheck_modal_ignoring_sources(spec).await {
             crate::typecheck::ModalTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
             crate::typecheck::ModalTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
             crate::typecheck::ModalTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
@@ -321,5 +392,96 @@ mod tests {
         let declaration_offset = text.find("nu X").unwrap() + "nu ".len();
         let expected = line_index.position(text, declaration_offset);
         assert_eq!(range.start, expected);
+    }
+
+    /// Writes `files` (relative-path -> contents) into a fresh temp directory and returns it —
+    /// mirrors `merc_syntax::imports`'s and `parse.rs`'s own test helpers of the same name.
+    fn temp_project(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("should create a temp directory");
+        for (name, contents) in files {
+            let path = dir.path().join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("should create parent directories");
+            }
+            std::fs::write(path, contents).expect("should write the fixture file");
+        }
+        dir
+    }
+
+    #[tokio::test]
+    async fn jumps_from_a_cross_file_action_use_to_its_declaration_in_the_imported_file() {
+        let dir = temp_project(&[
+            ("main.mcrl2", "%import \"common.mcrl2\"\ninit a;\n"),
+            ("common.mcrl2", "act a;\n"),
+        ]);
+        let main_path = dir.path().join("main.mcrl2");
+        let text = std::fs::read_to_string(&main_path).unwrap();
+        let mut document = document_for(&text, Some(main_path)).await;
+        let typing_info = document.typing_info().expect("fixture should type check");
+
+        let use_offset = text.find("init a").unwrap() + "init ".len();
+        let position = document.line_index.position(&text, use_offset);
+        let locations = definition_locations(
+            &document.text,
+            &document.line_index,
+            &document.sources,
+            &document.line_indexes,
+            &typing_info,
+            position,
+        );
+        let [location] = locations.as_slice() else {
+            panic!("expected exactly one definition, got {locations:?}");
+        };
+        assert_eq!(location.uri.scheme(), "file");
+        assert!(
+            location.uri.as_str().ends_with("common.mcrl2"),
+            "expected the action's declaration to resolve into common.mcrl2, got: {}",
+            location.uri
+        );
+        assert_eq!(location.range.start, Position { line: 0, character: 4 });
+    }
+
+    #[tokio::test]
+    async fn jumps_from_an_import_directives_path_to_the_imported_file() {
+        let dir = temp_project(&[
+            ("main.mcrl2", "%import \"common.mcrl2\"\ninit a;\n"),
+            ("common.mcrl2", "act a;\n"),
+        ]);
+        let main_path = dir.path().join("main.mcrl2");
+        let text = std::fs::read_to_string(&main_path).unwrap();
+        let line_index = LineIndex::new(&text);
+
+        let path_offset = text.find("common.mcrl2").unwrap();
+        let position = line_index.position(&text, path_offset);
+        let location =
+            import_directive_target(&text, &line_index, Some(main_path.as_path()), position).expect("should resolve the import path");
+
+        assert_eq!(location.uri.scheme(), "file");
+        assert!(
+            location.uri.as_str().ends_with("common.mcrl2"),
+            "expected the import path to resolve to common.mcrl2, got: {}",
+            location.uri
+        );
+    }
+
+    #[tokio::test]
+    async fn no_import_target_when_the_cursor_is_outside_the_directives_path() {
+        let dir = temp_project(&[("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"), ("common.mcrl2", "")]);
+        let main_path = dir.path().join("main.mcrl2");
+        let text = std::fs::read_to_string(&main_path).unwrap();
+        let line_index = LineIndex::new(&text);
+
+        // On `%import` itself, not the quoted path.
+        let position = line_index.position(&text, 0);
+        assert!(import_directive_target(&text, &line_index, Some(main_path.as_path()), position).is_none());
+    }
+
+    #[tokio::test]
+    async fn no_import_target_for_an_untitled_buffer() {
+        let text = "%import \"common.mcrl2\"\ninit delta;\n";
+        let line_index = LineIndex::new(text);
+        let path_offset = text.find("common.mcrl2").unwrap();
+        let position = line_index.position(text, path_offset);
+        assert!(import_directive_target(text, &line_index, None, position).is_none());
     }
 }
