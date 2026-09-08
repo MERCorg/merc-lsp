@@ -62,6 +62,7 @@ use merc_syntax::RegFrmKind;
 use merc_syntax::SortDecl;
 use merc_syntax::SortExpression;
 use merc_syntax::SortExpressionKind;
+use merc_syntax::SourceMap;
 use merc_syntax::Span;
 use merc_syntax::StateFrm;
 use merc_syntax::StateFrmKind;
@@ -91,6 +92,11 @@ struct Ctx<'a> {
     line_index: &'a LineIndex,
     sort_declarations: &'a [SortDecl],
     typing_info: &'a TypingInfo,
+    /// The document's whole-project [`SourceMap`], used only to keep [`push_hint`] from placing a
+    /// hint against a span that belongs to an `%import`ed file rather than the root document being
+    /// hinted — see [`push_hint`]'s doc comment. Empty (`file_count() == 0`) in the unit tests
+    /// below, which parse a fixture standalone rather than through a real `%import` resolution.
+    sources: &'a SourceMap,
     hints: Vec<InlayHint>,
 }
 
@@ -102,6 +108,7 @@ pub fn inlay_hints(
     spec: &ProcessSpecification,
     sort_declarations: &[SortDecl],
     typing_info: &TypingInfo,
+    sources: &SourceMap,
     range: Range,
 ) -> Vec<InlayHint> {
     let mut ctx = Ctx {
@@ -109,6 +116,7 @@ pub fn inlay_hints(
         line_index,
         sort_declarations,
         typing_info,
+        sources,
         hints: Vec::new(),
     };
 
@@ -144,6 +152,7 @@ pub fn pbes_inlay_hints(
     spec: &PbesSpecification,
     sort_declarations: &[SortDecl],
     typing_info: &TypingInfo,
+    sources: &SourceMap,
     range: Range,
 ) -> Vec<InlayHint> {
     let mut ctx = Ctx {
@@ -151,6 +160,7 @@ pub fn pbes_inlay_hints(
         line_index,
         sort_declarations,
         typing_info,
+        sources,
         hints: Vec::new(),
     };
 
@@ -192,6 +202,7 @@ pub fn pres_inlay_hints(
     spec: &PresSpecification,
     sort_declarations: &[SortDecl],
     typing_info: &TypingInfo,
+    sources: &SourceMap,
     range: Range,
 ) -> Vec<InlayHint> {
     let mut ctx = Ctx {
@@ -199,6 +210,7 @@ pub fn pres_inlay_hints(
         line_index,
         sort_declarations,
         typing_info,
+        sources,
         hints: Vec::new(),
     };
 
@@ -234,6 +246,7 @@ pub fn modal_inlay_hints(
     spec: &ModalSpecification,
     sort_declarations: &[SortDecl],
     typing_info: &TypingInfo,
+    sources: &SourceMap,
     range: Range,
 ) -> Vec<InlayHint> {
     let mut ctx = Ctx {
@@ -241,6 +254,7 @@ pub fn modal_inlay_hints(
         line_index,
         sort_declarations,
         typing_info,
+        sources,
         hints: Vec::new(),
     };
 
@@ -647,6 +661,18 @@ fn push_hint(
     sort: Option<&SortExpression>,
     ctx: &mut Ctx,
 ) {
+    // `spec.process_declarations()` (and the equivalent equation lists for PBES/PRES/modal specs)
+    // include every declaration merged in from an `%import`ed file, so `argument.span` can be a
+    // global offset into a file other than the one being hinted. Rendering that against `ctx.text`/
+    // `ctx.line_index` (always the root document's own) would silently clamp to the end of the
+    // document (see `LineIndex::position`'s doc comment) rather than the argument's real position —
+    // in practice a pile of hints all stacked on the document's last line whenever it imports
+    // anything. `sources.file_count() == 0` is the unit-test-fixture case below, parsed standalone
+    // with no real `SourceMap`, where every span is trivially local.
+    if ctx.sources.file_count() > 0 && ctx.sources.lookup(argument.span.start).value() != 0 {
+        return;
+    }
+
     let hint = match field_name {
         Some(name) => {
             if is_bare_reference_to(argument, name) {
@@ -763,6 +789,7 @@ mod tests {
             &checked,
             &sort_declarations,
             &typing_info,
+            &SourceMap::new(),
             whole_document,
         );
         (hints, line_index)
@@ -799,6 +826,7 @@ mod tests {
             &checked,
             &sort_declarations,
             &typing_info,
+            &SourceMap::new(),
             whole_document,
         );
         (hints, line_index)
@@ -821,7 +849,7 @@ mod tests {
             start: Position { line: 0, character: 0 },
             end: Position { line: u32::MAX, character: u32::MAX },
         };
-        let hints = modal_inlay_hints(text, &line_index, &checked, &sort_declarations, &typing_info, whole_document);
+        let hints = modal_inlay_hints(text, &line_index, &checked, &sort_declarations, &typing_info, &SourceMap::new(), whole_document);
         (hints, line_index)
     }
 
@@ -1050,5 +1078,75 @@ mod tests {
             hints.iter().all(|h| h.position != unwanted),
             "did not expect a type suffix hint after a modality's action argument"
         );
+    }
+
+    /// Writes `files` (relative-path -> contents) into a fresh temp directory and returns it —
+    /// mirrors `document.rs`'s own test helper of the same name.
+    fn temp_project(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("should create a temp directory");
+        for (name, contents) in files {
+            let path = dir.path().join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("should create parent directories");
+            }
+            std::fs::write(path, contents).expect("should write the fixture file");
+        }
+        dir
+    }
+
+    #[tokio::test]
+    async fn a_call_inside_an_imported_declarations_body_gets_no_hint() {
+        // Regression test: `spec.process_declarations()` includes every `proc` merged in from an
+        // `%import`ed file (see `syntax_tree.rs`'s `UntypedProcessSpecification::merge`), so walking
+        // it used to hand `push_hint` a call-argument span that belongs to `common.mcrl2`, not
+        // `main.mcrl2`. Rendered against `main.mcrl2`'s own `line_index`/text regardless, that
+        // clamped to the end of `main.mcrl2` (see `LineIndex::position`'s doc comment) instead of
+        // being placed correctly (or, as fixed, not placed in this document at all) — in practice a
+        // pile of stray hints stacked on the last line of any file that imports another one.
+        let dir = temp_project(&[
+            ("main.mcrl2", "%import \"common.mcrl2\"\nproc P(m: Nat) = delta;\ninit P(1);\n"),
+            ("common.mcrl2", "proc Callee(n: Nat) = delta;\nproc Caller = Callee(5);\n"),
+        ]);
+        let main_path = dir.path().join("main.mcrl2");
+        let text = std::fs::read_to_string(&main_path).unwrap();
+        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
+            panic!("fixture failed to parse");
+        };
+        let sort_declarations = spec.data_specification.sort_declarations.clone();
+        let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
+        let TypecheckOutcome::Ok(mut checked) = checked else {
+            panic!("fixture failed to typecheck");
+        };
+        let line_index = LineIndex::new(&text);
+        let typing_info = checked.typing_info();
+        let whole_document = Range {
+            start: Position { line: 0, character: 0 },
+            end: Position { line: u32::MAX, character: u32::MAX },
+        };
+
+        let end_of_file = line_index.position(&text, text.len());
+        let hints = inlay_hints(
+            &text,
+            &line_index,
+            &checked,
+            &sort_declarations,
+            &typing_info,
+            &sources,
+            whole_document,
+        );
+
+        assert!(
+            hints.iter().all(|hint| hint.position != end_of_file),
+            "expected no hint clamped to the end of main.mcrl2 from common.mcrl2's own `Callee(5)` call, got {hints:?}"
+        );
+        // The call local to `main.mcrl2` itself must still be hinted normally.
+        let one_start = text.rfind('1').unwrap();
+        let expected = line_index.position(&text, one_start);
+        let hint = hints
+            .iter()
+            .find(|h| h.position == expected)
+            .expect("expected a hint before the local call's argument '1'");
+        assert_eq!(label(hint), "m:");
     }
 }
