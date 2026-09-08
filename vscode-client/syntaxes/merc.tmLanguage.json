@@ -4,6 +4,7 @@
 	"scopeName": "source.merc",
 	"comment": "A minimal TextMate grammar covering keywords/comments/operators/numbers only — deliberately not a full parser (that's what merc-lsp's semantic tokens are for; see semantic_tokens.rs's module docs). This is purely the coloring fallback for clients/moments a TextMate grammar can reach that the LSP can't: before the language server has started, on a document that fails to parse, or in a client with no semantic tokens support at all. Shared by the merc/merc-pbes/merc-pres/merc-mcf language contributions in package.json — process specification, PBES, PRES, and modal-formula source share one lexical layer (comments, operators, identifiers, numbers) and almost all of the same keyword set; PBES/PRES/modal formulas only add a handful of their own ('pbes', 'pres', 'mu', 'nu', 'form', 'delay', 'yaled', 'inf', 'sup').",
 	"patterns": [
+		{ "include": "#imports" },
 		{ "include": "#comments" },
 		{ "include": "#keywords" },
 		{ "include": "#constants" },
@@ -11,6 +12,14 @@
 		{ "include": "#operators" }
 	],
 	"repository": {
+		"imports": {
+			"comment": "The `%import \"relative/path\"` directive. Matched before #comments so the keyword and quoted path get their own scopes instead of being swallowed whole as a comment.",
+			"match": "(%import)\\s*(\"[^\"]*\")",
+			"captures": {
+				"1": { "name": "keyword.control.import.merc" },
+				"2": { "name": "string.quoted.double.merc" }
+			}
+		},
 		"comments": {
 			"comment": "merc's only comment syntax: '%' to end of line, no escape and no block form.",
 			"match": "%.*$",

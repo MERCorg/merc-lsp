@@ -1,16 +1,44 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { commands, ExtensionContext, OutputChannel, window, workspace } from 'vscode';
+import { CancellationToken, commands, ExtensionContext, OutputChannel, Uri, window, workspace } from 'vscode';
 
 import {
 	LanguageClient,
 	LanguageClientOptions,
+	RequestType,
 	ServerOptions,
 	TransportKind
 } from 'vscode-languageclient/node';
 
 let client: LanguageClient | undefined;
 let output: OutputChannel | undefined;
+
+/**
+ * The read-only scheme `merc-lsp` uses for a `Location` into content with no real file behind it.
+ */
+const VIRTUAL_DOCUMENT_SCHEME = 'merc-builtin';
+
+/**
+ * `VirtualDocument` request `{ uri: string }` in, the document's text (or `null` if the server has no entry for it) out.
+ */
+const virtualDocumentRequest = new RequestType<{ uri: string }, string | null, void>('merc/virtualDocument');
+
+/**
+ * Registers the `merc-builtin:` read-only content provider.
+ */
+function registerVirtualDocumentProvider(context: ExtensionContext) {
+	context.subscriptions.push(
+		workspace.registerTextDocumentContentProvider(VIRTUAL_DOCUMENT_SCHEME, {
+			provideTextDocumentContent: async (uri: Uri, _token: CancellationToken) => {
+				if (!client) {
+					return '';
+				}
+				const content = await client.sendRequest(virtualDocumentRequest, { uri: uri.toString() });
+				return content ?? `% ${uri.toString()} is no longer available from merc-lsp.`;
+			}
+		})
+	);
+}
 
 /** Binary name of the language server, without a platform-specific extension. */
 const SERVER_BIN_NAME = 'merc-lsp';
@@ -141,6 +169,8 @@ export function activate(context: ExtensionContext) {
 	context.subscriptions.push(
 		commands.registerCommand('merc-lsp.restartServer', () => restartClient(context))
 	);
+
+	registerVirtualDocumentProvider(context);
 
 	client = startClient(context);
 }
