@@ -154,14 +154,21 @@ function startClient(context: ExtensionContext): LanguageClient {
 	const serverOptions: ServerOptions = { run, debug: run };
 
 	const clientOptions: LanguageClientOptions = {
+		// Every real, on-disk document `scheme: 'file'`), plus every `merc-builtin:` virtual
+		// document {@link registerVirtualDocumentProvider} serves.
 		documentSelector: [
 			{ scheme: 'file', language: 'merc' },
 			{ scheme: 'file', language: 'merc-pbes' },
 			{ scheme: 'file', language: 'merc-pres' },
-			{ scheme: 'file', language: 'merc-mcf' }
+			{ scheme: 'file', language: 'merc-mcf' },
+			{ scheme: VIRTUAL_DOCUMENT_SCHEME, language: 'merc' },
+			{ scheme: VIRTUAL_DOCUMENT_SCHEME, language: 'merc-pbes' },
+			{ scheme: VIRTUAL_DOCUMENT_SCHEME, language: 'merc-pres' },
+			{ scheme: VIRTUAL_DOCUMENT_SCHEME, language: 'merc-mcf' }
 		],
 		synchronize: {
-			fileEvents: workspace.createFileSystemWatcher('**/*.{merc,pbes,pres,mcf}')
+			// Matches `package.json`'s `languages` contribution's own `extensions`.
+			fileEvents: workspace.createFileSystemWatcher('**/*.{mcrl2,pbes,pres,mcf}')
 		}
 	};
 

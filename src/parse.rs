@@ -383,4 +383,16 @@ mod tests {
             (ParseOutcome::Internal(message), _) => panic!("unexpected internal error: {message}"),
         }
     }
+
+    #[tokio::test]
+    async fn probe_missing_import() {
+        let dir = temp_project(&[("main.mcrl2", "%import \"nope.mcrl2\"\ninit delta;\n")]);
+        let path = dir.path().join("main.mcrl2");
+        let text = std::fs::read_to_string(&path).unwrap();
+        match parse(SpecKind::Process, text, Some(path)).await {
+            (ParseOutcome::Ok(_), _) => eprintln!("PROBE: unexpectedly parsed ok"),
+            (ParseOutcome::ParseError(error), _) => eprintln!("PROBE parse error: {error:?}\nPROBE display: {error}"),
+            (ParseOutcome::Internal(message), _) => eprintln!("PROBE internal: {message}"),
+        }
+    }
 }
