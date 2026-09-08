@@ -100,25 +100,36 @@ impl Document {
     /// [`crate::diagnostics::type_diagnostics`] and its PBES/PRES/modal-formula counterparts).
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
         let mut diags = diagnostics::diagnostics(&self.text, &self.line_index, &self.parsed);
+        // Purely syntactic (see `crate::ambiguity`'s module doc comment), so — unlike the
+        // `checked` match below — this runs on any successful parse regardless of whether type
+        // checking also succeeded.
+        if let ParseOutcome::Ok(spec) = &self.parsed {
+            match spec {
+                Specification::Process(spec) => diags.extend(diagnostics::ambiguity_diagnostics_process(&self.text, &self.line_index, spec)),
+                Specification::Pbes(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pbes(&self.text, &self.line_index, spec)),
+                Specification::Pres(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pres(&self.text, &self.line_index, spec)),
+                Specification::Modal(spec) => diags.extend(diagnostics::ambiguity_diagnostics_modal(&self.text, &self.line_index, spec)),
+            }
+        }
         match &self.checked {
             // `checked`'s variant always matches `parsed`'s (see this struct's own doc comment
             // and `backend::analyze`), so the raw parse is always available here to build an
             // undeclared-name suggestion from (see `diagnostics.rs`'s module docs).
             Some(CheckedOutcome::Process(outcome)) => {
                 let spec = self.parsed_process_specification().expect("checked implies a parsed process specification");
-                diags.extend(diagnostics::type_diagnostics(&self.text, &self.line_index, outcome, spec));
+                diags.extend(diagnostics::type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec));
             }
             Some(CheckedOutcome::Pbes(outcome)) => {
                 let spec = self.parsed_pbes_specification().expect("checked implies a parsed PBES");
-                diags.extend(diagnostics::pbes_type_diagnostics(&self.text, &self.line_index, outcome, spec));
+                diags.extend(diagnostics::pbes_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec));
             }
             Some(CheckedOutcome::Pres(outcome)) => {
                 let spec = self.parsed_pres_specification().expect("checked implies a parsed PRES");
-                diags.extend(diagnostics::pres_type_diagnostics(&self.text, &self.line_index, outcome, spec));
+                diags.extend(diagnostics::pres_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec));
             }
             Some(CheckedOutcome::Modal(outcome)) => {
                 let spec = self.parsed_modal_specification().expect("checked implies a parsed modal formula");
-                diags.extend(diagnostics::modal_type_diagnostics(&self.text, &self.line_index, outcome, spec));
+                diags.extend(diagnostics::modal_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec));
             }
             None => {}
         }
@@ -340,5 +351,53 @@ mod tests {
         let document = modal_document_for("act a: Nat;\nform nu X . [b(0)]X;").await;
         assert!(document.checked_modal_specification().is_none());
         assert!(!document.diagnostics().is_empty());
+    }
+
+    /// Writes `files` (relative-path -> contents) into a fresh temp directory and returns it —
+    /// mirrors `goto_definition.rs`'s own test helper of the same name.
+    fn temp_project(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("should create a temp directory");
+        for (name, contents) in files {
+            let path = dir.path().join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("should create parent directories");
+            }
+            std::fs::write(path, contents).expect("should write the fixture file");
+        }
+        dir
+    }
+
+    #[tokio::test]
+    async fn diagnostics_stay_correctly_located_once_a_document_imports_another_file() {
+        // `Document::diagnostics()` now threads `self.sources`/`self.line_indexes` through to
+        // `diagnostics::type_diagnostics` so a type error whose span lands in an `%import`ed
+        // file's own content doesn't get silently clamped to the end of the root document (see
+        // `diagnostics::error_diagnostic`'s doc comment). This checks the far more common case
+        // stays correct once that machinery is in play at all: an error whose span is still in
+        // the root document (`main.mcrl2` itself, referencing an undeclared action) must resolve
+        // to its own real position, not fall into the "different file" fallback meant only for a
+        // span that's genuinely elsewhere.
+        let dir = temp_project(&[
+            ("main.mcrl2", "%import \"common.mcrl2\"\ninit undeclared;\n"),
+            ("common.mcrl2", "act a: Nat;\n"),
+        ]);
+        let main_path = dir.path().join("main.mcrl2");
+        let text = std::fs::read_to_string(&main_path).unwrap();
+        let expected_offset = text.find("undeclared").expect("fixture contains 'undeclared'");
+        let expected = LineIndex::new(&text).position(&text, expected_offset);
+        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
+            panic!("fixture failed to parse");
+        };
+        let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
+        let document = Document::new(text, 0, outcome, Some(CheckedOutcome::Process(checked)), sources);
+
+        let diags = document.diagnostics();
+        assert!(!diags.is_empty(), "expected the undeclared action to be reported");
+        assert_eq!(
+            diags[0].range.start, expected,
+            "diagnostic should be located at 'undeclared' in main.mcrl2, not clamped elsewhere: {:?}",
+            diags[0]
+        );
     }
 }

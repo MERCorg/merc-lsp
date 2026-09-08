@@ -7,6 +7,7 @@
 //! [`crate::completion_context`] classifies a cursor position into.
 
 use merc_syntax::Rule;
+use merc_syntax::SourceMap;
 use merc_syntax::Span;
 use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
@@ -21,10 +22,14 @@ use merc_typecheck::WellTypedError;
 use merc_utilities::MercError;
 use lsp_types::Diagnostic;
 use lsp_types::DiagnosticSeverity;
+use lsp_types::NumberOrString;
 use lsp_types::Range;
 use pest::error::Error as PestError;
 use pest::error::InputLocation;
 
+use crate::ambiguity;
+use crate::ambiguity::AmbiguousPrefixConflict;
+use crate::convert;
 use crate::convert::LineIndex;
 use crate::convert::is_identifier_byte;
 use crate::edit_distance;
@@ -39,6 +44,15 @@ const SOURCE: &str = "merc-lsp";
 
 /// Distinct `source` for type-checking diagnostics (see [`type_diagnostics`]).
 const TYPE_SOURCE: &str = "merc-lsp:types";
+
+/// Distinct `source` for the [`AmbiguousPrefixConflict`] lint (see [`ambiguity_diagnostics_process`]
+/// and its PBES/PRES/modal-formula counterparts) — purely syntactic, so unlike [`TYPE_SOURCE`] it
+/// never depends on type checking having succeeded.
+const AMBIGUITY_SOURCE: &str = "merc-lsp:ambiguity";
+
+/// `Diagnostic::code` for the [`AmbiguousPrefixConflict`] lint, shared with [`crate::code_action`],
+/// which matches on it to offer the parenthesize quick fix.
+pub const AMBIGUOUS_PREFIX_CONFLICT_CODE: &str = "ambiguous-prefix-conflict";
 
 /// Builds the full diagnostics list for a document from its latest parse
 /// outcome.
@@ -63,6 +77,8 @@ pub fn diagnostics(text: &str, line_index: &LineIndex, outcome: &ParseOutcome) -
 pub fn type_diagnostics(
     text: &str,
     line_index: &LineIndex,
+    sources: &SourceMap,
+    line_indexes: &[LineIndex],
     outcome: &TypecheckOutcome,
     spec: &UntypedProcessSpecification,
 ) -> Vec<Diagnostic> {
@@ -70,45 +86,127 @@ pub fn type_diagnostics(
         TypecheckOutcome::Ok(_) => Vec::new(),
         TypecheckOutcome::Error(error) => {
             let message = error.to_string() + &suggestion_for_process_error(error, spec);
-            vec![error_diagnostic(text, line_index, error.span(), message)]
+            vec![error_diagnostic(text, line_index, sources, line_indexes, error.span(), message)]
         }
         TypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
     }
 }
 
 /// As [`type_diagnostics`], for a PBES document's [`PbesTypecheckOutcome`].
-pub fn pbes_type_diagnostics(text: &str, line_index: &LineIndex, outcome: &PbesTypecheckOutcome, spec: &UntypedPbes) -> Vec<Diagnostic> {
+pub fn pbes_type_diagnostics(
+    text: &str,
+    line_index: &LineIndex,
+    sources: &SourceMap,
+    line_indexes: &[LineIndex],
+    outcome: &PbesTypecheckOutcome,
+    spec: &UntypedPbes,
+) -> Vec<Diagnostic> {
     match outcome {
         PbesTypecheckOutcome::Ok(_) => Vec::new(),
         PbesTypecheckOutcome::Error(error) => {
             let message = error.to_string() + &suggestion_for_pbes_error(error, spec);
-            vec![error_diagnostic(text, line_index, error.span(), message)]
+            vec![error_diagnostic(text, line_index, sources, line_indexes, error.span(), message)]
         }
         PbesTypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
     }
 }
 
 /// As [`type_diagnostics`], for a PRES document's [`PresTypecheckOutcome`].
-pub fn pres_type_diagnostics(text: &str, line_index: &LineIndex, outcome: &PresTypecheckOutcome, spec: &UntypedPres) -> Vec<Diagnostic> {
+pub fn pres_type_diagnostics(
+    text: &str,
+    line_index: &LineIndex,
+    sources: &SourceMap,
+    line_indexes: &[LineIndex],
+    outcome: &PresTypecheckOutcome,
+    spec: &UntypedPres,
+) -> Vec<Diagnostic> {
     match outcome {
         PresTypecheckOutcome::Ok(_) => Vec::new(),
         PresTypecheckOutcome::Error(error) => {
             let message = error.to_string() + &suggestion_for_pres_error(error, spec);
-            vec![error_diagnostic(text, line_index, error.span(), message)]
+            vec![error_diagnostic(text, line_index, sources, line_indexes, error.span(), message)]
         }
         PresTypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
     }
 }
 
 /// As [`type_diagnostics`], for a modal-formula document's [`ModalTypecheckOutcome`].
-pub fn modal_type_diagnostics(text: &str, line_index: &LineIndex, outcome: &ModalTypecheckOutcome, spec: &UntypedStateFrmSpec) -> Vec<Diagnostic> {
+pub fn modal_type_diagnostics(
+    text: &str,
+    line_index: &LineIndex,
+    sources: &SourceMap,
+    line_indexes: &[LineIndex],
+    outcome: &ModalTypecheckOutcome,
+    spec: &UntypedStateFrmSpec,
+) -> Vec<Diagnostic> {
     match outcome {
         ModalTypecheckOutcome::Ok(_) => Vec::new(),
         ModalTypecheckOutcome::Error(error) => {
             let message = error.to_string() + &suggestion_for_modal_error(error, spec);
-            vec![error_diagnostic(text, line_index, error.span(), message)]
+            vec![error_diagnostic(text, line_index, sources, line_indexes, error.span(), message)]
         }
         ModalTypecheckOutcome::Internal(message) => vec![internal_diagnostic(message, TYPE_SOURCE)],
+    }
+}
+
+/// Warnings for every [`AmbiguousPrefixConflict`] in a process specification (see
+/// `crate::ambiguity`'s module doc comment) — purely syntactic, so (unlike [`type_diagnostics`])
+/// this runs on any successful parse, whether or not type checking also succeeded.
+pub fn ambiguity_diagnostics_process(text: &str, line_index: &LineIndex, spec: &UntypedProcessSpecification) -> Vec<Diagnostic> {
+    ambiguity::find_in_process_specification(spec, text)
+        .iter()
+        .map(|hit| ambiguity_diagnostic(text, line_index, hit))
+        .collect()
+}
+
+/// As [`ambiguity_diagnostics_process`], for a PBES.
+pub fn ambiguity_diagnostics_pbes(text: &str, line_index: &LineIndex, spec: &UntypedPbes) -> Vec<Diagnostic> {
+    ambiguity::find_in_pbes_specification(spec, text)
+        .iter()
+        .map(|hit| ambiguity_diagnostic(text, line_index, hit))
+        .collect()
+}
+
+/// As [`ambiguity_diagnostics_process`], for a PRES.
+pub fn ambiguity_diagnostics_pres(text: &str, line_index: &LineIndex, spec: &UntypedPres) -> Vec<Diagnostic> {
+    ambiguity::find_in_pres_specification(spec, text)
+        .iter()
+        .map(|hit| ambiguity_diagnostic(text, line_index, hit))
+        .collect()
+}
+
+/// As [`ambiguity_diagnostics_process`], for a modal (mu-calculus) formula.
+pub fn ambiguity_diagnostics_modal(text: &str, line_index: &LineIndex, spec: &UntypedStateFrmSpec) -> Vec<Diagnostic> {
+    ambiguity::find_in_modal_specification(spec, text)
+        .iter()
+        .map(|hit| ambiguity_diagnostic(text, line_index, hit))
+        .collect()
+}
+
+/// Builds one [`AmbiguousPrefixConflict`] warning, spanning the whole ambiguous expression so it's
+/// visible at a glance, not just on the outer or inner operator alone. Names both operators by
+/// slicing their own leading token straight out of `text` rather than hard-coding operator names —
+/// the shape this lint finds is general across five different grammars (see the module doc
+/// comment), so there's no one fixed pair of names ("`!`"/"`exists`") to spell out here.
+fn ambiguity_diagnostic(text: &str, line_index: &LineIndex, hit: &AmbiguousPrefixConflict) -> Diagnostic {
+    let span = hit.whole_span();
+    let outer_token = text[hit.outer_span.start..hit.inner_span.start].trim();
+    let inner_token = text[hit.inner_span.start..hit.inner_span.end].split_whitespace().next().unwrap_or_default();
+    Diagnostic {
+        range: line_index.range(text, &span),
+        severity: Some(DiagnosticSeverity::WARNING),
+        source: Some(AMBIGUITY_SOURCE.to_string()),
+        code: Some(NumberOrString::String(AMBIGUOUS_PREFIX_CONFLICT_CODE.to_string())),
+        message: format!(
+            "merc and the real mCRL2 parser can disagree on how far `{outer_token}` reaches here: merc \
+             lets `{inner_token}`'s own body extend across the operator that follows it, keeping the \
+             whole thing inside `{outer_token}`'s scope, but mCRL2's parser can instead truncate both \
+             `{outer_token}` and `{inner_token}` right after the bare `{inner_token}`, letting that \
+             following operator escape them both. Add parentheses around `{inner_token}`'s highlighted \
+             span so both parsers agree — see merc-website's \"Precedence: Pest (merc) vs. dparser \
+             (mCRL2)\" developer doc."
+        ),
+        ..Diagnostic::default()
     }
 }
 
@@ -198,8 +296,26 @@ fn suggestion_for_modal_error(error: &ModalError, spec: &UntypedStateFrmSpec) ->
 
 /// Builds a located type-error [`Diagnostic`], shared by [`type_diagnostics`],
 /// [`pbes_type_diagnostics`], [`pres_type_diagnostics`], and [`modal_type_diagnostics`].
-fn error_diagnostic(text: &str, line_index: &LineIndex, span: Option<&Span>, message: String) -> Diagnostic {
-    let range = span.map(|span| line_index.range(text, span)).unwrap_or_default();
+/// Builds a located type-error [`Diagnostic`] for `span`, shared by [`type_diagnostics`] and its
+/// PBES/PRES/modal-formula counterparts.
+fn error_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], span: Option<&Span>, message: String) -> Diagnostic {
+    let Some(span) = span else {
+        return Diagnostic {
+            range: Range::default(),
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some(TYPE_SOURCE.to_string()),
+            message,
+            ..Diagnostic::default()
+        };
+    };
+    let (range, message) = if sources.file_count() == 0 || sources.lookup(span.start).value() == 0 {
+        (line_index.range(text, span), message)
+    } else {
+        match convert::location(sources, line_indexes, span) {
+            Some(location) => (Range::default(), format!("{message} (reported against {})", location.uri)),
+            None => (Range::default(), message),
+        }
+    };
     Diagnostic {
         range,
         severity: Some(DiagnosticSeverity::ERROR),
@@ -285,6 +401,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ambiguous_prefix_conflict_gets_a_located_warning() {
+        let text = "sort D;\nmap q: Bool;\ninit (!exists d: D . d == d && q) -> delta;";
+        let spec = process_specification_for(text).await;
+        let line_index = LineIndex::new(text);
+        let diags = ambiguity_diagnostics_process(text, &line_index, &spec);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(diags[0].source.as_deref(), Some(AMBIGUITY_SOURCE));
+        assert_eq!(diags[0].code, Some(NumberOrString::String(AMBIGUOUS_PREFIX_CONFLICT_CODE.to_string())));
+    }
+
+    #[tokio::test]
     async fn parse_error_downcasts_to_pest_error_with_a_located_range() {
         let text = "sort D\ninit delta;"; // missing ';' after 'sort D'
         let outcome = parse(SpecKind::Process, text.to_string()).await;
@@ -313,7 +442,7 @@ mod tests {
         let spec = process_specification_for(text).await;
         let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        assert!(type_diagnostics(text, &line_index, &outcome, &spec).is_empty());
+        assert!(type_diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome, &spec).is_empty());
     }
 
     #[tokio::test]
@@ -322,7 +451,7 @@ mod tests {
         let spec = process_specification_for(text).await;
         let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        let diags = type_diagnostics(text, &line_index, &outcome, &spec);
+        let diags = type_diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         let diag = &diags[0];
@@ -338,7 +467,7 @@ mod tests {
         let spec = process_specification_for(text).await;
         let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        let diags = type_diagnostics(text, &line_index, &outcome, &spec);
+        let diags = type_diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         let diag = &diags[0];
@@ -352,7 +481,7 @@ mod tests {
         let spec = process_specification_for(text).await;
         let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        let diags = type_diagnostics(text, &line_index, &outcome, &spec);
+        let diags = type_diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         // "Bol" is one edit away from the built-in "Bool" — closer than the declared "Bool2".
@@ -365,7 +494,7 @@ mod tests {
         let spec = process_specification_for(text).await;
         let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        let diags = type_diagnostics(text, &line_index, &outcome, &spec);
+        let diags = type_diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("did you mean 'ready'?"), "message was: {}", diags[0].message);
@@ -377,7 +506,7 @@ mod tests {
         let spec = process_specification_for(text).await;
         let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        let diags = type_diagnostics(text, &line_index, &outcome, &spec);
+        let diags = type_diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         assert!(!diags[0].message.contains("did you mean"), "message was: {}", diags[0].message);
@@ -392,7 +521,7 @@ mod tests {
         };
         let outcome = crate::typecheck::typecheck_pbes(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        let diags = pbes_type_diagnostics(text, &line_index, &outcome, &spec);
+        let diags = pbes_type_diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("did you mean 'Ready'?"), "message was: {}", diags[0].message);
@@ -407,7 +536,7 @@ mod tests {
         };
         let outcome = crate::typecheck::typecheck_pres(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        let diags = pres_type_diagnostics(text, &line_index, &outcome, &spec);
+        let diags = pres_type_diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("did you mean 'Ready'?"), "message was: {}", diags[0].message);
@@ -422,7 +551,7 @@ mod tests {
         };
         let outcome = crate::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        let diags = modal_type_diagnostics(text, &line_index, &outcome, &spec);
+        let diags = modal_type_diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("did you mean 'ready'?"), "message was: {}", diags[0].message);
@@ -437,7 +566,7 @@ mod tests {
         };
         let outcome = crate::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
-        let diags = modal_type_diagnostics(text, &line_index, &outcome, &spec);
+        let diags = modal_type_diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome, &spec);
 
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("did you mean 'Ready'?"), "message was: {}", diags[0].message);

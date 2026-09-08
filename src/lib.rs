@@ -10,8 +10,10 @@
 //! by the client. All logging goes to stderr via `env_logger`.
 #![deny(clippy::print_stdout)]
 
+mod ambiguity;
 mod backend;
 mod capabilities;
+mod code_action;
 mod completion;
 mod completion_context;
 mod convert;

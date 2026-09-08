@@ -39,6 +39,7 @@ use merc_typecheck::ModalSpecification;
 use merc_typecheck::ProcessSpecification;
 
 use crate::capabilities::server_capabilities;
+use crate::code_action;
 use crate::completion;
 use crate::completion::CompletionCategory;
 use crate::completion_context;
@@ -135,6 +136,10 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
             let documents = state.documents.clone();
             async move { Ok(generate::generate_full_spec_request(&documents, params)) }
         })
+        .request::<request::CodeActionRequest, _>(|state, params| {
+            let documents = state.documents.clone();
+            async move { Ok(code_action::code_actions(&documents, params)) }
+        })
         .notification::<notification::Initialized>(|state, _| {
             if let Err(error) = state
                 .client
@@ -220,7 +225,18 @@ fn completion_request(
     documents: &DocumentStore,
     params: CompletionParams,
 ) -> Option<CompletionResponse> {
-    let document = documents.get(&params.text_document_position.text_document.uri)?;
+    let uri = &params.text_document_position.text_document.uri;
+    let document = documents.get(uri)?;
+    let position = params.text_document_position.position;
+
+    // Checked ahead of (and independently from) the AST-driven categories below, the same way
+    // `goto_definition_request` checks `import_directive_target` first — an `%import` directive
+    // isn't part of any of the four grammars this crate parses (see `parse.rs`'s module docs), so
+    // this needs no successful parse at all, unlike everything below it.
+    if let Some(items) = completion::import_path_completions(&document.text, &document.line_index, parse::path_of(uri).as_deref(), position) {
+        return Some(CompletionResponse::Array(items));
+    }
+
     // Same "no parse, nothing to offer" rule as `document_symbol`/`semantic_tokens_full`.
     let ParseOutcome::Ok(spec) = &document.parsed else {
         return None;
@@ -228,9 +244,7 @@ fn completion_request(
 
     // Falls back to `CompletionCategory::Unscoped` whenever the position
     // doesn't resolve to a byte offset at all.
-    let offset = document
-        .line_index
-        .offset(&document.text, params.text_document_position.position);
+    let offset = document.line_index.offset(&document.text, position);
     let items = match spec {
         Specification::Process(spec) => {
             let category = offset.map_or(CompletionCategory::Unscoped, |offset| {
@@ -307,6 +321,8 @@ fn hover_request(documents: &DocumentStore, params: HoverParams) -> Option<Hover
         processes,
         spec,
         doc_uri: Some(uri),
+        sources: &document.sources,
+        line_indexes: &document.line_indexes,
     };
     hover::hover(&ctx, params.text_document_position_params.position)
 }
@@ -335,13 +351,13 @@ fn goto_definition_request(
     let position = params.text_document_position_params.position;
     let mut document = documents.get_mut(&uri)?;
 
-    if let Some(location) = goto_definition::import_directive_target(
+    if let Some(link) = goto_definition::import_directive_target(
         &document.text,
         &document.line_index,
         parse::path_of(&uri).as_deref(),
         position,
     ) {
-        return Some(GotoDefinitionResponse::Scalar(location));
+        return Some(GotoDefinitionResponse::Link(vec![link]));
     }
 
     let typing_info = document.typing_info()?;
@@ -379,6 +395,7 @@ fn inlay_hint_request(
             spec,
             sort_declarations,
             &typing_info,
+            &document.sources,
             params.range,
         ));
     }
@@ -394,6 +411,7 @@ fn inlay_hint_request(
             spec,
             sort_declarations,
             &typing_info,
+            &document.sources,
             params.range,
         ));
     }
@@ -409,6 +427,7 @@ fn inlay_hint_request(
             spec,
             sort_declarations,
             &typing_info,
+            &document.sources,
             params.range,
         ));
     }
@@ -424,6 +443,7 @@ fn inlay_hint_request(
         spec,
         sort_declarations,
         &typing_info,
+        &document.sources,
         params.range,
     ))
 }
