@@ -1,5 +1,8 @@
 //! Builds the server's advertised [`ServerCapabilities`] in one place.
 
+use lsp_types::CodeActionKind;
+use lsp_types::CodeActionOptions;
+use lsp_types::CodeActionProviderCapability;
 use lsp_types::CompletionOptions;
 use lsp_types::HoverProviderCapability;
 use lsp_types::OneOf;
@@ -18,12 +21,14 @@ use crate::semantic_tokens;
 pub fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
         // We don't support incremental parsing, so we use full document sync.
-        text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
-            open_close: Some(true),
-            change: Some(TextDocumentSyncKind::FULL),
-            save: Some(TextDocumentSyncSaveOptions::Supported(true)),
-            ..TextDocumentSyncOptions::default()
-        })),
+        text_document_sync: Some(TextDocumentSyncCapability::Options(
+            TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::FULL),
+                save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+                ..TextDocumentSyncOptions::default()
+            },
+        )),
         document_symbol_provider: Some(OneOf::Left(true)),
         // AST-driven coloring
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
@@ -41,6 +46,12 @@ pub fn server_capabilities() -> ServerCapabilities {
         // `triggerCharacters` beyond identifier characters (which never need
         // listing) makes sense.
         completion_provider: Some(CompletionOptions::default()),
+        // Currently just the `crate::code_action`/`crate::ambiguity` quick fix, so scoped to
+        // `quickfix` rather than advertising kinds we don't offer.
+        code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+            ..CodeActionOptions::default()
+        })),
         ..ServerCapabilities::default()
     }
 }

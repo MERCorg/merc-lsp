@@ -18,6 +18,7 @@ mod convert;
 mod diagnostics;
 mod document;
 mod edit_distance;
+mod generate;
 mod goto_definition;
 mod hover;
 mod inlay_hints;

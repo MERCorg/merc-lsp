@@ -45,6 +45,8 @@ use crate::completion_context;
 use crate::document::CheckedOutcome;
 use crate::document::Document;
 use crate::document::DocumentStore;
+use crate::generate;
+use crate::generate::GenerateFullSpec;
 use crate::goto_definition;
 use crate::hover;
 use crate::inlay_hints;
@@ -122,13 +124,25 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         })
         .request::<VirtualDocument, _>(|state, params| {
             let virtual_documents = state.virtual_documents.clone();
-            async move { Ok(virtual_document::virtual_document_request(&virtual_documents, params)) }
+            async move {
+                Ok(virtual_document::virtual_document_request(
+                    &virtual_documents,
+                    params,
+                ))
+            }
+        })
+        .request::<GenerateFullSpec, _>(|state, params| {
+            let documents = state.documents.clone();
+            async move { Ok(generate::generate_full_spec_request(&documents, params)) }
         })
         .notification::<notification::Initialized>(|state, _| {
-            if let Err(error) = state.client.notify::<notification::LogMessage>(LogMessageParams {
-                typ: MessageType::INFO,
-                message: "merc-lsp initialized".to_string(),
-            }) {
+            if let Err(error) = state
+                .client
+                .notify::<notification::LogMessage>(LogMessageParams {
+                    typ: MessageType::INFO,
+                    message: "merc-lsp initialized".to_string(),
+                })
+            {
                 log::warn!("failed to send initialized log message: {error}");
             }
             ControlFlow::Continue(())
@@ -158,7 +172,10 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
             // asks the client to re-pull semantic tokens, which (unlike a `did_change`) it has no
             // other reason to do on its own for a save with no further edit after it.
             let uri = params.text_document.uri;
-            let pending = state.documents.get(&uri).map(|document| (document.pending_text.clone(), document.pending_version));
+            let pending = state
+                .documents
+                .get(&uri)
+                .map(|document| (document.pending_text.clone(), document.pending_version));
             if let Some((text, version)) = pending {
                 spawn_analyze(state, uri, text, version, true);
             }
@@ -174,45 +191,69 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
     router
 }
 
-fn document_symbol(documents: &DocumentStore, params: DocumentSymbolParams) -> Option<DocumentSymbolResponse> {
+fn document_symbol(
+    documents: &DocumentStore,
+    params: DocumentSymbolParams,
+) -> Option<DocumentSymbolResponse> {
     let document = documents.get(&params.text_document.uri)?;
     let ParseOutcome::Ok(spec) = &document.parsed else {
         return None;
     };
     let symbols = match spec {
-        Specification::Process(spec) => symbols::document_symbols(&document.text, &document.line_index, spec),
-        Specification::Pbes(spec) => symbols::pbes_symbols(&document.text, &document.line_index, spec),
-        Specification::Pres(spec) => symbols::pres_symbols(&document.text, &document.line_index, spec),
-        Specification::Modal(spec) => symbols::modal_symbols(&document.text, &document.line_index, spec),
+        Specification::Process(spec) => {
+            symbols::document_symbols(&document.text, &document.line_index, spec)
+        }
+        Specification::Pbes(spec) => {
+            symbols::pbes_symbols(&document.text, &document.line_index, spec)
+        }
+        Specification::Pres(spec) => {
+            symbols::pres_symbols(&document.text, &document.line_index, spec)
+        }
+        Specification::Modal(spec) => {
+            symbols::modal_symbols(&document.text, &document.line_index, spec)
+        }
     };
     Some(DocumentSymbolResponse::Nested(symbols))
 }
 
-fn completion_request(documents: &DocumentStore, params: CompletionParams) -> Option<CompletionResponse> {
+fn completion_request(
+    documents: &DocumentStore,
+    params: CompletionParams,
+) -> Option<CompletionResponse> {
     let document = documents.get(&params.text_document_position.text_document.uri)?;
     // Same "no parse, nothing to offer" rule as `document_symbol`/`semantic_tokens_full`.
     let ParseOutcome::Ok(spec) = &document.parsed else {
         return None;
     };
-    
+
     // Falls back to `CompletionCategory::Unscoped` whenever the position
     // doesn't resolve to a byte offset at all.
-    let offset = document.line_index.offset(&document.text, params.text_document_position.position);
+    let offset = document
+        .line_index
+        .offset(&document.text, params.text_document_position.position);
     let items = match spec {
         Specification::Process(spec) => {
-            let category = offset.map_or(CompletionCategory::Unscoped, |offset| completion_context::process_category(spec, offset));
+            let category = offset.map_or(CompletionCategory::Unscoped, |offset| {
+                completion_context::process_category(spec, offset)
+            });
             completion::completions(spec, category)
         }
         Specification::Pbes(spec) => {
-            let category = offset.map_or(CompletionCategory::Unscoped, |offset| completion_context::pbes_category(spec, offset));
+            let category = offset.map_or(CompletionCategory::Unscoped, |offset| {
+                completion_context::pbes_category(spec, offset)
+            });
             completion::pbes_completions(spec, category)
         }
         Specification::Pres(spec) => {
-            let category = offset.map_or(CompletionCategory::Unscoped, |offset| completion_context::pres_category(spec, offset));
+            let category = offset.map_or(CompletionCategory::Unscoped, |offset| {
+                completion_context::pres_category(spec, offset)
+            });
             completion::pres_completions(spec, category)
         }
         Specification::Modal(spec) => {
-            let category = offset.map_or(CompletionCategory::Unscoped, |offset| completion_context::modal_category(spec, offset));
+            let category = offset.map_or(CompletionCategory::Unscoped, |offset| {
+                completion_context::modal_category(spec, offset)
+            });
             completion::modal_completions(spec, category)
         }
     };
@@ -220,7 +261,10 @@ fn completion_request(documents: &DocumentStore, params: CompletionParams) -> Op
 }
 
 /// Serves whatever `document.semantic_tokens` currently holds.
-fn semantic_tokens_full(documents: &DocumentStore, params: SemanticTokensParams) -> Option<SemanticTokensResult> {
+fn semantic_tokens_full(
+    documents: &DocumentStore,
+    params: SemanticTokensParams,
+) -> Option<SemanticTokensResult> {
     let document = documents.get(&params.text_document.uri)?;
     Some(SemanticTokensResult::Tokens(SemanticTokens {
         result_id: None,
@@ -242,9 +286,15 @@ fn hover_request(documents: &DocumentStore, params: HoverParams) -> Option<Hover
     let actions = document
         .checked_process_specification()
         .map(ProcessSpecification::action_declarations)
-        .or_else(|| document.checked_modal_specification().map(ModalSpecification::action_declarations))
+        .or_else(|| {
+            document
+                .checked_modal_specification()
+                .map(ModalSpecification::action_declarations)
+        })
         .unwrap_or(&[]);
-    let processes = document.checked_process_specification().map_or(&[][..], ProcessSpecification::process_declarations);
+    let processes = document
+        .checked_process_specification()
+        .map_or(&[][..], ProcessSpecification::process_declarations);
     let spec = match &document.parsed {
         ParseOutcome::Ok(spec) => Some(spec),
         _ => None,
@@ -273,13 +323,24 @@ fn hover_request(documents: &DocumentStore, params: HoverParams) -> Option<Hover
 /// `%import "relative/path"` directive's own quoted path — see
 /// [`goto_definition::import_directive_target`]'s doc comment for why this needs no `TypingInfo`
 /// (and so no successfully checked specification) at all.
-fn goto_definition_request(documents: &DocumentStore, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
-    let uri = params.text_document_position_params.text_document.uri.clone();
+fn goto_definition_request(
+    documents: &DocumentStore,
+    params: GotoDefinitionParams,
+) -> Option<GotoDefinitionResponse> {
+    let uri = params
+        .text_document_position_params
+        .text_document
+        .uri
+        .clone();
     let position = params.text_document_position_params.position;
     let mut document = documents.get_mut(&uri)?;
 
-    if let Some(location) = goto_definition::import_directive_target(&document.text, &document.line_index, parse::path_of(&uri).as_deref(), position)
-    {
+    if let Some(location) = goto_definition::import_directive_target(
+        &document.text,
+        &document.line_index,
+        parse::path_of(&uri).as_deref(),
+        position,
+    ) {
         return Some(GotoDefinitionResponse::Scalar(location));
     }
 
@@ -299,29 +360,72 @@ fn goto_definition_request(documents: &DocumentStore, params: GotoDefinitionPara
     }
 }
 
-fn inlay_hint_request(documents: &DocumentStore, params: InlayHintParams) -> Option<Vec<InlayHint>> {
+fn inlay_hint_request(
+    documents: &DocumentStore,
+    params: InlayHintParams,
+) -> Option<Vec<InlayHint>> {
     let uri = &params.text_document.uri;
     let mut document = documents.get_mut(uri)?;
     let typing_info = document.typing_info()?;
 
     if let Some(spec) = document.checked_process_specification() {
-        let sort_declarations = &document.parsed_process_specification()?.data_specification.sort_declarations;
-        return Some(inlay_hints::inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range));
+        let sort_declarations = &document
+            .parsed_process_specification()?
+            .data_specification
+            .sort_declarations;
+        return Some(inlay_hints::inlay_hints(
+            &document.text,
+            &document.line_index,
+            spec,
+            sort_declarations,
+            &typing_info,
+            params.range,
+        ));
     }
 
     if let Some(spec) = document.checked_pbes_specification() {
-        let sort_declarations = &document.parsed_pbes_specification()?.data_specification.sort_declarations;
-        return Some(inlay_hints::pbes_inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range));
+        let sort_declarations = &document
+            .parsed_pbes_specification()?
+            .data_specification
+            .sort_declarations;
+        return Some(inlay_hints::pbes_inlay_hints(
+            &document.text,
+            &document.line_index,
+            spec,
+            sort_declarations,
+            &typing_info,
+            params.range,
+        ));
     }
 
     if let Some(spec) = document.checked_pres_specification() {
-        let sort_declarations = &document.parsed_pres_specification()?.data_specification.sort_declarations;
-        return Some(inlay_hints::pres_inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range));
+        let sort_declarations = &document
+            .parsed_pres_specification()?
+            .data_specification
+            .sort_declarations;
+        return Some(inlay_hints::pres_inlay_hints(
+            &document.text,
+            &document.line_index,
+            spec,
+            sort_declarations,
+            &typing_info,
+            params.range,
+        ));
     }
 
     let spec = document.checked_modal_specification()?;
-    let sort_declarations = &document.parsed_modal_specification()?.data_specification.sort_declarations;
-    Some(inlay_hints::modal_inlay_hints(&document.text, &document.line_index, spec, sort_declarations, &typing_info, params.range))
+    let sort_declarations = &document
+        .parsed_modal_specification()?
+        .data_specification
+        .sort_declarations;
+    Some(inlay_hints::modal_inlay_hints(
+        &document.text,
+        &document.line_index,
+        spec,
+        sort_declarations,
+        &typing_info,
+        params.range,
+    ))
 }
 
 /// Clones out of `state` whatever [`analyze`] needs and spawns it, so parsing/type checking can
@@ -331,7 +435,15 @@ fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refr
     let client = state.client.clone();
     let documents = state.documents.clone();
     let virtual_documents = state.virtual_documents.clone();
-    tokio::spawn(analyze(client, documents, virtual_documents, uri, text, version, refresh_tokens));
+    tokio::spawn(analyze(
+        client,
+        documents,
+        virtual_documents,
+        uri,
+        text,
+        version,
+        refresh_tokens,
+    ));
 }
 
 /// Parses `text` at `version` for `uri` (as whichever [`SpecKind`] its
@@ -362,8 +474,18 @@ async fn analyze(
             let (result, sources) = typecheck::typecheck((**spec).clone(), sources).await;
             (Some(CheckedOutcome::Process(result)), sources)
         }
-        ParseOutcome::Ok(Specification::Pbes(spec)) => (Some(CheckedOutcome::Pbes(typecheck::typecheck_pbes((**spec).clone()).await)), sources),
-        ParseOutcome::Ok(Specification::Pres(spec)) => (Some(CheckedOutcome::Pres(typecheck::typecheck_pres((**spec).clone()).await)), sources),
+        ParseOutcome::Ok(Specification::Pbes(spec)) => (
+            Some(CheckedOutcome::Pbes(
+                typecheck::typecheck_pbes((**spec).clone()).await,
+            )),
+            sources,
+        ),
+        ParseOutcome::Ok(Specification::Pres(spec)) => (
+            Some(CheckedOutcome::Pres(
+                typecheck::typecheck_pres((**spec).clone()).await,
+            )),
+            sources,
+        ),
         ParseOutcome::Ok(Specification::Modal(spec)) => {
             let (result, sources) = typecheck::typecheck_modal((**spec).clone(), sources).await;
             (Some(CheckedOutcome::Modal(result)), sources)
@@ -385,7 +507,10 @@ async fn analyze(
         Entry::Occupied(mut occupied) => {
             let existing = occupied.get();
             if existing.version > version {
-                log::debug!("discarding stale analysis of {uri} (version {version}, have {})", existing.version);
+                log::debug!(
+                    "discarding stale analysis of {uri} (version {version}, have {})",
+                    existing.version
+                );
                 return;
             }
 
@@ -408,8 +533,17 @@ async fn analyze(
     }
 }
 
-fn publish_diagnostics(client: &ClientSocket, uri: Url, diagnostics: Vec<Diagnostic>, version: i32) {
-    let params = PublishDiagnosticsParams { uri, diagnostics, version: Some(version) };
+fn publish_diagnostics(
+    client: &ClientSocket,
+    uri: Url,
+    diagnostics: Vec<Diagnostic>,
+    version: i32,
+) {
+    let params = PublishDiagnosticsParams {
+        uri,
+        diagnostics,
+        version: Some(version),
+    };
     if let Err(error) = client.notify::<notification::PublishDiagnostics>(params) {
         log::warn!("failed to publish diagnostics: {error}");
     }
@@ -421,7 +555,9 @@ fn request_semantic_tokens_refresh(client: &ClientSocket) {
     let client = client.clone();
     tokio::spawn(async move {
         if let Err(error) = client.request::<request::SemanticTokensRefresh>(()).await {
-            log::debug!("semanticTokens/refresh request failed (client may not support it): {error}");
+            log::debug!(
+                "semanticTokens/refresh request failed (client may not support it): {error}"
+            );
         }
     });
 }

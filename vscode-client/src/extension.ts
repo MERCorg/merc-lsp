@@ -24,6 +24,48 @@ const VIRTUAL_DOCUMENT_SCHEME = 'merc-builtin';
 const virtualDocumentRequest = new RequestType<{ uri: string }, string | null, void>('merc/virtualDocument');
 
 /**
+ * `GenerateFullSpec` request `{ uri: string }` in, that process specification's `%import`s
+ * resolved and merged, then rendered back to fully-parenthesized (so unambiguous, even against
+ * the real mCRL2 parser) mCRL2 source text — or `null` if `uri` isn't an open, successfully
+ * parsed process specification. Mirrors `../src/generate.rs`'s `GenerateFullSpec` request.
+ */
+const generateFullSpecRequest = new RequestType<{ uri: string }, string | null, void>('merc/generateFullSpec');
+
+/**
+ * `merc-lsp.generateFullSpec`: writes the active `.mcrl2` editor's merged specification to a
+ * sibling `<name>.generated.mcrl2` file and opens it. That has to be a real file on disk, not a
+ * `merc-builtin:` virtual document like {@link registerVirtualDocumentProvider}'s — the whole
+ * point is for the real mCRL2 toolset (`mcrl22lps` and friends), an external process, to consume
+ * it, and only the editor's virtual-document providers can read a virtual URI.
+ */
+async function generateFullSpec(): Promise<void> {
+	const editor = window.activeTextEditor;
+	if (!editor || editor.document.languageId !== 'merc' || editor.document.uri.scheme !== 'file') {
+		window.showErrorMessage('merc: Generate Full Specification only works on an open, saved .mcrl2 file.');
+		return;
+	}
+	if (!client) {
+		window.showErrorMessage('merc: the language server is not running.');
+		return;
+	}
+
+	const sourcePath = editor.document.uri.fsPath;
+	const text = await client.sendRequest(generateFullSpecRequest, { uri: editor.document.uri.toString() });
+	if (text === null) {
+		window.showErrorMessage(
+			'merc: could not generate a full specification — save the file and make sure it parses without errors.'
+		);
+		return;
+	}
+
+	const outputPath = path.join(path.dirname(sourcePath), `${path.basename(sourcePath, path.extname(sourcePath))}.generated.mcrl2`);
+	fs.writeFileSync(outputPath, text);
+
+	const document = await workspace.openTextDocument(outputPath);
+	await window.showTextDocument(document, { preview: false });
+}
+
+/**
  * Registers the `merc-builtin:` read-only content provider.
  */
 function registerVirtualDocumentProvider(context: ExtensionContext) {
@@ -168,6 +210,9 @@ export function activate(context: ExtensionContext) {
 
 	context.subscriptions.push(
 		commands.registerCommand('merc-lsp.restartServer', () => restartClient(context))
+	);
+	context.subscriptions.push(
+		commands.registerCommand('merc-lsp.generateFullSpec', () => generateFullSpec())
 	);
 
 	registerVirtualDocumentProvider(context);

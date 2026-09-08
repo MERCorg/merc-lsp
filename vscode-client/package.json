@@ -23,8 +23,27 @@
 			{
 				"command": "merc-lsp.restartServer",
 				"title": "merc: Restart Language Server"
+			},
+			{
+				"command": "merc-lsp.generateFullSpec",
+				"title": "merc: Generate Full Specification (resolve imports)"
 			}
 		],
+		"menus": {
+			"editor/context": [
+				{
+					"command": "merc-lsp.generateFullSpec",
+					"when": "resourceLangId == merc",
+					"group": "merc"
+				}
+			],
+			"commandPalette": [
+				{
+					"command": "merc-lsp.generateFullSpec",
+					"when": "resourceLangId == merc"
+				}
+			]
+		},
 		"languages": [
 			{
 				"id": "merc",
