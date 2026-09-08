@@ -41,6 +41,7 @@ use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
+use merc_syntax::scan_imports;
 
 /// What kind of declared name, if any, a completion request's cursor sits where one is expected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,14 @@ pub enum CompletionCategory {
 /// partial identifier just typed) still counts as inside it.
 fn contains(span: &Span, offset: usize) -> bool {
     span.start <= offset && offset <= span.end
+}
+
+/// The part of an `%import "relative/path"` directive's own quoted path that's already been typed.
+pub fn import_path_prefix(text: &str, offset: usize) -> Option<&str> {
+    let directive = scan_imports(text)
+        .into_iter()
+        .find(|directive| (directive.node.path_span.start..=directive.node.path_span.end).contains(&offset))?;
+    Some(&text[directive.node.path_span.start..offset])
 }
 
 /// Whether `offset` sits somewhere inside `expr` — a data-expression's own span always covers its
@@ -639,5 +648,19 @@ mod tests {
         let text = "act a: Nat;\nform nu X(n: Nat = 0) . [a(n)]X(n);";
         let spec = modal_spec_for(text).await;
         assert_eq!(modal_category(&spec, last_offset_of(text, "Nat = 0")), CompletionCategory::Sort);
+    }
+
+    #[test]
+    fn import_path_prefix_is_the_path_typed_so_far() {
+        let text = "%import \"sub/co\"\ninit delta;\n";
+        let offset = text.find("co\"").unwrap() + "co".len();
+        assert_eq!(import_path_prefix(text, offset), Some("sub/co"));
+    }
+
+    #[test]
+    fn import_path_prefix_is_none_outside_an_import_directives_path() {
+        let text = "%import \"common.mcrl2\"\ninit delta;\n";
+        assert_eq!(import_path_prefix(text, 0), None);
+        assert_eq!(import_path_prefix(text, text.find("init").unwrap()), None);
     }
 }

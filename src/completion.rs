@@ -14,8 +14,14 @@
 //! specification, so — unlike hover/goto-definition/inlay-hints — completions keep working while a
 //! document is transiently ill-typed or mid-edit.
 
+use std::path::Path;
+
 use lsp_types::CompletionItem;
 use lsp_types::CompletionItemKind;
+use lsp_types::CompletionTextEdit;
+use lsp_types::Position;
+use lsp_types::Range;
+use lsp_types::TextEdit;
 use merc_syntax::StateFrm;
 use merc_syntax::StateFrmKind;
 use merc_syntax::UntypedDataSpecification;
@@ -25,7 +31,61 @@ use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
 
 pub use crate::completion_context::CompletionCategory;
+use crate::completion_context;
+use crate::convert::LineIndex;
 use crate::names::SYSTEM_SORTS;
+
+/// Completion items listing the `.mcrl2` files (and subdirectories) available at the `%import`
+/// path the cursor is currently sitting in.
+pub fn import_path_completions(text: &str, line_index: &LineIndex, doc_path: Option<&Path>, position: Position) -> Option<Vec<CompletionItem>> {
+    let doc_dir = doc_path?.parent().unwrap_or_else(|| Path::new("."));
+    let offset = line_index.offset(text, position)?;
+    let typed = completion_context::import_path_prefix(text, offset)?;
+
+    // Splits the already-typed path at its last '/', if any: everything up to and including it
+    // names a subdirectory to list (possibly several levels deep, e.g. "a/b/"), everything after
+    // is the partial filename this completion replaces — so completing "sub/fo" only replaces
+    // "fo", leaving "sub/" (and the surrounding quotes) untouched.
+    let (sub_dir, partial) = match typed.rfind('/') {
+        Some(index) => (&typed[..=index], &typed[index + 1..]),
+        None => ("", typed),
+    };
+    let entries = std::fs::read_dir(doc_dir.join(sub_dir)).ok()?;
+
+    // Only the partial filename segment gets replaced; `offset - partial.len()` stays a valid
+    // char boundary since `partial` is always a suffix of `text` split at an ASCII '/' or the
+    // directive's own path-span start.
+    let edit_range = Range {
+        start: line_index.position(text, offset - partial.len()),
+        end: line_index.position(text, offset),
+    };
+
+    let mut items: Vec<CompletionItem> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            let name = entry.file_name().to_str()?.to_string();
+            let (label, kind) = if file_type.is_dir() {
+                (format!("{name}/"), CompletionItemKind::FOLDER)
+            } else if name.ends_with(".mcrl2") {
+                (name, CompletionItemKind::FILE)
+            } else {
+                return None;
+            };
+            Some(CompletionItem {
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: edit_range,
+                    new_text: label.clone(),
+                })),
+                kind: Some(kind),
+                label,
+                ..CompletionItem::default()
+            })
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    Some(items)
+}
 
 /// Keywords worth offering inside a sort expression — none beyond the built-in sort names
 /// themselves, which are offered separately (see [`SYSTEM_SORTS`]).
@@ -447,5 +507,61 @@ mod tests {
         assert!(contains(&items, "X"));
         assert!(contains(&items, "nu"), "a state-formula keyword belongs in a state formula");
         assert!(!contains(&items, "a"), "an action name is not a fixpoint variable");
+    }
+
+    #[test]
+    fn import_path_completion_lists_mcrl2_files_and_subdirectories() {
+        let dir = tempfile::tempdir().expect("should create a temp directory");
+        std::fs::write(dir.path().join("common.mcrl2"), "").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let main_path = dir.path().join("main.mcrl2");
+        // `scan_imports` requires a non-empty quoted path to recognize the line as a directive at
+        // all (see `merc_syntax::imports::parse_import_line`), so this starts with one character
+        // already typed — server-side filtering by that prefix is left to the client, the same as
+        // every other completion category in this module, so every entry is still offered here.
+        let text = "%import \"c\"\ninit delta;\n".to_string();
+        std::fs::write(&main_path, &text).unwrap();
+
+        let line_index = LineIndex::new(&text);
+        let offset = text.find("c\"").unwrap() + 1;
+        let position = line_index.position(&text, offset);
+        let items = import_path_completions(&text, &line_index, Some(main_path.as_path()), position).expect("should offer import completions");
+
+        assert!(items.iter().any(|item| item.label == "common.mcrl2"), "expected common.mcrl2 among {items:?}");
+        assert!(items.iter().any(|item| item.label == "sub/"), "expected the sub directory among {items:?}");
+        assert!(!items.iter().any(|item| item.label == "notes.txt"), "a non-mcrl2 file should not be offered");
+    }
+
+    #[test]
+    fn import_path_completion_is_none_outside_an_import_directive() {
+        let text = "init delta;".to_string();
+        let line_index = LineIndex::new(&text);
+        let position = line_index.position(&text, 0);
+        assert!(import_path_completions(&text, &line_index, Some(Path::new("/tmp/main.mcrl2")), position).is_none());
+    }
+
+    #[test]
+    fn import_path_completion_only_replaces_the_partial_segment_after_the_last_slash() {
+        let dir = tempfile::tempdir().expect("should create a temp directory");
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("common.mcrl2"), "").unwrap();
+        let main_path = dir.path().join("main.mcrl2");
+        let text = "%import \"sub/co\"\ninit delta;\n".to_string();
+        std::fs::write(&main_path, &text).unwrap();
+
+        let line_index = LineIndex::new(&text);
+        let offset = text.find("co\"").unwrap() + "co".len();
+        let position = line_index.position(&text, offset);
+        let items = import_path_completions(&text, &line_index, Some(main_path.as_path()), position).expect("should offer import completions");
+
+        let item = items.iter().find(|item| item.label == "common.mcrl2").expect("expected common.mcrl2 among the sub-directory's contents");
+        let Some(CompletionTextEdit::Edit(edit)) = &item.text_edit else {
+            panic!("expected a plain TextEdit, got: {:?}", item.text_edit);
+        };
+        assert_eq!(edit.new_text, "common.mcrl2");
+        let start_offset = line_index.offset(&text, edit.range.start).unwrap();
+        let end_offset = line_index.offset(&text, edit.range.end).unwrap();
+        assert_eq!(&text[start_offset..end_offset], "co", "should only replace the partial filename, not 'sub/'");
     }
 }

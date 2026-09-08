@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use lsp_types::Location;
+use lsp_types::LocationLink;
 use lsp_types::Position;
 use lsp_types::Range;
 use lsp_types::Url;
@@ -55,12 +56,12 @@ pub fn definition_locations(
 /// If `position` sits on an `%import "relative/path"` directive's own quoted path, resolves
 /// straight to that file's start, with no [`TypingInfo`] involved at all: `%import` is a purely
 /// syntactic, file-level relationship, so this works even when the document currently fails to
-/// type check. 
-/// 
+/// type check.
+///
 /// `None` when `position` isn't on a directive's path, or `doc_path` is `None` — an
 /// untitled/unsaved buffer has no directory a relative import path could resolve against, the same
 /// condition under which `parse.rs` doesn't resolve `%import` at all.
-pub fn import_directive_target(text: &str, line_index: &LineIndex, doc_path: Option<&Path>, position: Position) -> Option<Location> {
+pub fn import_directive_target(text: &str, line_index: &LineIndex, doc_path: Option<&Path>, position: Position) -> Option<LocationLink> {
     let doc_path = doc_path?;
     let offset = line_index.offset(text, position)?;
     let directive = scan_imports(text)
@@ -70,10 +71,18 @@ pub fn import_directive_target(text: &str, line_index: &LineIndex, doc_path: Opt
     let directory = doc_path.parent().unwrap_or_else(|| Path::new("."));
     let target = directory.join(&directive.node.path);
     let target = target.canonicalize().unwrap_or(target);
-    let uri = Url::from_file_path(&target).ok()?;
-    Some(Location {
-        uri,
-        range: Range::default(),
+    let target_uri = Url::from_file_path(&target).ok()?;
+
+    let origin_selection_range = Range {
+        start: line_index.position(text, directive.node.path_span.start),
+        end: line_index.position(text, directive.node.path_span.end),
+    };
+    let target_range = Range::default();
+    Some(LocationLink {
+        origin_selection_range: Some(origin_selection_range),
+        target_uri,
+        target_range,
+        target_selection_range: target_range,
     })
 }
 
@@ -453,14 +462,44 @@ mod tests {
 
         let path_offset = text.find("common.mcrl2").unwrap();
         let position = line_index.position(&text, path_offset);
-        let location =
+        let link =
             import_directive_target(&text, &line_index, Some(main_path.as_path()), position).expect("should resolve the import path");
 
-        assert_eq!(location.uri.scheme(), "file");
+        assert_eq!(link.target_uri.scheme(), "file");
         assert!(
-            location.uri.as_str().ends_with("common.mcrl2"),
+            link.target_uri.as_str().ends_with("common.mcrl2"),
             "expected the import path to resolve to common.mcrl2, got: {}",
-            location.uri
+            link.target_uri
+        );
+    }
+
+    #[tokio::test]
+    async fn jumping_from_an_import_directive_highlights_the_whole_path() {
+        // Regression test: without an explicit `origin_selection_range`, a client falls back to
+        // its own word-boundary heuristic (in VS Code, one that stops at `/`) to decide what to
+        // underline at the cursor — only highlighting a segment of a multi-directory import path
+        // instead of the whole thing.
+        let dir = temp_project(&[
+            ("sub/common.mcrl2", "act a;\n"),
+            ("main.mcrl2", "%import \"sub/common.mcrl2\"\ninit a;\n"),
+        ]);
+        let main_path = dir.path().join("main.mcrl2");
+        let text = std::fs::read_to_string(&main_path).unwrap();
+        let line_index = LineIndex::new(&text);
+
+        let path_start = text.find("sub/common.mcrl2").unwrap();
+        let path_end = path_start + "sub/common.mcrl2".len();
+        let position = line_index.position(&text, path_start + 1);
+        let link =
+            import_directive_target(&text, &line_index, Some(main_path.as_path()), position).expect("should resolve the import path");
+
+        assert_eq!(
+            link.origin_selection_range,
+            Some(Range {
+                start: line_index.position(&text, path_start),
+                end: line_index.position(&text, path_end),
+            }),
+            "expected the origin selection to span the whole 'sub/common.mcrl2' path"
         );
     }
 

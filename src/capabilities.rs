@@ -42,10 +42,12 @@ pub fn server_capabilities() -> ServerCapabilities {
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
-        // Unscoped, so no `resolve` step has anything extra to add and no
-        // `triggerCharacters` beyond identifier characters (which never need
-        // listing) makes sense.
-        completion_provider: Some(CompletionOptions::default()),
+        // No `resolve` step has anything extra to add. `"` and `/` are listed as trigger
+        // characters purely for `crate::completion::import_path_completions`.
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec!["\"".to_string(), "/".to_string()]),
+            ..CompletionOptions::default()
+        }),
         // Currently just the `crate::code_action`/`crate::ambiguity` quick fix, so scoped to
         // `quickfix` rather than advertising kinds we don't offer.
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
