@@ -25,7 +25,6 @@ use lsp_types::HoverParams;
 use lsp_types::InitializeResult;
 use lsp_types::InlayHint;
 use lsp_types::InlayHintParams;
-use lsp_types::Location;
 use lsp_types::LogMessageParams;
 use lsp_types::MessageType;
 use lsp_types::PublishDiagnosticsParams;
@@ -55,15 +54,20 @@ use crate::parse::SpecKind;
 use crate::parse::Specification;
 use crate::symbols;
 use crate::typecheck;
+use crate::virtual_document;
+use crate::virtual_document::VirtualDocument;
+use crate::virtual_document::VirtualDocumentStore;
 
 /// Per-connection server state backing the [`Router`] built by [`router`].
 ///
-/// `documents` is `Arc`-wrapped because notification handlers can't `.await`,
-/// so parsing happens on a spawned task that outlives the handler call and
-/// needs its own shared handle to the store.
+/// `documents` and `virtual_documents` are both `Arc`-wrapped because notification handlers can't
+/// `.await`, so parsing happens on a spawned task that outlives the handler call and needs its own
+/// shared handle to each store.
 pub struct Backend {
     client: ClientSocket,
     documents: Arc<DocumentStore>,
+    /// See [`crate::virtual_document`]'s module doc comment.
+    virtual_documents: Arc<VirtualDocumentStore>,
 }
 
 /// Builds the request/notification router for a single connection to `client`.
@@ -75,6 +79,7 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
     let mut router = Router::new(Backend {
         client,
         documents: Arc::new(DocumentStore::default()),
+        virtual_documents: Arc::new(VirtualDocumentStore::default()),
     });
 
     router
@@ -114,6 +119,10 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         .request::<request::Completion, _>(|state, params| {
             let documents = state.documents.clone();
             async move { Ok(completion_request(&documents, params)) }
+        })
+        .request::<VirtualDocument, _>(|state, params| {
+            let virtual_documents = state.virtual_documents.clone();
+            async move { Ok(virtual_document::virtual_document_request(&virtual_documents, params)) }
         })
         .notification::<notification::Initialized>(|state, _| {
             if let Err(error) = state.client.notify::<notification::LogMessage>(LogMessageParams {
@@ -256,21 +265,37 @@ fn hover_request(documents: &DocumentStore, params: HoverParams) -> Option<Hover
 /// [`GotoDefinitionResponse::Scalar`] — a plain, single-location jump, which is what every client
 /// handles best. Only a bare action name inside a `hide`/`block`/`allow`/`comm`/`rename` action set
 /// can resolve to more than one `act` declaration sharing that name (see
-/// [`goto_definition::definition_ranges`]'s doc comment), reported as
+/// [`goto_definition::definition_locations`]'s doc comment), reported as
 /// [`GotoDefinitionResponse::Array`] instead so the client offers a picker rather than silently
 /// jumping to just one of them.
+///
+/// Checked ahead of (and independently from) every other case: whether `position` sits on an
+/// `%import "relative/path"` directive's own quoted path — see
+/// [`goto_definition::import_directive_target`]'s doc comment for why this needs no `TypingInfo`
+/// (and so no successfully checked specification) at all.
 fn goto_definition_request(documents: &DocumentStore, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
     let uri = params.text_document_position_params.text_document.uri.clone();
-    let mut document = documents.get_mut(&uri)?;
-    let typing_info = document.typing_info()?;
     let position = params.text_document_position_params.position;
-    let ranges = goto_definition::definition_ranges(&document.text, &document.line_index, &typing_info, position);
-    match ranges.as_slice() {
+    let mut document = documents.get_mut(&uri)?;
+
+    if let Some(location) = goto_definition::import_directive_target(&document.text, &document.line_index, parse::path_of(&uri).as_deref(), position)
+    {
+        return Some(GotoDefinitionResponse::Scalar(location));
+    }
+
+    let typing_info = document.typing_info()?;
+    let locations = goto_definition::definition_locations(
+        &document.text,
+        &document.line_index,
+        &document.sources,
+        &document.line_indexes,
+        &typing_info,
+        position,
+    );
+    match locations.as_slice() {
         [] => None,
-        [range] => Some(GotoDefinitionResponse::Scalar(Location { uri, range: *range })),
-        _ => Some(GotoDefinitionResponse::Array(
-            ranges.into_iter().map(|range| Location { uri: uri.clone(), range }).collect(),
-        )),
+        [location] => Some(GotoDefinitionResponse::Scalar(location.clone())),
+        _ => Some(GotoDefinitionResponse::Array(locations)),
     }
 }
 
@@ -305,7 +330,8 @@ fn inlay_hint_request(documents: &DocumentStore, params: InlayHintParams) -> Opt
 fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refresh_tokens: bool) {
     let client = state.client.clone();
     let documents = state.documents.clone();
-    tokio::spawn(analyze(client, documents, uri, text, version, refresh_tokens));
+    let virtual_documents = state.virtual_documents.clone();
+    tokio::spawn(analyze(client, documents, virtual_documents, uri, text, version, refresh_tokens));
 }
 
 /// Parses `text` at `version` for `uri` (as whichever [`SpecKind`] its
@@ -313,24 +339,43 @@ fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refr
 /// type checker now — see [`crate::typecheck`]), and commits the result — text,
 /// parse, type check, and semantic tokens alike — as the document's new
 /// analyzed snapshot, then publishes its diagnostics.
-/// 
+///
 /// We don't type check on every keystroke; only when this function is called,
 /// which happens on save.
-async fn analyze(client: ClientSocket, documents: Arc<DocumentStore>, uri: Url, text: String, version: i32, refresh_tokens: bool) {
-    let outcome = parse::parse(SpecKind::from_uri(&uri), text.clone()).await;
+async fn analyze(
+    client: ClientSocket,
+    documents: Arc<DocumentStore>,
+    virtual_documents: Arc<VirtualDocumentStore>,
+    uri: Url,
+    text: String,
+    version: i32,
+    refresh_tokens: bool,
+) {
+    // `path` is `None` for an untitled/unsaved buffer — `parse` falls back to a plain,
+    // single-file parse for those.
+    let path = parse::path_of(&uri);
+    let (outcome, sources) = parse::parse(SpecKind::from_uri(&uri), text.clone(), path).await;
 
     // Only meaningful once parsing succeeded.
-    let checked = match &outcome {
+    let (checked, sources) = match &outcome {
         ParseOutcome::Ok(Specification::Process(spec)) => {
-            Some(CheckedOutcome::Process(typecheck::typecheck((**spec).clone()).await))
+            let (result, sources) = typecheck::typecheck((**spec).clone(), sources).await;
+            (Some(CheckedOutcome::Process(result)), sources)
         }
-        ParseOutcome::Ok(Specification::Pbes(spec)) => Some(CheckedOutcome::Pbes(typecheck::typecheck_pbes((**spec).clone()).await)),
-        ParseOutcome::Ok(Specification::Pres(spec)) => Some(CheckedOutcome::Pres(typecheck::typecheck_pres((**spec).clone()).await)),
-        ParseOutcome::Ok(Specification::Modal(spec)) => Some(CheckedOutcome::Modal(typecheck::typecheck_modal((**spec).clone()).await)),
-        ParseOutcome::ParseError(_) | ParseOutcome::Internal(_) => None,
+        ParseOutcome::Ok(Specification::Pbes(spec)) => (Some(CheckedOutcome::Pbes(typecheck::typecheck_pbes((**spec).clone()).await)), sources),
+        ParseOutcome::Ok(Specification::Pres(spec)) => (Some(CheckedOutcome::Pres(typecheck::typecheck_pres((**spec).clone()).await)), sources),
+        ParseOutcome::Ok(Specification::Modal(spec)) => {
+            let (result, sources) = typecheck::typecheck_modal((**spec).clone(), sources).await;
+            (Some(CheckedOutcome::Modal(result)), sources)
+        }
+        ParseOutcome::ParseError(_) | ParseOutcome::Internal(_) => (None, sources),
     };
 
-    let mut document = Document::new(text, version, outcome, checked);
+    // Registers this analysis's virtual (Appendix-B) content for `merc/virtualDocument` to serve
+    // later..
+    virtual_document::register(&virtual_documents, &sources);
+
+    let mut document = Document::new(text, version, outcome, checked, sources);
     document.semantic_tokens = document.compute_semantic_tokens();
     // Computed now, off `document` as just built, before it's handed to the map below.
     let diags = document.diagnostics();

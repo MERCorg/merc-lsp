@@ -5,6 +5,8 @@ use dashmap::DashMap;
 use lsp_types::Diagnostic;
 use lsp_types::SemanticToken;
 use lsp_types::Url;
+use merc_syntax::SourceId;
+use merc_syntax::SourceMap;
 use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
@@ -52,6 +54,9 @@ pub struct Document {
     pub semantic_tokens: Vec<SemanticToken>,
     pub pending_text: String,
     pub pending_version: i32,
+    /// Every file `parsed`'s spans are global offsets into.
+    pub sources: SourceMap,
+    pub line_indexes: Vec<LineIndex>,
 }
 
 /// The result of type checking a document, tagged by which kind of specification it checked —
@@ -64,11 +69,12 @@ pub enum CheckedOutcome {
 }
 
 impl Document {
-    /// Builds a new document snapshot from `text` at `version`, together with the outcomes of
-    /// having parsed and (if parsing succeeded, and a type checker exists for the kind) type
-    /// checked that exact `text`.
-    pub fn new(text: String, version: i32, parsed: ParseOutcome, checked: Option<CheckedOutcome>) -> Self {
+    /// Builds a new document snapshot from `text` at `version`, together with
+    /// the outcomes of having parsed and (if parsing succeeded) type checked
+    /// that exact `text`.
+    pub fn new(text: String, version: i32, parsed: ParseOutcome, checked: Option<CheckedOutcome>, sources: SourceMap) -> Self {
         let line_index = LineIndex::new(&text);
+        let line_indexes = (0..sources.file_count()).map(|id| LineIndex::new(sources.text(SourceId::new(id)))).collect();
         Document {
             // A freshly analyzed document has nothing pending beyond what it was just analyzed
             // from — `backend::analyze` may still overwrite this immediately after construction if
@@ -84,6 +90,8 @@ impl Document {
             // Left empty here; callers fill this in via `compute_semantic_tokens` once the rest of
             // the snapshot above is in place (it reads `text`/`line_index`/`parsed`).
             semantic_tokens: Vec::new(),
+            sources,
+            line_indexes,
         }
     }
 
@@ -259,8 +267,8 @@ mod tests {
     use crate::parse::ParseOutcome;
     use crate::parse::SpecKind;
     use crate::parse::Specification;
-    use crate::parse::parse;
-    use crate::typecheck::typecheck_modal;
+    use crate::parse::parse_ignoring_sources as parse;
+    use crate::typecheck::typecheck_modal_ignoring_sources as typecheck_modal;
     use crate::typecheck::typecheck_pbes;
     use crate::typecheck::typecheck_pres;
 
@@ -270,7 +278,7 @@ mod tests {
             panic!("fixture failed to parse as a PBES");
         };
         let checked = Some(CheckedOutcome::Pbes(typecheck_pbes((**spec).clone()).await));
-        Document::new(text.to_string(), 0, outcome, checked)
+        Document::new(text.to_string(), 0, outcome, checked, SourceMap::new())
     }
 
     async fn pres_document_for(text: &str) -> Document {
@@ -279,7 +287,7 @@ mod tests {
             panic!("fixture failed to parse as a PRES");
         };
         let checked = Some(CheckedOutcome::Pres(typecheck_pres((**spec).clone()).await));
-        Document::new(text.to_string(), 0, outcome, checked)
+        Document::new(text.to_string(), 0, outcome, checked, SourceMap::new())
     }
 
     async fn modal_document_for(text: &str) -> Document {
@@ -288,7 +296,7 @@ mod tests {
             panic!("fixture failed to parse as a modal formula");
         };
         let checked = Some(CheckedOutcome::Modal(typecheck_modal((**spec).clone()).await));
-        Document::new(text.to_string(), 0, outcome, checked)
+        Document::new(text.to_string(), 0, outcome, checked, SourceMap::new())
     }
 
     #[tokio::test]

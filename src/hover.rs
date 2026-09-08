@@ -216,7 +216,11 @@ fn hover_markdown(
         Some(ResolvedName::Variable { name, declaration }) => Some((name.as_str(), "variable", declaration.clone())),
         Some(ResolvedName::Constructor { name, declaration, .. }) => Some((name.as_str(), "constructor", declaration.clone())),
         Some(ResolvedName::Mapping { name, declaration, .. }) => Some((name.as_str(), "mapping", declaration.clone())),
-        Some(ResolvedName::SystemDefined { name }) => Some((name.as_str(), "system-defined", None)),
+        // `declaration`, when present, is a span into Appendix B content — a different "document"
+        // in `merc_typecheck`'s `SourceMap` terms, which `goto_def_link` below has no way to
+        // render a same-document link against; `goto_definition.rs`/`convert.rs` handle the
+        // cross-file/virtual-document case properly (see `docs/lsp-imports.md`), hover doesn't yet.
+        Some(ResolvedName::SystemDefined { name, .. }) => Some((name.as_str(), "system-defined", None)),
         Some(ResolvedName::Builtin { name }) => Some((name.as_str(), "built-in operator", None)),
         // `#[non_exhaustive]`: fall back to an unlabelled sort for any future variant.
         Some(_) | None => None,
@@ -253,9 +257,9 @@ mod tests {
     use crate::parse::ParseOutcome;
     use crate::parse::SpecKind;
     use crate::parse::Specification;
-    use crate::parse::parse;
+    use crate::parse::parse_ignoring_sources as parse;
     use crate::typecheck::TypecheckOutcome;
-    use crate::typecheck::typecheck;
+    use crate::typecheck::typecheck_ignoring_sources as typecheck;
 
     async fn typing_info_for(text: &str) -> (TypingInfo, Vec<ActDecl>, Vec<ProcDecl>, Specification) {
         let spec = match parse(SpecKind::Process, text.to_string()).await {
@@ -511,9 +515,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_hover_for_a_built_in_sort_reference() {
-        // `Bool` parses straight to `SortExpressionKind::Simple`, never a named `Reference` — see
-        // `crate::sort_ref`'s module doc comment — so there is no declaration for this to find.
+    async fn hovers_a_built_in_sort_reference_as_system_defined_with_no_link() {
+        // `Bool` parses straight to `SortExpressionKind::Simple`, never a named `Reference` — so it
+        // resolves to `ResolvedName::SystemDefined` (since Milestone 3 gives it a real declaration
+        // span too, the same way a system-defined constructor/mapping already did), not `Sort`.
+        // Still no "Go to definition" link, though: that span is in Appendix B content, a
+        // different "document" in `SourceMap` terms `goto_def_link` isn't equipped to render
+        // against — see its call site's own comment.
         let text = "map f: Bool;\ninit delta;";
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
@@ -521,7 +529,13 @@ mod tests {
 
         let offset = text.find("Bool").unwrap();
         let position = line_index.position(text, offset);
-        assert!(hover(&ctx, position).is_none());
+        let hover = hover(&ctx, position).expect("Bool should now resolve to a system-defined hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markup hover contents");
+        };
+        assert!(markup.value.contains("Bool"));
+        assert!(markup.value.contains("system-defined"));
+        assert!(!markup.value.contains("Go to definition"));
     }
 
     #[tokio::test]
@@ -557,7 +571,7 @@ mod tests {
             ParseOutcome::Ok(spec @ Specification::Modal(_)) => spec,
             _ => panic!("fixture failed to parse"),
         };
-        let typing_info = match crate::typecheck::typecheck_modal((*raw.as_modal().unwrap()).clone()).await {
+        let typing_info = match crate::typecheck::typecheck_modal_ignoring_sources((*raw.as_modal().unwrap()).clone()).await {
             crate::typecheck::ModalTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
             crate::typecheck::ModalTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
             crate::typecheck::ModalTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),

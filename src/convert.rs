@@ -2,13 +2,17 @@
 //! and the UTF-16-code-unit based [`Position`]/[`Range`] types used by the Language Server
 //! Protocol.
 
+use lsp_types::Location;
 use lsp_types::Position;
 use lsp_types::Range;
+use lsp_types::Url;
+use merc_syntax::SourceId;
+use merc_syntax::SourceMap;
 use merc_syntax::Span;
 
-/// Whether `byte` can occur inside an mCRL2 identifier. Used to find word
-/// boundaries when narrowing a declaration's span down to just its identifier,
-/// and to widen a zero-width parse-error location to a whole token.
+/// Used to find word boundaries when narrowing a declaration's span down to
+/// just its identifier, and to widen a zero-width parse-error location to a
+/// whole token.
 pub(crate) fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'\''
 }
@@ -17,8 +21,10 @@ pub(crate) fn is_identifier_byte(byte: u8) -> bool {
 /// based [`Position`]s in O(1) for the common (pure-ASCII) case.
 #[derive(Debug, Clone, Copy)]
 struct Line {
-    /// Byte offset of the first byte of this line (relative to the start of the document).
+    /// Byte offset of the first byte of this line relative to the start of the
+    /// document.
     start: usize,
+
     /// Whether every byte on this line is ASCII, letting the byte offset double as the UTF-16
     /// offset within the line without walking the text.
     is_ascii: bool,
@@ -57,11 +63,12 @@ impl LineIndex {
         LineIndex { lines, len: text.len() }
     }
 
-    /// Converts a byte offset into this document to a 0-based, UTF-16 [`Position`].
+    /// Converts a byte offset into this document to a 0-based, UTF-16
+    /// [`Position`].
     ///
-    /// `text` must be the same text this index was built from. Out-of-range offsets are clamped
-    /// to the end of the document rather than panicking, since `merc_syntax` spans can
-    /// legitimately point one-past-the-end (e.g. at `EOI`) or be a synthetic [`Span::default`].
+    /// `text` must be the same text this index was built from. Out-of-range
+    /// offsets are clamped to the end of the document rather than panicking,
+    /// since `merc_syntax` spans can be a synthetic [`Span::default`].
     pub fn position(&self, text: &str, offset: usize) -> Position {
         let offset = offset.min(self.len);
 
@@ -133,6 +140,75 @@ impl LineIndex {
         }
         Some(line_end)
     }
+}
+
+/// The URI scheme a [`location`] builds for a span into *virtual* content.
+pub(crate) const VIRTUAL_DOCUMENT_SCHEME: &str = "merc-builtin";
+
+/// Encodes `name` — a virtual [`merc_syntax::SourceMap`] entry's own registered name, e.g.
+/// `<builtin>/nat.mcrl2` or `<generated>/struct/c1.mcrl2` — as a [`VIRTUAL_DOCUMENT_SCHEME`] URI.
+pub(crate) fn virtual_uri(name: &str) -> Url {
+    let mut encoded = String::with_capacity(name.len());
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    Url::parse(&format!("{VIRTUAL_DOCUMENT_SCHEME}:///{encoded}")).expect("a percent-encoded name is always a valid URI path")
+}
+
+/// The inverse of [`virtual_uri`]: recovers the original registered name from a
+/// [`VIRTUAL_DOCUMENT_SCHEME`] URI.
+pub(crate) fn decode_virtual_uri(uri: &Url) -> Option<String> {
+    if uri.scheme() != VIRTUAL_DOCUMENT_SCHEME {
+        return None;
+    }
+    let path = uri.path().trim_start_matches('/');
+    let mut bytes = Vec::with_capacity(path.len());
+    let mut rest = path.as_bytes();
+    while let [byte, tail @ ..] = rest {
+        rest = tail;
+        if *byte == b'%' {
+            let [hi, lo, tail @ ..] = rest else { return None };
+            let hex_bytes = [*hi, *lo];
+            let hex = std::str::from_utf8(&hex_bytes).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            rest = tail;
+        } else {
+            bytes.push(*byte);
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// Resolves a global byte offset to the [`SourceId`] it falls in.
+pub(crate) fn split(sources: &SourceMap, offset: usize) -> (SourceId, usize) {
+    let id = sources.lookup(offset);
+    (id, offset - sources.base_offset(id))
+}
+
+/// Builds an LSP [`Location`] for `span`, resolving whichever file it falls
+/// into via `sources`/ `line_indexes`.
+///
+/// `None` only if `span`'s offset resolves to a file index past the end of
+/// `line_indexes`.
+pub(crate) fn location(sources: &SourceMap, line_indexes: &[LineIndex], span: &Span) -> Option<Location> {
+    let (id, local_start) = split(sources, span.start);
+    // A span is never produced straddling two files, so rebasing `span.end` by
+    // the *same* file's base offset is always correct.
+    let local_end = span.end - sources.base_offset(id);
+    let local_span = Span::new(local_start, local_end);
+
+    let line_index = line_indexes.get(id.value())?;
+    let range = line_index.range(sources.text(id), &local_span);
+    let uri = if sources.is_virtual(id) {
+        virtual_uri(sources.path(id))
+    } else {
+        Url::from_file_path(sources.path(id)).ok()?
+    };
+    Some(Location { uri, range })
 }
 
 #[cfg(test)]

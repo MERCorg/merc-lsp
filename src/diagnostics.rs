@@ -274,7 +274,7 @@ fn widen_to_token_end(text: &str, offset: usize) -> usize {
 mod tests {
     use super::*;
     use crate::parse::SpecKind;
-    use crate::parse::parse;
+    use crate::parse::parse_ignoring_sources as parse;
 
     #[tokio::test]
     async fn ok_parse_yields_no_diagnostics() {
@@ -311,7 +311,7 @@ mod tests {
     async fn well_typed_specification_yields_no_type_diagnostics() {
         let text = "sort D;\ncons c: D;\ninit delta;";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck(spec.clone()).await;
+        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         assert!(type_diagnostics(text, &line_index, &outcome, &spec).is_empty());
     }
@@ -320,7 +320,7 @@ mod tests {
     async fn ill_typed_specification_produces_a_located_type_diagnostic_with_a_distinct_source() {
         let text = "map f: Bool;\neqn f = undeclared;\ninit delta;";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck(spec.clone()).await;
+        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = type_diagnostics(text, &line_index, &outcome, &spec);
 
@@ -336,7 +336,7 @@ mod tests {
         // `a` is not declared as an action anywhere.
         let text = "init a;";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck(spec.clone()).await;
+        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = type_diagnostics(text, &line_index, &outcome, &spec);
 
@@ -350,7 +350,7 @@ mod tests {
     async fn undeclared_sort_gets_a_did_you_mean_suggestion() {
         let text = "sort Bool2;\nmap f: Bol;\ninit delta;";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck(spec.clone()).await;
+        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = type_diagnostics(text, &line_index, &outcome, &spec);
 
@@ -363,7 +363,7 @@ mod tests {
     async fn undeclared_action_gets_a_did_you_mean_suggestion() {
         let text = "act ready: Bool;\ninit redy(true);";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck(spec.clone()).await;
+        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = type_diagnostics(text, &line_index, &outcome, &spec);
 
@@ -375,7 +375,7 @@ mod tests {
     async fn no_suggestion_when_nothing_is_close_enough() {
         let text = "init xyzzy;";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck(spec.clone()).await;
+        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = type_diagnostics(text, &line_index, &outcome, &spec);
 
@@ -420,7 +420,7 @@ mod tests {
             Ok(spec) => spec,
             Err(error) => panic!("fixture failed to parse: {error}"),
         };
-        let outcome = crate::typecheck::typecheck_modal(spec.clone()).await;
+        let outcome = crate::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = modal_type_diagnostics(text, &line_index, &outcome, &spec);
 
@@ -435,7 +435,7 @@ mod tests {
             Ok(spec) => spec,
             Err(error) => panic!("fixture failed to parse: {error}"),
         };
-        let outcome = crate::typecheck::typecheck_modal(spec.clone()).await;
+        let outcome = crate::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = modal_type_diagnostics(text, &line_index, &outcome, &spec);
 

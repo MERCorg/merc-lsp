@@ -270,7 +270,7 @@ mod tests {
     use crate::parse::ParseOutcome;
     use crate::parse::SpecKind;
     use crate::parse::Specification;
-    use crate::parse::parse;
+    use crate::parse::parse_ignoring_sources as parse;
 
     async fn completions_for(text: &str) -> Vec<CompletionItem> {
         match parse(SpecKind::Process, text.to_string()).await {

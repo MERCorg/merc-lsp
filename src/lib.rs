@@ -26,6 +26,7 @@ mod parse;
 mod semantic_tokens;
 mod symbols;
 mod typecheck;
+mod virtual_document;
 
 use async_lsp::client_monitor::ClientProcessMonitorLayer;
 use async_lsp::concurrency::ConcurrencyLayer;

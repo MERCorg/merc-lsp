@@ -723,10 +723,10 @@ mod tests {
     use crate::parse::ParseOutcome;
     use crate::parse::SpecKind;
     use crate::parse::Specification;
-    use crate::parse::parse;
+    use crate::parse::parse_ignoring_sources as parse;
     use crate::typecheck::PbesTypecheckOutcome;
     use crate::typecheck::TypecheckOutcome;
-    use crate::typecheck::typecheck;
+    use crate::typecheck::typecheck_ignoring_sources as typecheck;
     use crate::typecheck::typecheck_pbes;
 
     async fn hints_for(text: &str) -> (Vec<InlayHint>, LineIndex) {
@@ -810,7 +810,7 @@ mod tests {
             _ => panic!("fixture failed to parse"),
         };
         let sort_declarations = spec.data_specification.sort_declarations.clone();
-        let mut checked = match crate::typecheck::typecheck_modal(spec.clone()).await {
+        let mut checked = match crate::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await {
             crate::typecheck::ModalTypecheckOutcome::Ok(checked) => checked,
             crate::typecheck::ModalTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
             crate::typecheck::ModalTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
