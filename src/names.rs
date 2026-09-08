@@ -163,7 +163,7 @@ mod tests {
     use crate::parse::ParseOutcome;
     use crate::parse::SpecKind;
     use crate::parse::Specification;
-    use crate::parse::parse;
+    use crate::parse::parse_ignoring_sources as parse;
 
     async fn process_spec_for(text: &str) -> UntypedProcessSpecification {
         match parse(SpecKind::Process, text.to_string()).await {

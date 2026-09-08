@@ -861,7 +861,9 @@ dependencies = [
  "merc_typecheck",
  "merc_utilities",
  "pest",
+ "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tower",
@@ -870,7 +872,6 @@ dependencies = [
 [[package]]
 name = "merc_aterm"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "allocator-api2 0.4.0",
  "delegate",
@@ -896,7 +897,6 @@ dependencies = [
 [[package]]
 name = "merc_collections"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bitvec",
  "delegate",
@@ -911,7 +911,6 @@ dependencies = [
 [[package]]
 name = "merc_data"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "ahash",
  "delegate",
@@ -926,7 +925,6 @@ dependencies = [
 [[package]]
 name = "merc_io"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bitstream-io",
  "log",
@@ -942,7 +940,6 @@ dependencies = [
 [[package]]
 name = "merc_lts"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bindgen",
  "bumpalo",
@@ -966,7 +963,6 @@ dependencies = [
 [[package]]
 name = "merc_macros"
 version = "2.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -976,7 +972,6 @@ dependencies = [
 [[package]]
 name = "merc_number"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bitstream-io",
  "merc_utilities",
@@ -1008,7 +1003,6 @@ dependencies = [
 [[package]]
 name = "merc_reduction"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -1026,7 +1020,6 @@ dependencies = [
 [[package]]
 name = "merc_refinement"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -1044,7 +1037,6 @@ dependencies = [
 [[package]]
 name = "merc_sharedmutex"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "crossbeam-utils",
  "delegate",
@@ -1055,7 +1047,6 @@ dependencies = [
 [[package]]
 name = "merc_syntax"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "itertools 0.15.0",
  "log",
@@ -1072,7 +1063,6 @@ dependencies = [
 [[package]]
 name = "merc_typecheck"
 version = "2.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "ena",
  "indoc",
@@ -1088,7 +1078,6 @@ dependencies = [
 [[package]]
 name = "merc_unsafety"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "allocator-api2 0.4.0",
  "crossbeam-utils",
@@ -1109,7 +1098,6 @@ dependencies = [
 [[package]]
 name = "merc_utilities"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=3a4df2301e191bf9f738abd47346af8cb1a4638c#3a4df2301e191bf9f738abd47346af8cb1a4638c"
 dependencies = [
  "crossbeam-utils",
  "env_logger",

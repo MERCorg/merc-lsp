@@ -15,12 +15,14 @@
 //! counterparts, each checking their own whole specification (`glob`/equations/`init` for PBES and
 //! PRES; `act` declarations and the formula itself for a modal specification) the same way.
 
+use merc_syntax::SourceMap;
 use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
 use merc_typecheck::ModalError;
 use merc_typecheck::ModalSpecification;
+use merc_typecheck::NumberEncoding;
 use merc_typecheck::PbesError;
 use merc_typecheck::PbesSpecification;
 use merc_typecheck::PresError;
@@ -66,18 +68,27 @@ pub enum ModalTypecheckOutcome {
 
 /// Type checks `spec`, off the async executor.
 ///
-/// Takes `spec` by value (rather than borrowing) because the work is moved onto a blocking thread
-/// via [`tokio::task::spawn_blocking`], which requires a `'static` closure — same reason
-/// [`crate::parse::parse`] takes `text: String` by value. The caller clones it out of the
-/// document's parsed AST (kept separately so `symbols`/`semantic_tokens` keep working even when
-/// this fails — see `PLAN.md`).
-pub async fn typecheck(spec: UntypedProcessSpecification) -> TypecheckOutcome {
-    match tokio::task::spawn_blocking(move || ProcessSpecification::from_untyped(spec)).await {
-        Ok(Ok(checked)) => TypecheckOutcome::Ok(Box::new(checked)),
-        Ok(Err(error)) => TypecheckOutcome::Error(error),
+/// Takes `spec` by value because the work is moved onto a blocking thread via
+/// [`tokio::task::spawn_blocking`], which requires a `'static` closure The
+/// caller clones it out of the document's parsed AST (kept separately so
+/// `symbols`/`semantic_tokens` keep working even when this fails — see
+/// `PLAN.md`).
+pub async fn typecheck(spec: UntypedProcessSpecification, sources: SourceMap) -> (TypecheckOutcome, SourceMap) {
+    match tokio::task::spawn_blocking(move || {
+        let mut sources = sources;
+        let outcome = ProcessSpecification::from_untyped_with(spec, NumberEncoding::default(), &mut sources);
+        (outcome, sources)
+    })
+    .await
+    {
+        Ok((Ok(checked), sources)) => (TypecheckOutcome::Ok(Box::new(checked)), sources),
+        Ok((Err(error), sources)) => (TypecheckOutcome::Error(error), sources),
         Err(join_error) => {
             log::error!("typecheck task failed to join: {join_error}");
-            TypecheckOutcome::Internal(format!("internal error: typecheck task did not complete ({join_error})"))
+            (
+                TypecheckOutcome::Internal(format!("internal error: typecheck task did not complete ({join_error})")),
+                SourceMap::new(),
+            )
         }
     }
 }
@@ -111,17 +122,39 @@ pub async fn typecheck_pres(spec: UntypedPres) -> PresTypecheckOutcome {
     }
 }
 
-/// As [`typecheck_pbes`], for a modal (mu-calculus) formula — same reasoning, just against
-/// [`ModalSpecification::from_untyped`].
-pub async fn typecheck_modal(spec: UntypedStateFrmSpec) -> ModalTypecheckOutcome {
-    match tokio::task::spawn_blocking(move || ModalSpecification::from_untyped(spec)).await {
-        Ok(Ok(checked)) => ModalTypecheckOutcome::Ok(Box::new(checked)),
-        Ok(Err(error)) => ModalTypecheckOutcome::Error(error),
+/// As [`typecheck`], for a modal (mu-calculus) formula — same reasoning throughout, including the
+/// `sources`-threading (against [`ModalSpecification::from_untyped_with`] here).
+pub async fn typecheck_modal(spec: UntypedStateFrmSpec, sources: SourceMap) -> (ModalTypecheckOutcome, SourceMap) {
+    match tokio::task::spawn_blocking(move || {
+        let mut sources = sources;
+        let outcome = ModalSpecification::from_untyped_with(spec, NumberEncoding::default(), &mut sources);
+        (outcome, sources)
+    })
+    .await
+    {
+        Ok((Ok(checked), sources)) => (ModalTypecheckOutcome::Ok(Box::new(checked)), sources),
+        Ok((Err(error), sources)) => (ModalTypecheckOutcome::Error(error), sources),
         Err(join_error) => {
             log::error!("modal typecheck task failed to join: {join_error}");
-            ModalTypecheckOutcome::Internal(format!("internal error: typecheck task did not complete ({join_error})"))
+            (
+                ModalTypecheckOutcome::Internal(format!("internal error: typecheck task did not complete ({join_error})")),
+                SourceMap::new(),
+            )
         }
     }
+}
+
+/// Test convenience: [`typecheck`] against a fresh `SourceMap`, discarding the one that comes
+/// back — mirrors [`crate::parse::parse_ignoring_sources`]'s own reasoning.
+#[cfg(test)]
+pub(crate) async fn typecheck_ignoring_sources(spec: UntypedProcessSpecification) -> TypecheckOutcome {
+    typecheck(spec, SourceMap::new()).await.0
+}
+
+/// As [`typecheck_ignoring_sources`], for [`typecheck_modal`].
+#[cfg(test)]
+pub(crate) async fn typecheck_modal_ignoring_sources(spec: UntypedStateFrmSpec) -> ModalTypecheckOutcome {
+    typecheck_modal(spec, SourceMap::new()).await.0
 }
 
 #[cfg(test)]
@@ -130,7 +163,9 @@ mod tests {
     use crate::parse::ParseOutcome;
     use crate::parse::SpecKind;
     use crate::parse::Specification;
-    use crate::parse::parse;
+    use crate::parse::parse_ignoring_sources as parse;
+    use crate::typecheck::typecheck_ignoring_sources as typecheck;
+    use crate::typecheck::typecheck_modal_ignoring_sources as typecheck_modal;
 
     async fn process_specification_for(text: &str) -> UntypedProcessSpecification {
         match parse(SpecKind::Process, text.to_string()).await {

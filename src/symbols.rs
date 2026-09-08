@@ -341,7 +341,7 @@ mod tests {
     use crate::parse::ParseOutcome;
     use crate::parse::SpecKind;
     use crate::parse::Specification;
-    use crate::parse::parse;
+    use crate::parse::parse_ignoring_sources as parse;
 
     async fn symbols_for(text: &str) -> Vec<DocumentSymbol> {
         let outcome = parse(SpecKind::Process, text.to_string()).await;
