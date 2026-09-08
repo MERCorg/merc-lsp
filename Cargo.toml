@@ -10,9 +10,9 @@ name = "merc-lsp"
 path = "src/main.rs"
 
 [dependencies]
-merc_syntax = { git = "https://github.com/mlaveaux/merc", rev = "1fc16721d23c527a46c3cd18d0ae76e6e59c51f1" }
-merc_typecheck = { git = "https://github.com/mlaveaux/merc", rev = "1fc16721d23c527a46c3cd18d0ae76e6e59c51f1" }
-merc_utilities = { git = "https://github.com/mlaveaux/merc", rev = "1fc16721d23c527a46c3cd18d0ae76e6e59c51f1" }
+merc_syntax = { git = "https://github.com/mlaveaux/merc", rev = "e5556fe1d1b1f25047e9be12b4d6e9d1a6a779a8" }
+merc_typecheck = { git = "https://github.com/mlaveaux/merc", rev = "e5556fe1d1b1f25047e9be12b4d6e9d1a6a779a8" }
+merc_utilities = { git = "https://github.com/mlaveaux/merc", rev = "e5556fe1d1b1f25047e9be12b4d6e9d1a6a779a8" }
 pest = "2.9"
 async-lsp = { version = "0.2", features = ["tokio"] }
 lsp-types = "0.95"

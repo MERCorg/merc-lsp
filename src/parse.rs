@@ -172,17 +172,19 @@ pub async fn parse(kind: SpecKind, text: String, path: Option<PathBuf>) -> (Pars
             .await
         }
         // No real path
-        (kind, _) => run_single_file(kind, text).await,
+        (kind, path) => run_single_file(kind, text, path).await,
     }
 }
 
 /// The single-file fallback [`parse`] uses whenever `%import` resolution doesn't apply.
-async fn run_single_file(kind: SpecKind, text: String) -> (ParseOutcome, SourceMap) {
+async fn run_single_file(kind: SpecKind, text: String, path: Option<PathBuf>) -> (ParseOutcome, SourceMap) {
     run(move || {
-        // The name is cosmetic only: nothing renders against it for a plain single-file parse
-        // (there's nothing else in `sources` to distinguish it from), it just has to be something.
+        // Registered under the document's own real path when there is one.
         let mut sources = SourceMap::new();
-        sources.add_text("<document>", text.clone());
+        match &path {
+            Some(path) => sources.add_text(path.to_string_lossy(), text.clone()),
+            None => sources.add_text("<document>", text.clone()),
+        };
         let result = match kind {
             SpecKind::Process => UntypedProcessSpecification::parse(&text).map(|mut spec| {
                 // Reconstructs process-algebra structure the grammar mis-parsed as a data
