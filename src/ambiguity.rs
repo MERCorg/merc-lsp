@@ -1,44 +1,21 @@
-//! Detects the deep-priority-conflict divergence between merc's Pratt parser and mCRL2's real
-//! dparser-based parser, documented at `merc-website`'s
-//! `developer/parsing/precedence.md`: `!exists d: D . X && Y` parses as
-//! `!(exists d: D. (X && Y))` in merc, but as `(!exists d: D. X) && Y` in the real mCRL2 parser —
-//! a structural disagreement between precedence climbing and dparser's flat priority/associativity
-//! filtering on a "deep" priority conflict (see that page for the literature), not something
-//! either parser can be patched to fix. The only sure fix is source-level: explicit parentheses
-//! are read the same way by both grammars, since a parenthesized group is never a candidate root
-//! in dparser's priority competition and is just an ordinary atom for the Pratt parser.
+//! Detects an ambiguous prefix-operator shape in expression trees: a prefix
+//! operator whose direct operand is itself a looser-precedence prefix
+//! operator, where that operand's own subtree eventually reaches an infix
+//! operator. In this shape, a different reading of the same source text could
+//! plausibly attach the infix operator to the outer prefix operator instead
+//! of the inner one, so the expression is ambiguous on the page even though
+//! it always parses one particular way.
 //!
-//! **The general shape, not just this one example.** The doc verifies `!`/`exists`/`&&` against a
-//! real mCRL2 build, but the mechanism it describes is general, not specific to those three
-//! operators: merc's Pratt parser gives a prefix operator's operand a right-binding-power of
-//! `own_precedence - 1` (see [`swallows_infix`]'s doc comment), so *any* tighter-binding prefix
-//! operator placed directly in front of a strictly looser-binding one — a quantifier, `lambda`, a
-//! `mu`/`nu` fixed point, a `sum`/`inf`/`sup` bound, a modality, a scalar multiply, whatever a given
-//! grammar's own precedence table (`precedence.rs`'s `*_PRATT_PARSER` statics) places where —
-//! reproduces the identical shape once that looser operator's own body reaches an infix operator.
-//! And per the literature the doc cites (Afroozeh et al.: "a low-priority prefix operator can be
-//! shadowed by a higher-priority one *several levels down*"), this isn't limited to one level of
-//! nesting either — a chain of several looser prefixes in a row (`exists d: D . mu X . A && B`) is
-//! the identical shape, just discovered by unwinding through more than one of them; see
-//! [`swallows_infix`].
+//! A chain of several looser prefixes in a row (`exists d: D . mu X . A && B`)
+//! is the identical shape, just discovered by unwinding through more than one
+//! of them; see [`swallows_infix`].
 //!
-//! [`prefix_shape`] and [`is_infix`] encode each grammar's own precedence table as plain data (one
-//! pair of functions per node kind: `DataExprKind`, `StateFrmKind`, `PbesExprKind`, `PresExprKind`,
-//! `ActFrmKind`), and [`check_prefix_shape`] is the one general check run against every node of
-//! every one of those types — so a new operator added to any of those tables is covered by
-//! whichever bucket its own precedence level falls into, with no new case to hand-write here.
+//! [`PrefixShape`] and [`IsInfix`] describe each expression kind's own
+//! precedence as plain data, and [`check_prefix_shape`] is the one general
+//! check run against every node of every kind that defines them.
 //!
-//! [`find_in_process_specification`] and its PBES/PRES/modal-formula counterparts walk every
-//! embedded value of each of those five types — `merc_syntax::Traverse` recurses within a single
-//! type (so [`check_prefix_shape`] runs on every node "for free" via `.visit()`) but doesn't cross
-//! between types (a `ProcessExpr`/`StateFrm`/`PbesExpr`/`PresExpr` tree doesn't descend into the
-//! `DataExpr`s nested inside it — actions/conditions/`dist` weights/`val(...)` expressions and the
-//! like), so each walker also reaches into its own type's `DataExpr`-or-other-type-bearing fields by
-//! hand, the same way `inlay_hints.rs` does (see its own module doc comment).
-//!
-//! [`crate::diagnostics`] turns each hit into a warning, and [`crate::code_action`] turns it into a
-//! quick fix that parenthesizes the inner operator's own span — textually identical to merc's
-//! already-computed reading, so mCRL2 agrees too.
+//! `crate::diagnostics` turns each hit into a warning, and `crate::code_action`
+//! turns it into a quick fix that parenthesizes the inner operator's own span.
 
 use std::ops::ControlFlow;
 
@@ -69,12 +46,7 @@ use merc_syntax::UntypedStateFrmSpec;
 use crate::convert;
 
 /// One occurrence of the ambiguous shape: `outer_span` is the outer (tighter-binding) prefix
-/// operator's own span — for a chain of several (`!!exists ...`), the outermost one, since only the
-/// *innermost* one directly wrapping the looser operator changes the reading; a bare prefix chain
-/// over an already-atomic operand is unambiguous in both grammars, see the module doc comment.
-/// `inner_span` is the looser operator's own span (e.g. `"exists d: D . X && Y"`, with no
-/// surrounding parens — parens are transparent to the AST, see [`is_already_parenthesized`]).
-/// Wrapping exactly `inner_span` in `(`/`)` is the fix.
+/// operator's own span.
 #[derive(Debug, Clone)]
 pub struct AmbiguousPrefixConflict {
     pub outer_span: Span,
@@ -93,41 +65,34 @@ impl AmbiguousPrefixConflict {
 }
 
 /// Returns `node`'s own outer-prefix precedence level and the single child it wraps, if `node` was
-/// built by a *prefix* operator (`Op::prefix` in the corresponding `precedence.rs` table) — `None`
-/// for a primary, an infix application, or a genuine postfix one. `DataExpr`'s `Application`/`Update`
-/// are true postfix suffixes in this sense (checked against `mcrl2_syntax.g`: both are plain `$left`
-/// productions at the *tightest* priority in the whole table, 13/14, with no `$binary_op_*`
-/// annotation), so they can never be a competing root the way an infix connective can, and a postfix
-/// operator's "operand" is whatever already-parsed expression precedes it, not something freshly
-/// recursed into via `nud`, so it can't be the *looser* half of this shape either. `StateFrm`'s
-/// `DataValExprRightMult` and `PresExpr`'s `RightConstantMultiply` look postfix-shaped the same way
-/// (`StateFrm * DataValExpr`, value trailing) but are *not* excluded here: `mcrl2_syntax.g` marks
-/// both `$binary_op_left`, dparser's own annotation for a genuine infix competitor, so
-/// [`statefrm_is_infix`]/[`presexpr_is_infix`] count them as infix, not postfix.
+/// built by a *prefix* operator — `None` for a primary, an infix application, or a genuine postfix
+/// one. A postfix operator's "operand" is whatever already-parsed expression precedes it, not
+/// something freshly parsed as a fresh subexpression, so it can never be the *looser* half of this
+/// shape, and it can never compete for the root position the way an infix connective can. Some
+/// operators look postfix-shaped (a value trailing an expression) but are genuine infix competitors
+/// in disguise; those are handled by [`IsInfix`] instead — see [`statefrm_is_infix`] and
+/// [`presexpr_is_infix`].
 ///
-/// One implementation per node kind, each transcribing that kind's own `*_PRATT_PARSER` table in
-/// `precedence.rs` (lowest precedence first, matching that file's own "Precedence is defined lowest
-/// to highest" comment) — the numbers only need to be *consistent within one table*, so they're the
-/// table's line position, not `precedence.rs`'s own numeric comments (which use unrelated fresh
-/// numbering per file and, for `DataExpr`, mix an infix and its co-located prefixes on one line).
+/// One implementation per node kind. Precedence numbers only need to be *consistent within one
+/// kind's own implementation* — lower means looser (binds less tightly) — they are not compared
+/// across different node kinds.
 type PrefixShape<K> = fn(&K) -> Option<(u8, &Spanned<K>)>;
 
-/// Returns whether `node`'s own outermost connective is a genuine infix competitor for the "root"
-/// position against an enclosing prefix (see the module doc comment) — `mcrl2_syntax.g`'s
-/// `$binary_op_*`-annotated productions, one implementation per node kind. That's `Binary` alone for
-/// `DataExpr`/`PbesExpr`/`ActFrm`, but `StateFrm`/`PresExpr` each have one more:
-/// `DataValExprRightMult`/`RightConstantMultiply` (`StateFrm`/`PresExpr * DataValExpr`) look
-/// postfix-shaped but are `$binary_op_left`-annotated in the real grammar too — see
-/// [`prefix_shape`]'s doc comment.
+/// Returns whether `node`'s own outermost connective is a genuine infix operator — a competitor for
+/// the "root" position against an enclosing prefix operator (see the module doc comment). One
+/// implementation per node kind. That's `Binary` alone for `DataExpr`/`PbesExpr`/`ActFrm`, but
+/// `StateFrm`/`PresExpr` each have one more: `DataValExprRightMult`/`RightConstantMultiply` look
+/// postfix-shaped (a value trailing an expression) but behave as genuine infix competitors — see
+/// [`PrefixShape`]'s doc comment.
 type IsInfix<K> = fn(&K) -> bool;
 
 fn dataexpr_prefix_shape(kind: &DataExprKind) -> Option<(u8, &DataExpr)> {
     match kind {
-        // `Forall`/`Exists`/`Lambda` share the loosest prefix level in `DATAEXPR_PRATT_PARSER`.
+        // `Forall`/`Exists`/`Lambda` share the loosest prefix level.
         DataExprKind::Quantifier { body, .. } | DataExprKind::Lambda { body, .. } => {
             Some((0, body))
         }
-        // `Minus`/`Negation`/`Size` share the tightest prefix level (co-located with `Mult`/`At`).
+        // `Minus`/`Negation`/`Size` share the tightest prefix level.
         DataExprKind::Unary { expr, .. } => Some((1, expr)),
         _ => None,
     }
@@ -150,12 +115,10 @@ fn statefrm_prefix_shape(kind: &StateFrmKind) -> Option<(u8, &StateFrm)> {
 
 fn statefrm_is_infix(kind: &StateFrmKind) -> bool {
     // `DataValExprRightMult` (`StateFrm * DataValExpr`) isn't just a suffix on an already-parsed
-    // primary the way `DataExpr`'s `Update`/`Application` are (see `prefix_shape`'s doc comment) —
-    // mCRL2's own grammar (`mcrl2_syntax.g`) marks it `$binary_op_left 7`, the same annotation used
-    // for genuine infix connectives like `&&`/`=>`, so dparser's priority competition treats it as
-    // one too. Missing it here would silently under-detect: a strictly looser prefix (`mu`/`nu` at
-    // priority 1) whose body reaches a `* val(...)` still competes for the root position exactly the
-    // way it would against `&&`.
+    // primary the way `DataExpr`'s `Update`/`Application` are (see `PrefixShape`'s doc comment) — it
+    // is a genuine infix competitor for the root position, the same as `&&`/`=>`. Missing it here
+    // would silently under-detect: a strictly looser prefix (`mu`/`nu`) whose body reaches a
+    // `* val(...)` still competes for the root position exactly the way it would against `&&`.
     matches!(
         kind,
         StateFrmKind::Binary { .. } | StateFrmKind::DataValExprRightMult(..)
@@ -184,8 +147,8 @@ fn presexpr_prefix_shape(kind: &PresExprKind) -> Option<(u8, &PresExpr)> {
 }
 
 fn presexpr_is_infix(kind: &PresExprKind) -> bool {
-    // As `statefrm_is_infix`: `RightConstantMultiply` (`PresExpr * DataValExpr`) is `$binary_op_left
-    // 6` in `mcrl2_syntax.g`, a genuine infix competitor for dparser, not a fixed-tightest suffix.
+    // As `statefrm_is_infix`: `RightConstantMultiply` (`PresExpr * DataValExpr`) is a genuine infix
+    // competitor for the root position, not a fixed-tightest suffix.
     matches!(
         kind,
         PresExprKind::Binary { .. } | PresExprKind::RightConstantMultiply { .. }
@@ -227,19 +190,16 @@ fn swallows_infix<K>(
 /// isn't already parenthesized by hand — that's the shape the module doc comment describes, and
 /// `hits` gets a new [`AmbiguousPrefixConflict`] for it.
 ///
-/// Deliberately `<`, not `<=`: two prefixes sharing one precedence *level* in a table (as `DataExpr`
-/// does for `Minus`/`Negation`/`Size`, or for `Forall`/`Exists`/`Lambda`) never reproduce this shape,
-/// checked directly against mCRL2's own grammar (`mcrl2_syntax.g`'s priority numbers, not just
-/// `precedence.rs`'s Pratt table): the tight end of every table here (`Unary`-style operators) never
-/// reaches an infix operator to begin with, since its own priority number is tighter than every
-/// infix in its table, same-level or not. And the loose end (quantifiers/binders) is always the
-/// unique global minimum priority number in its table — strictly lower than every infix operator
-/// (and, in `PresExpr`/`StateFrm`, every `$binary_op_left`-annotated "right-constant-multiply" too,
-/// see [`statefrm_is_infix`]/[`presexpr_is_infix`]) — so per dparser's own "lowest priority number
-/// among competing roots wins" model (see the module doc comment), a same-level chain of binders
-/// always wins that competition outright and swallows the whole thing, exactly like a single one
-/// does; there's no lower-numbered rival for it to lose to. So this is a proven non-issue, not an
-/// unverified one, and no `<=` is needed.
+/// Deliberately `<`, not `<=`: two prefixes sharing one precedence *level* (as `DataExpr` does for
+/// `Minus`/`Negation`/`Size`, or for `Forall`/`Exists`/`Lambda`) never reproduce this shape. The
+/// tight end of a precedence level (`Unary`-style operators) never reaches an infix operator to
+/// begin with, since its own precedence is tighter than every infix operator in the same kind. And
+/// the loose end (quantifiers/binders) is always the unique loosest precedence in its kind — looser
+/// than every infix operator (and, in `PresExpr`/`StateFrm`, every right-constant-multiply too, see
+/// [`statefrm_is_infix`]/[`presexpr_is_infix`]) — so a same-level chain of binders always wins the
+/// root competition outright and swallows the whole thing, exactly like a single one does; there is
+/// no looser rival for it to lose to. So a same-level chain is a proven non-issue, not an unverified
+/// one, and no `<=` is needed.
 fn check_prefix_shape<K>(node: &Spanned<K>, prefix_shape: PrefixShape<K>, is_infix: IsInfix<K>, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     let Some((outer_level, child)) = prefix_shape(&node.node) else {
         return;
@@ -259,11 +219,10 @@ fn check_prefix_shape<K>(node: &Spanned<K>, prefix_shape: PrefixShape<K>, is_inf
 }
 
 /// True when `span` is already wrapped in a matching `(...)` in its own source text. Parentheses
-/// are transparent to the AST (`merc_syntax`'s `*Brackets`/`*Parens` rules unwrap and re-parse
-/// their inner expression, keeping only the inner span), so an operator the author already
-/// disambiguated by hand looks identical, node-for-node, to one that wasn't — this is the only
-/// place that distinction can still be recovered, by checking the raw source text immediately
-/// around `span` instead of the AST.
+/// are transparent to the parsed tree — an operator the author already disambiguated by hand looks
+/// identical, node-for-node, to one that wasn't — so this is the only place that distinction can
+/// still be recovered, by checking the raw source text immediately around `span` instead of the
+/// tree.
 fn is_already_parenthesized(text: &str, sources: &SourceMap, span: &Span) -> bool {
     let (text, span) = convert::local_text_and_span(text, sources, span);
     text[..span.start].trim_end().ends_with('(') && text[span.end..].trim_start().starts_with(')')
@@ -330,11 +289,10 @@ pub fn find_in_modal_specification(spec: &UntypedStateFrmSpec, text: &str, sourc
 }
 
 /// Walks every `ProcessExpr` in `expr`'s subtree, picking out each node's `DataExpr`-bearing
-/// fields — the ones `Traverse` itself won't reach (see the module doc comment) — and checking
-/// them. Mirrors `inlay_hints.rs`'s `walk_process_expr`. Process-algebra operators themselves
-/// (`.`/`+`/`||`/...) are a different, already-handled ambiguity class — see
-/// `merc_typecheck::disambiguate_process_specification` — so `ProcessExprKind` gets no
-/// `check_prefix_shape` call of its own here, only the `DataExpr`s nested inside it.
+/// fields — the ones a plain traversal won't reach on its own — and checking them.
+/// Process-algebra operators themselves (`.`/`+`/`||`/...) are out of scope for this module, so
+/// `ProcessExprKind` gets no `check_prefix_shape` call of its own here, only the `DataExpr`s nested
+/// inside it.
 fn walk_process_expr(expr: &ProcessExpr, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     expr.visit::<(), _>(|node| {
         match &node.node {
@@ -493,12 +451,12 @@ mod tests {
     fn hits(text: &str) -> Vec<AmbiguousPrefixConflict> {
         let spec =
             merc_syntax::UntypedProcessSpecification::parse(text).expect("fixture should parse");
-        find_in_process_specification(&spec, text)
+        find_in_process_specification(&spec, text, &SourceMap::new())
     }
 
     fn modal_hits(text: &str) -> Vec<AmbiguousPrefixConflict> {
         let spec = merc_syntax::UntypedStateFrmSpec::parse(text).expect("fixture should parse");
-        find_in_modal_specification(&spec, text)
+        find_in_modal_specification(&spec, text, &SourceMap::new())
     }
 
     #[test]
@@ -520,8 +478,8 @@ mod tests {
 
     #[test]
     fn flags_a_unary_minus_wrapping_a_lambda() {
-        // Same table, a different pairing: `Minus`/`Negation`/`Size` are the tight prefix level in
-        // `DATAEXPR_PRATT_PARSER`, `Lambda` the loose one — not just `!`/`exists`.
+        // Same kind, a different pairing: `Minus`/`Negation`/`Size` are the tight prefix level,
+        // `Lambda` the loose one — not just `!`/`exists`.
         let text =
             "sort D;\nmap f: (D -> Nat) -> Nat;\ninit (f(-lambda d: D . d + d) == 0) -> delta;";
         assert_eq!(hits(text).len(), 1);
@@ -532,8 +490,8 @@ mod tests {
         // `exists` doesn't directly touch `&&` — `lambda` does — but `exists`'s own body is still
         // `lambda e: D . (d == e && q)`, so the outer `!` still sees a swallowed infix through
         // `lambda` (see `swallows_infix`'s doc comment for exactly this chained-unwrap case).
-        // `exists`/`lambda` themselves aren't a *second* hit here: they share one precedence level
-        // in `DATAEXPR_PRATT_PARSER`, and `check_prefix_shape` only flags a *strictly* looser child
+        // `exists`/`lambda` themselves aren't a *second* hit here: they share one precedence level,
+        // and `check_prefix_shape` only flags a *strictly* looser child
         // (see its own doc comment) — same reasoning as
         // `does_not_flag_two_prefixes_sharing_one_precedence_level`, just on the loose end of the
         // table instead of the tight end.
@@ -592,10 +550,9 @@ mod tests {
     #[test]
     fn does_not_flag_a_bare_chain_of_same_level_quantifiers_with_no_enclosing_prefix() {
         // Proof, not assumption (see `check_prefix_shape`'s doc comment): `exists` is already the
-        // unique lowest-priority connective in `DataExpr`'s whole table (`mcrl2_syntax.g` gives it
-        // priority 1, every infix 2 or higher), so with nothing tighter enclosing it, `exists` always
-        // wins the root competition against `&&` on its own — merc and mCRL2 agree without any `!`
-        // to create the divergence.
+        // unique loosest-precedence connective among `DataExpr`'s own operators, so with nothing
+        // tighter enclosing it, `exists` always wins the root competition against `&&` on its own —
+        // the parse is unambiguous without any `!` to create the divergence.
         let text =
             "sort D;\nmap q: Bool;\ninit (exists d: D . lambda e: D . d == e && q) -> delta;";
         assert!(hits(text).is_empty());
@@ -603,12 +560,11 @@ mod tests {
 
     #[test]
     fn flags_a_state_formula_modality_over_a_fixed_point_reaching_a_right_constant_multiply() {
-        // `DataValExprRightMult` (`StateFrm * DataValExpr`) is `$binary_op_left 7` in
-        // `mcrl2_syntax.g` — a genuine infix competitor for dparser, not a fixed-tightest suffix like
-        // `DataExpr`'s `Application`/`Update` — so `statefrm_is_infix` must count it, the same way it
-        // already counts `&&`/`=>`/etc. Before that fix this fixture produced zero hits even though
-        // the shape is identical to `flags_a_state_formula_modality_over_a_fixed_point`, just with a
-        // `*` in place of `&&`.
+        // `DataValExprRightMult` (`StateFrm * DataValExpr`) is a genuine infix competitor for the
+        // root position, not a fixed-tightest suffix like `DataExpr`'s `Application`/`Update` — so
+        // `statefrm_is_infix` must count it, the same way it already counts `&&`/`=>`/etc. Without
+        // that, this fixture would produce zero hits even though the shape is identical to
+        // `flags_a_state_formula_modality_over_a_fixed_point`, just with a `*` in place of `&&`.
         let text = "act a: Bool;\nform [a(true)]mu X . X * val(1);";
         assert_eq!(modal_hits(text).len(), 1);
     }
@@ -616,13 +572,10 @@ mod tests {
     #[test]
     fn flags_a_pres_negation_over_a_bound_reaching_a_right_constant_multiply() {
         // As the `StateFrm` case above, but for `PresExpr`'s `RightConstantMultiply`
-        // (`PresExpr * DataValExpr`, `$binary_op_left 6` in `mcrl2_syntax.g`): `!` — merc's own
-        // grammar spells `PresExprKind::Negation`'s token `!`, not `mcrl2_syntax.g`'s documented `-`
-        // (`mcrl2_grammar.pest`'s `PresExprPrefix` reuses the `PbesExprNegation = { "!" }` rule) —
-        // is the tightest prefix (level 2), directly wrapping `sup` (loosest, level 0) whose own body
-        // reaches the `* val(...)`.
+        // (`PresExpr * DataValExpr`): `!` is the tightest prefix (level 2), directly wrapping `sup`
+        // (loosest, level 0) whose own body reaches the `* val(...)`.
         let text = "pres mu X = !sup n: Nat . X * val(n); init X;";
         let spec = merc_syntax::UntypedPres::parse(text).expect("fixture should parse");
-        assert_eq!(find_in_pres_specification(&spec, text).len(), 1);
+        assert_eq!(find_in_pres_specification(&spec, text, &SourceMap::new()).len(), 1);
     }
 }

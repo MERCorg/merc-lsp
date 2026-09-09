@@ -1,6 +1,9 @@
 //! Per-document state kept by the server: the latest text, its parse result, and the
 //! [`LineIndex`] built from it.
 
+use std::collections::HashMap;
+use std::time::SystemTime;
+
 use dashmap::DashMap;
 use lsp_types::Diagnostic;
 use lsp_types::SemanticToken;
@@ -57,6 +60,9 @@ pub struct Document {
     /// Every file `parsed`'s spans are global offsets into.
     pub sources: SourceMap,
     pub line_indexes: Vec<LineIndex>,
+    /// Snapshot, as of this analysis, of every non-virtual file in `sources`' on-disk
+    /// modification time.
+    import_mtimes: HashMap<String, SystemTime>,
 }
 
 /// The result of type checking a document, tagged by which kind of specification it checked —
@@ -75,6 +81,15 @@ impl Document {
     pub fn new(text: String, version: i32, parsed: ParseOutcome, checked: Option<CheckedOutcome>, sources: SourceMap) -> Self {
         let line_index = LineIndex::new(&text);
         let line_indexes = (0..sources.file_count()).map(|id| LineIndex::new(sources.text(SourceId::new(id)))).collect();
+        let import_mtimes = (0..sources.file_count())
+            .map(SourceId::new)
+            .filter(|&id| !sources.is_virtual(id))
+            .filter_map(|id| {
+                let path = sources.path(id);
+                let mtime = std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok()?;
+                Some((path.to_string(), mtime))
+            })
+            .collect();
         Document {
             // A freshly analyzed document has nothing pending beyond what it was just analyzed
             // from — `backend::analyze` may still overwrite this immediately after construction if
@@ -92,7 +107,18 @@ impl Document {
             semantic_tokens: Vec::new(),
             sources,
             line_indexes,
+            import_mtimes,
         }
+    }
+
+    /// Whether any file this document's own analysis pulled in (its `%import`s, or itself, since
+    /// both are tracked in [`Self::import_mtimes`] the same way) now has a different on-disk
+    /// modification time than it did when this snapshot was analyzed.
+    pub fn is_stale(&self) -> bool {
+        self.import_mtimes.iter().any(|(path, &snapshot)| {
+            let current = std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
+            current != Some(snapshot)
+        })
     }
 
     /// All diagnostics for this document: parse errors (if any), plus — once parsing has
@@ -105,10 +131,10 @@ impl Document {
         // checking also succeeded.
         if let ParseOutcome::Ok(spec) = &self.parsed {
             match spec {
-                Specification::Process(spec) => diags.extend(diagnostics::ambiguity_diagnostics_process(&self.text, &self.line_index, spec)),
-                Specification::Pbes(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pbes(&self.text, &self.line_index, spec)),
-                Specification::Pres(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pres(&self.text, &self.line_index, spec)),
-                Specification::Modal(spec) => diags.extend(diagnostics::ambiguity_diagnostics_modal(&self.text, &self.line_index, spec)),
+                Specification::Process(spec) => diags.extend(diagnostics::ambiguity_diagnostics_process(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec)),
+                Specification::Pbes(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pbes(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec)),
+                Specification::Pres(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pres(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec)),
+                Specification::Modal(spec) => diags.extend(diagnostics::ambiguity_diagnostics_modal(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec)),
             }
         }
         match &self.checked {
@@ -399,5 +425,88 @@ mod tests {
             "diagnostic should be located at 'undeclared' in main.mcrl2, not clamped elsewhere: {:?}",
             diags[0]
         );
+    }
+
+    #[tokio::test]
+    async fn ambiguity_warning_stays_correctly_located_once_a_document_imports_another_file() {
+        // As `diagnostics_stay_correctly_located_once_a_document_imports_another_file`, but for the
+        // `AmbiguousPrefixConflict` lint: `ambiguity::find_in_process_specification` walks the
+        // *merged* data specification, so a flagged expression can come from something the root
+        // document `%import`s rather than from the root document's own text — `diagnostics.rs`'s
+        // `ambiguity_diagnostic` must resolve such a hit's span against `common.mcrl2` (via
+        // `self.sources`/`self.line_indexes`), not against `main.mcrl2`'s own `text`/`line_index`.
+        let dir = temp_project(&[
+            ("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"),
+            (
+                "common.mcrl2",
+                "sort D;\nmap q, f: Bool;\neqn f = !exists e: D . e == e && q;\n",
+            ),
+        ]);
+        let main_path = dir.path().join("main.mcrl2");
+        let text = std::fs::read_to_string(&main_path).unwrap();
+        let common_text = std::fs::read_to_string(dir.path().join("common.mcrl2")).unwrap();
+        // The warning's range starts at the outer `!`'s own span (`AmbiguousPrefixConflict::whole_span`),
+        // not at `exists`.
+        let expected_offset = common_text.find("!exists").expect("fixture contains '!exists'");
+        let expected = LineIndex::new(&common_text).position(&common_text, expected_offset);
+
+        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
+            panic!("fixture failed to parse");
+        };
+        let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
+        let document = Document::new(text, 0, outcome, Some(CheckedOutcome::Process(checked)), sources);
+
+        let diags = document.diagnostics();
+        let ambiguity_diag = diags
+            .iter()
+            .find(|diag| diag.source.as_deref() == Some("merc-lsp:ambiguity"))
+            .expect("expected the ambiguous prefix conflict to be reported");
+        assert_eq!(
+            ambiguity_diag.range.start, expected,
+            "ambiguity warning should be located at '!exists' in common.mcrl2, not clamped against main.mcrl2: {:?}",
+            ambiguity_diag
+        );
+    }
+
+    #[tokio::test]
+    async fn is_stale_is_false_immediately_after_analysis() {
+        let dir = temp_project(&[
+            ("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"),
+            ("common.mcrl2", "act a: Nat;\n"),
+        ]);
+        let main_path = dir.path().join("main.mcrl2");
+        let text = std::fs::read_to_string(&main_path).unwrap();
+        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let document = Document::new(text, 0, outcome, None, sources);
+
+        assert!(!document.is_stale());
+    }
+
+    #[tokio::test]
+    async fn is_stale_becomes_true_once_an_imported_file_changes_on_disk() {
+        // Mirrors what `merc/didFocusTextDocument`'s handler (`backend::router`) checks: a
+        // document imports `common.mcrl2`, which changes (and is saved) after this document's own
+        // last analysis — `is_stale` must notice, even though nothing about the document's own
+        // text changed.
+        let dir = temp_project(&[
+            ("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"),
+            ("common.mcrl2", "act a: Nat;\n"),
+        ]);
+        let main_path = dir.path().join("main.mcrl2");
+        let common_path = dir.path().join("common.mcrl2");
+        let text = std::fs::read_to_string(&main_path).unwrap();
+        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let document = Document::new(text, 0, outcome, None, sources);
+        assert!(!document.is_stale());
+
+        // Rewritten with a modification time set explicitly (rather than relying on the wall
+        // clock having moved on since `Document::new` took its snapshot) so this doesn't flake on
+        // a filesystem with coarse mtime resolution.
+        std::fs::write(&common_path, "act a, b: Nat;\n").unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::open(&common_path).unwrap().set_modified(future).unwrap();
+
+        assert!(document.is_stale());
     }
 }

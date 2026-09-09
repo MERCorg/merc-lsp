@@ -1,12 +1,3 @@
-//! `textDocument/codeAction`: currently just one quick fix — parenthesizing a
-//! [`crate::ambiguity::AmbiguousPrefixConflict`] so merc and the real mCRL2 parser agree on it
-//! (see that module's doc comment for the shape being fixed and why parenthesizing is the fix).
-//!
-//! Recomputes the ambiguity list fresh from the document's raw parse rather than matching against
-//! `params.context.diagnostics`, the same way `hover`/`goto_definition` recompute from `document`
-//! instead of threading state from an earlier request — simpler, and always in sync with
-//! [`crate::diagnostics::ambiguity_diagnostics_process`] and its PBES/PRES/modal-formula
-//! counterparts, since both read off the same [`ambiguity::find_in_process_specification`] family.
 
 use std::collections::HashMap;
 
@@ -22,6 +13,7 @@ use lsp_types::WorkspaceEdit;
 
 use crate::ambiguity;
 use crate::ambiguity::AmbiguousPrefixConflict;
+use crate::convert;
 use crate::convert::LineIndex;
 use crate::document::DocumentStore;
 use crate::parse::ParseOutcome;
@@ -42,15 +34,18 @@ pub fn code_actions(
 
     let hits = match spec {
         Specification::Process(spec) => {
-            ambiguity::find_in_process_specification(spec, &document.text)
+            ambiguity::find_in_process_specification(spec, &document.text, &document.sources)
         }
-        Specification::Pbes(spec) => ambiguity::find_in_pbes_specification(spec, &document.text),
-        Specification::Pres(spec) => ambiguity::find_in_pres_specification(spec, &document.text),
-        Specification::Modal(spec) => ambiguity::find_in_modal_specification(spec, &document.text),
+        Specification::Pbes(spec) => ambiguity::find_in_pbes_specification(spec, &document.text, &document.sources),
+        Specification::Pres(spec) => ambiguity::find_in_pres_specification(spec, &document.text, &document.sources),
+        Specification::Modal(spec) => ambiguity::find_in_modal_specification(spec, &document.text, &document.sources),
     };
 
     let actions: Vec<CodeActionOrCommand> = hits
         .iter()
+        // A hit's spans are global offsets into `document.sources`',but only
+        // allow local edits.
+        .filter(|hit| convert::is_local_span(&document.sources, &hit.whole_span()))
         .filter(|hit| overlaps(&document.line_index, &document.text, hit, params.range))
         .map(|hit| parenthesize_quick_fix(&uri, &document.text, &document.line_index, hit))
         .collect();
@@ -62,9 +57,7 @@ pub fn code_actions(
     }
 }
 
-/// Whether `hit`'s own range (see [`AmbiguousPrefixConflict::whole_span`]) overlaps the range
-/// the client asked for — a code-action request's range is typically the current selection or
-/// cursor line, not necessarily the diagnostic's own exact range.
+/// Whether `hit`'s own range overlaps the range the client asked for.
 fn overlaps(
     line_index: &LineIndex,
     text: &str,
@@ -75,12 +68,7 @@ fn overlaps(
     hit_range.start <= requested.end && requested.start <= hit_range.end
 }
 
-/// Builds the quick fix for one [`AmbiguousPrefixConflict`]: two zero-width `TextEdit`s inserting
-/// `(` and `)` right at the inner operator's own span (`hit.inner_span`) — turning
-/// `!exists d: D . X && Y` into `!(exists d: D . X && Y)`, textually identical to merc's own
-/// (already-computed) reading, so mCRL2 agrees too. Marked preferred: it's the one fix that
-/// preserves the document's current meaning rather than silently changing it — see the module doc
-/// comment on why the inner operator's span, not just its body's, is what gets wrapped.
+/// Builds the quick fix for one [`AmbiguousPrefixConflict`].
 fn parenthesize_quick_fix(
     uri: &Url,
     text: &str,

@@ -152,59 +152,67 @@ pub fn modal_type_diagnostics(
 /// Warnings for every [`AmbiguousPrefixConflict`] in a process specification (see
 /// `crate::ambiguity`'s module doc comment) — purely syntactic, so (unlike [`type_diagnostics`])
 /// this runs on any successful parse, whether or not type checking also succeeded.
-pub fn ambiguity_diagnostics_process(text: &str, line_index: &LineIndex, spec: &UntypedProcessSpecification) -> Vec<Diagnostic> {
-    ambiguity::find_in_process_specification(spec, text)
+pub fn ambiguity_diagnostics_process(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], spec: &UntypedProcessSpecification) -> Vec<Diagnostic> {
+    ambiguity::find_in_process_specification(spec, text, sources)
         .iter()
-        .map(|hit| ambiguity_diagnostic(text, line_index, hit))
+        .map(|hit| ambiguity_diagnostic(text, line_index, sources, line_indexes, hit))
         .collect()
 }
 
 /// As [`ambiguity_diagnostics_process`], for a PBES.
-pub fn ambiguity_diagnostics_pbes(text: &str, line_index: &LineIndex, spec: &UntypedPbes) -> Vec<Diagnostic> {
-    ambiguity::find_in_pbes_specification(spec, text)
+pub fn ambiguity_diagnostics_pbes(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], spec: &UntypedPbes) -> Vec<Diagnostic> {
+    ambiguity::find_in_pbes_specification(spec, text, sources)
         .iter()
-        .map(|hit| ambiguity_diagnostic(text, line_index, hit))
+        .map(|hit| ambiguity_diagnostic(text, line_index, sources, line_indexes, hit))
         .collect()
 }
 
 /// As [`ambiguity_diagnostics_process`], for a PRES.
-pub fn ambiguity_diagnostics_pres(text: &str, line_index: &LineIndex, spec: &UntypedPres) -> Vec<Diagnostic> {
-    ambiguity::find_in_pres_specification(spec, text)
+pub fn ambiguity_diagnostics_pres(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], spec: &UntypedPres) -> Vec<Diagnostic> {
+    ambiguity::find_in_pres_specification(spec, text, sources)
         .iter()
-        .map(|hit| ambiguity_diagnostic(text, line_index, hit))
+        .map(|hit| ambiguity_diagnostic(text, line_index, sources, line_indexes, hit))
         .collect()
 }
 
 /// As [`ambiguity_diagnostics_process`], for a modal (mu-calculus) formula.
-pub fn ambiguity_diagnostics_modal(text: &str, line_index: &LineIndex, spec: &UntypedStateFrmSpec) -> Vec<Diagnostic> {
-    ambiguity::find_in_modal_specification(spec, text)
+pub fn ambiguity_diagnostics_modal(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], spec: &UntypedStateFrmSpec) -> Vec<Diagnostic> {
+    ambiguity::find_in_modal_specification(spec, text, sources)
         .iter()
-        .map(|hit| ambiguity_diagnostic(text, line_index, hit))
+        .map(|hit| ambiguity_diagnostic(text, line_index, sources, line_indexes, hit))
         .collect()
 }
 
 /// Builds one [`AmbiguousPrefixConflict`] warning, spanning the whole ambiguous expression so it's
 /// visible at a glance, not just on the outer or inner operator alone. Names both operators by
-/// slicing their own leading token straight out of `text` rather than hard-coding operator names —
-/// the shape this lint finds is general across five different grammars (see the module doc
+/// slicing their own leading token straight out of the source text rather than hard-coding operator
+/// names — the shape this lint finds is general across five different grammars (see the module doc
 /// comment), so there's no one fixed pair of names ("`!`"/"`exists`") to spell out here.
-fn ambiguity_diagnostic(text: &str, line_index: &LineIndex, hit: &AmbiguousPrefixConflict) -> Diagnostic {
+///
+/// `hit`'s spans are global offsets into `sources`' shared byte-offset space — they land outside
+/// `text` (the root document's own text) whenever the flagged expression actually came from
+/// something the root `%import`s, since `find_in_process_specification` and its counterparts walk
+/// the *merged* data specification. So, exactly like [`error_diagnostic`], this resolves the span
+/// against whichever file it actually falls into rather than assuming it's always local to `text`.
+fn ambiguity_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], hit: &AmbiguousPrefixConflict) -> Diagnostic {
     let span = hit.whole_span();
-    let outer_token = text[hit.outer_span.start..hit.inner_span.start].trim();
-    let inner_token = text[hit.inner_span.start..hit.inner_span.end].split_whitespace().next().unwrap_or_default();
+    let (local_text, local_outer) = convert::local_text_and_span(text, sources, &hit.outer_span);
+    let (_, local_inner) = convert::local_text_and_span(text, sources, &hit.inner_span);
+    let outer_token = local_text[local_outer.start..local_inner.start].trim();
+    let inner_token = local_text[local_inner.start..local_inner.end].split_whitespace().next().unwrap_or_default();
+    let range = if convert::is_local_span(sources, &span) {
+        line_index.range(text, &span)
+    } else {
+        convert::location(sources, line_indexes, &span).map_or_else(Range::default, |location| location.range)
+    };
     Diagnostic {
-        range: line_index.range(text, &span),
+        range,
         severity: Some(DiagnosticSeverity::WARNING),
         source: Some(AMBIGUITY_SOURCE.to_string()),
         code: Some(NumberOrString::String(AMBIGUOUS_PREFIX_CONFLICT_CODE.to_string())),
         message: format!(
-            "merc and the real mCRL2 parser can disagree on how far `{outer_token}` reaches here: merc \
-             lets `{inner_token}`'s own body extend across the operator that follows it, keeping the \
-             whole thing inside `{outer_token}`'s scope, but mCRL2's parser can instead truncate both \
-             `{outer_token}` and `{inner_token}` right after the bare `{inner_token}`, letting that \
-             following operator escape them both. Add parentheses around `{inner_token}`'s highlighted \
-             span so both parsers agree — see merc-website's \"Precedence: Pest (merc) vs. dparser \
-             (mCRL2)\" developer doc."
+            "merc and the real mCRL2 parser can disagree on how far `{outer_token}` reaches here. Add parentheses around `{inner_token}`'s highlighted \
+             span so both parsers agree."
         ),
         ..Diagnostic::default()
     }
@@ -405,7 +413,7 @@ mod tests {
         let text = "sort D;\nmap q: Bool;\ninit (!exists d: D . d == d && q) -> delta;";
         let spec = process_specification_for(text).await;
         let line_index = LineIndex::new(text);
-        let diags = ambiguity_diagnostics_process(text, &line_index, &spec);
+        let diags = ambiguity_diagnostics_process(text, &line_index, &SourceMap::new(), &[], &spec);
 
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::WARNING));

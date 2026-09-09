@@ -4,8 +4,8 @@
 //! Notification handlers run synchronously (they return `ControlFlow`, not a `Future`), so any
 //! actual work — parsing/type checking is CPU-bound and diagnostics publishing is fire-and-forget
 //! — happens on a `tokio::spawn`ed task instead; see [`spawn_analyze`]/[`analyze`]. That work only
-//! ever runs for a `did_open` or a `did_save`, deliberately never for a `did_change` — see
-//! `analyze`'s own doc comment.
+//! ever runs for a `did_open`, a `did_save`, or a stale `merc/didFocusTextDocument` (see
+//! [`crate::focus`]), deliberately never for a `did_change` — see `analyze`'s own doc comment.
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -46,6 +46,8 @@ use crate::completion_context;
 use crate::document::CheckedOutcome;
 use crate::document::Document;
 use crate::document::DocumentStore;
+use crate::focus::DidFocusTextDocument;
+use crate::focus::DidFocusTextDocumentParams;
 use crate::generate;
 use crate::generate::GenerateFullSpec;
 use crate::goto_definition;
@@ -154,8 +156,9 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         })
         .notification::<notification::DidOpenTextDocument>(|state, params| {
             let doc = params.text_document;
-            // The document's first (and, until a save, only) analysis. No `refresh_tokens` nudge
-            // needed: the client's own initial `semanticTokens/full` request comes after this.
+            // The document's first (and, until a save, only) analysis. No `refresh_views` nudge
+            // needed: the client's own initial `semanticTokens/full`/`inlayHint` requests come
+            // after this.
             spawn_analyze(state, doc.uri, doc.text, doc.version, false);
             ControlFlow::Continue(())
         })
@@ -188,6 +191,20 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         })
         .notification::<notification::DidCloseTextDocument>(|state, params| {
             state.documents.remove(&params.text_document.uri);
+            ControlFlow::Continue(())
+        })
+        .notification::<DidFocusTextDocument>(|state, params: DidFocusTextDocumentParams| {
+            // See `crate::focus`'s module doc comment for why this exists at all. Only reanalyzes
+            // when `Document::is_stale` actually finds a changed import — the common case (nothing
+            // changed since this document was last analyzed) does no work beyond that check.
+            let stale = state
+                .documents
+                .get(&params.uri)
+                .filter(|document| document.is_stale())
+                .map(|document| (document.text.clone(), document.version));
+            if let Some((text, version)) = stale {
+                spawn_analyze(state, params.uri, text, version, true);
+            }
             ControlFlow::Continue(())
         })
         // Ignore anything we don't handle instead of taking the server down.
@@ -449,9 +466,9 @@ fn inlay_hint_request(
 }
 
 /// Clones out of `state` whatever [`analyze`] needs and spawns it, so parsing/type checking can
-/// `.await` past this (synchronous) notification handler's borrow of `state`. `refresh_tokens` is
+/// `.await` past this (synchronous) notification handler's borrow of `state`. `refresh_views` is
 /// threaded straight through to [`analyze`] — see there for what it controls.
-fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refresh_tokens: bool) {
+fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refresh_views: bool) {
     let client = state.client.clone();
     let documents = state.documents.clone();
     let virtual_documents = state.virtual_documents.clone();
@@ -462,7 +479,7 @@ fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refr
         uri,
         text,
         version,
-        refresh_tokens,
+        refresh_views,
     ));
 }
 
@@ -481,7 +498,7 @@ async fn analyze(
     uri: Url,
     text: String,
     version: i32,
-    refresh_tokens: bool,
+    refresh_views: bool,
 ) {
     // `path` is `None` for an untitled/unsaved buffer — `parse` falls back to a plain,
     // single-file parse for those.
@@ -548,8 +565,16 @@ async fn analyze(
 
     publish_diagnostics(&client, uri, diags, version);
 
-    if refresh_tokens {
+    if refresh_views {
+        // Both are standalone `workspace/*/refresh` requests, not tied to `uri`: the client
+        // decides which of its own open editors to re-pull them for. Needed because this
+        // reanalysis has no accompanying `did_change` of its own to make the client re-request
+        // either on its own — most obviously for the stale-import case (see `crate::focus`'s
+        // module doc comment), where the document text hasn't changed at all from the client's
+        // point of view, so nothing else would ever tell it the old inlay hints (still anchored
+        // to spans/names from before the `%import`ed file's edit) are now stale too.
         request_semantic_tokens_refresh(&client);
+        request_inlay_hint_refresh(&client);
     }
 }
 
@@ -578,6 +603,20 @@ fn request_semantic_tokens_refresh(client: &ClientSocket) {
             log::debug!(
                 "semanticTokens/refresh request failed (client may not support it): {error}"
             );
+        }
+    });
+}
+
+/// As [`request_semantic_tokens_refresh`], via the standalone `workspace/inlayHint/refresh`
+/// request, so the client re-pulls inlay hints too rather than leaving stale ones on screen.
+fn request_inlay_hint_refresh(client: &ClientSocket) {
+    let client = client.clone();
+    tokio::spawn(async move {
+        if let Err(error) = client
+            .request::<request::InlayHintRefreshRequest>(())
+            .await
+        {
+            log::debug!("inlayHint/refresh request failed (client may not support it): {error}");
         }
     });
 }
