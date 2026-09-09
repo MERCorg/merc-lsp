@@ -63,6 +63,13 @@ pub struct Document {
     /// Snapshot, as of this analysis, of every non-virtual file in `sources`' on-disk
     /// modification time.
     import_mtimes: HashMap<String, SystemTime>,
+    /// Every URI besides this document's own that `backend::analyze` published diagnostics
+    /// against as of the last analysis — a diagnostic whose real span lands in something this
+    /// document `%import`s (see [`Self::diagnostics`]) is published against *that* file's URI, so
+    /// `backend::analyze` needs to remember which foreign URIs it touched to clear them (publish
+    /// an empty list) once a later analysis no longer produces anything for them; starts empty and
+    /// is only ever written by `backend::analyze` itself.
+    pub published_foreign_uris: Vec<Url>,
 }
 
 /// The result of type checking a document, tagged by which kind of specification it checked —
@@ -108,6 +115,7 @@ impl Document {
             sources,
             line_indexes,
             import_mtimes,
+            published_foreign_uris: Vec::new(),
         }
     }
 
@@ -124,17 +132,25 @@ impl Document {
     /// All diagnostics for this document: parse errors (if any), plus — once parsing has
     /// succeeded — any type errors (tagged with a distinct `source`; see
     /// [`crate::diagnostics::type_diagnostics`] and its PBES/PRES/modal-formula counterparts).
-    pub fn diagnostics(&self) -> Vec<Diagnostic> {
-        let mut diags = diagnostics::diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, &self.parsed);
+    ///
+    /// Each diagnostic is paired with the URI of the file it actually belongs to — `uri` (this
+    /// document's own) for anything local to `self.text`, but the URI of whichever `%import`ed
+    /// file a diagnostic's span actually falls into otherwise (see
+    /// [`crate::diagnostics::locate`]'s doc comment), so a diagnostic about content that came from
+    /// somewhere else lands its red squiggle in that file rather than at a meaningless zero-width
+    /// range superimposed on `uri`'s own text. `backend::analyze` is responsible for actually
+    /// publishing each group against its own URI.
+    pub fn diagnostics(&self, uri: &Url) -> Vec<(Url, Diagnostic)> {
+        let mut diags = diagnostics::diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, &self.parsed, uri);
         // Purely syntactic (see `crate::ambiguity`'s module doc comment), so — unlike the
         // `checked` match below — this runs on any successful parse regardless of whether type
         // checking also succeeded.
         if let ParseOutcome::Ok(spec) = &self.parsed {
             match spec {
-                Specification::Process(spec) => diags.extend(diagnostics::ambiguity_diagnostics_process(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec)),
-                Specification::Pbes(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pbes(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec)),
-                Specification::Pres(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pres(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec)),
-                Specification::Modal(spec) => diags.extend(diagnostics::ambiguity_diagnostics_modal(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec)),
+                Specification::Process(spec) => diags.extend(diagnostics::ambiguity_diagnostics_process(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec, uri)),
+                Specification::Pbes(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pbes(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec, uri)),
+                Specification::Pres(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pres(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec, uri)),
+                Specification::Modal(spec) => diags.extend(diagnostics::ambiguity_diagnostics_modal(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec, uri)),
             }
         }
         match &self.checked {
@@ -143,19 +159,19 @@ impl Document {
             // undeclared-name suggestion from (see `diagnostics.rs`'s module docs).
             Some(CheckedOutcome::Process(outcome)) => {
                 let spec = self.parsed_process_specification().expect("checked implies a parsed process specification");
-                diags.extend(diagnostics::type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec));
+                diags.extend(diagnostics::type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec, uri));
             }
             Some(CheckedOutcome::Pbes(outcome)) => {
                 let spec = self.parsed_pbes_specification().expect("checked implies a parsed PBES");
-                diags.extend(diagnostics::pbes_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec));
+                diags.extend(diagnostics::pbes_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec, uri));
             }
             Some(CheckedOutcome::Pres(outcome)) => {
                 let spec = self.parsed_pres_specification().expect("checked implies a parsed PRES");
-                diags.extend(diagnostics::pres_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec));
+                diags.extend(diagnostics::pres_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec, uri));
             }
             Some(CheckedOutcome::Modal(outcome)) => {
                 let spec = self.parsed_modal_specification().expect("checked implies a parsed modal formula");
-                diags.extend(diagnostics::modal_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec));
+                diags.extend(diagnostics::modal_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec, uri));
             }
             None => {}
         }
@@ -346,11 +362,15 @@ mod tests {
         assert!(document.checked_process_specification().is_none());
     }
 
+    fn test_uri() -> Url {
+        Url::parse("file:///test.mcrl2").expect("valid URL")
+    }
+
     #[tokio::test]
     async fn checked_pbes_specification_is_none_for_an_ill_typed_pbes_document() {
         let document = pbes_document_for("pbes mu X = Y;\ninit X;").await;
         assert!(document.checked_pbes_specification().is_none());
-        assert!(!document.diagnostics().is_empty());
+        assert!(!document.diagnostics(&test_uri()).is_empty());
     }
 
     #[tokio::test]
@@ -364,7 +384,7 @@ mod tests {
     async fn checked_pres_specification_is_none_for_an_ill_typed_pres_document() {
         let document = pres_document_for("pres mu X = Y;\ninit X;").await;
         assert!(document.checked_pres_specification().is_none());
-        assert!(!document.diagnostics().is_empty());
+        assert!(!document.diagnostics(&test_uri()).is_empty());
     }
 
     #[tokio::test]
@@ -378,7 +398,7 @@ mod tests {
     async fn checked_modal_specification_is_none_for_an_ill_typed_modal_document() {
         let document = modal_document_for("act a: Nat;\nform nu X . [b(0)]X;").await;
         assert!(document.checked_modal_specification().is_none());
-        assert!(!document.diagnostics().is_empty());
+        assert!(!document.diagnostics(&test_uri()).is_empty());
     }
 
     /// Writes `files` (relative-path -> contents) into a fresh temp directory and returns it —
@@ -403,13 +423,14 @@ mod tests {
         // `diagnostics::error_diagnostic`'s doc comment). This checks the far more common case
         // stays correct once that machinery is in play at all: an error whose span is still in
         // the root document (`main.mcrl2` itself, referencing an undeclared action) must resolve
-        // to its own real position, not fall into the "different file" fallback meant only for a
+        // to its own real position, not fall into the "different file" branch meant only for a
         // span that's genuinely elsewhere.
         let dir = temp_project(&[
             ("main.mcrl2", "%import \"common.mcrl2\"\ninit undeclared;\n"),
             ("common.mcrl2", "act a: Nat;\n"),
         ]);
         let main_path = dir.path().join("main.mcrl2");
+        let main_uri = Url::from_file_path(&main_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let expected_offset = text.find("undeclared").expect("fixture contains 'undeclared'");
         let expected = LineIndex::new(&text).position(&text, expected_offset);
@@ -420,28 +441,29 @@ mod tests {
         let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
         let document = Document::new(text, 0, outcome, Some(CheckedOutcome::Process(checked)), sources);
 
-        let diags = document.diagnostics();
+        let diags = document.diagnostics(&main_uri);
         assert!(!diags.is_empty(), "expected the undeclared action to be reported");
+        assert_eq!(diags[0].0, main_uri, "should be published against main.mcrl2 itself: {:?}", diags[0]);
         assert_eq!(
-            diags[0].range.start, expected,
+            diags[0].1.range.start, expected,
             "diagnostic should be located at 'undeclared' in main.mcrl2, not clamped elsewhere: {:?}",
             diags[0]
         );
     }
 
     #[tokio::test]
-    async fn ambiguity_warning_points_at_the_importing_file_via_related_information() {
+    async fn ambiguity_warning_is_published_against_the_importing_file() {
         // As `diagnostics_stay_correctly_located_once_a_document_imports_another_file`, but for the
         // `AmbiguousPrefixConflict` lint: `ambiguity::find_in_process_specification` walks the
         // *merged* data specification, so a flagged expression can come from something the root
         // document `%import`s rather than from the root document's own text.
         //
         // A `Diagnostic::range` only ever means something relative to the one URI it's published
-        // under (here, `main.mcrl2`'s) — so a hit whose real position is in `common.mcrl2` can't be
-        // reported as a `range` at all (a range built from `common.mcrl2`'s own line/column
-        // coordinates would be nonsense superimposed on `main.mcrl2`'s text). Instead
-        // `diagnostics::locate` falls back to a zero-width `range` and attaches the real location
-        // via `related_information`, which is what this checks.
+        // under, so a hit whose real position is in `common.mcrl2` can't be reported as a `range`
+        // against `main.mcrl2`'s URI at all — `diagnostics::locate` instead resolves the (URI,
+        // range) pair to publish against, which `backend::analyze` then actually publishes,
+        // landing the diagnostic's red squiggle in `common.mcrl2` itself, at its own real
+        // position — not silently mislocated in `main.mcrl2`.
         let dir = temp_project(&[
             ("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"),
             (
@@ -451,6 +473,7 @@ mod tests {
         ]);
         let main_path = dir.path().join("main.mcrl2");
         let common_path = dir.path().join("common.mcrl2");
+        let main_uri = Url::from_file_path(&main_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let common_text = std::fs::read_to_string(&common_path).unwrap();
         // The warning's span starts at the outer `!`'s own span (`AmbiguousPrefixConflict::whole_span`),
@@ -466,38 +489,27 @@ mod tests {
         let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
         let document = Document::new(text, 0, outcome, Some(CheckedOutcome::Process(checked)), sources);
 
-        let diags = document.diagnostics();
-        let ambiguity_diag = diags
+        let diags = document.diagnostics(&main_uri);
+        let (uri, ambiguity_diag) = diags
             .iter()
-            .find(|diag| diag.source.as_deref() == Some("merc-lsp:ambiguity"))
+            .find(|(_, diag)| diag.source.as_deref() == Some("merc-lsp:ambiguity"))
             .expect("expected the ambiguous prefix conflict to be reported");
-        assert_eq!(
-            ambiguity_diag.range,
-            Range::default(),
-            "a foreign-file hit has no accurate range against main.mcrl2, so it should fall back to the zero-width default: {:?}",
-            ambiguity_diag
-        );
-        let related = ambiguity_diag
-            .related_information
-            .as_ref()
-            .and_then(|info| info.first())
-            .expect("should carry related_information pointing at common.mcrl2");
-        assert_eq!(related.location.uri, expected_uri);
-        assert_eq!(related.location.range.start, expected);
+        assert_eq!(uri, &expected_uri, "should be published against common.mcrl2, not main.mcrl2: {ambiguity_diag:?}");
+        assert_eq!(ambiguity_diag.range.start, expected);
     }
 
     #[tokio::test]
-    async fn type_error_points_at_the_importing_file_via_related_information() {
-        // As `ambiguity_warning_points_at_the_importing_file_via_related_information`, but for a
-        // genuine type error (an undeclared name) whose span lands in an `%import`ed file's own
-        // content rather than in the root document — `diagnostics::error_diagnostic` must fall back
-        // to `related_information` here too, for the same reason.
+    async fn type_error_is_published_against_the_importing_file() {
+        // As `ambiguity_warning_is_published_against_the_importing_file`, but for a genuine type
+        // error (an undeclared name) whose span lands in an `%import`ed file's own content rather
+        // than in the root document.
         let dir = temp_project(&[
             ("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"),
             ("common.mcrl2", "map f: Bool;\neqn f = undeclared;\n"),
         ]);
         let main_path = dir.path().join("main.mcrl2");
         let common_path = dir.path().join("common.mcrl2");
+        let main_uri = Url::from_file_path(&main_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let common_text = std::fs::read_to_string(&common_path).unwrap();
         let expected_offset = common_text.find("undeclared").expect("fixture contains 'undeclared'");
@@ -511,24 +523,13 @@ mod tests {
         let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
         let document = Document::new(text, 0, outcome, Some(CheckedOutcome::Process(checked)), sources);
 
-        let diags = document.diagnostics();
-        let type_diag = diags
+        let diags = document.diagnostics(&main_uri);
+        let (uri, type_diag) = diags
             .iter()
-            .find(|diag| diag.source.as_deref() == Some("merc-lsp:types"))
+            .find(|(_, diag)| diag.source.as_deref() == Some("merc-lsp:types"))
             .expect("expected the undeclared name to be reported");
-        assert_eq!(
-            type_diag.range,
-            Range::default(),
-            "a foreign-file error has no accurate range against main.mcrl2, so it should fall back to the zero-width default: {:?}",
-            type_diag
-        );
-        let related = type_diag
-            .related_information
-            .as_ref()
-            .and_then(|info| info.first())
-            .expect("should carry related_information pointing at common.mcrl2");
-        assert_eq!(related.location.uri, expected_uri);
-        assert_eq!(related.location.range.start, expected);
+        assert_eq!(uri, &expected_uri, "should be published against common.mcrl2, not main.mcrl2: {type_diag:?}");
+        assert_eq!(type_diag.range.start, expected);
     }
 
     #[tokio::test]
@@ -541,12 +542,14 @@ mod tests {
         // thing `merc-lsp` can still get right without that structured location is to not throw
         // away what text it *does* get — this pins that the diagnostic keeps pest's actual message
         // (which file, what was expected) rather than truncating to just "in <path>:" (its own
-        // first line) the way it used to.
+        // first line) the way it used to, and stays published against `main.mcrl2` (the only URI
+        // it can meaningfully resolve to without a structured location).
         let dir = temp_project(&[
             ("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"),
             ("common.mcrl2", "act a\n"), // missing ';'
         ]);
         let main_path = dir.path().join("main.mcrl2");
+        let main_uri = Url::from_file_path(&main_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
 
         let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
@@ -555,9 +558,10 @@ mod tests {
         };
         let document = Document::new(text, 0, outcome, None, sources);
 
-        let diags = document.diagnostics();
+        let diags = document.diagnostics(&main_uri);
         assert_eq!(diags.len(), 1);
-        let diag = &diags[0];
+        let (uri, diag) = &diags[0];
+        assert_eq!(uri, &main_uri);
         assert_eq!(diag.source.as_deref(), Some("merc-lsp"));
         assert_eq!(diag.range, Range::default(), "no structured location survives the stringified upstream error: {diag:?}");
         assert!(

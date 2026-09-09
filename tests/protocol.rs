@@ -871,3 +871,46 @@ async fn switching_focus_back_to_a_document_reanalyzes_it_if_an_import_changed_o
     assert_eq!(second.diagnostics.len(), 1, "expected 'b' to be reported as undeclared: {second:?}");
     assert_eq!(second.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
 }
+
+/// A type error whose real span lands in an `%import`ed file, not the document that was actually
+/// opened/saved, must be published against *that* file's own URI with an accurate range — not
+/// mislocated (at a meaningless zero-width range) against the importing document's URI, which is
+/// all a single `publishDiagnostics` per analysis could ever manage. `backend::analyze` publishes
+/// one `publishDiagnostics` notification per URI a diagnostic actually resolves to.
+#[tokio::test]
+async fn a_type_error_in_an_imported_file_is_published_against_that_files_own_uri() {
+    let (server, _result, mut rx) = start().await;
+
+    let dir = tempfile::tempdir().expect("should create a temp directory");
+    let main_path = dir.path().join("main.mcrl2");
+    let common_path = dir.path().join("common.mcrl2");
+    std::fs::write(&main_path, "%import \"common.mcrl2\"\ninit delta;\n").expect("should write main.mcrl2");
+    std::fs::write(&common_path, "map f: Bool;\neqn f = undeclared;\n").expect("should write common.mcrl2");
+    let main_text = std::fs::read_to_string(&main_path).unwrap();
+    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), &main_text))
+        .expect("didOpen should be queued");
+
+    // Two `publishDiagnostics` notifications come back: an empty one for `main.mcrl2` itself
+    // (there's nothing wrong with its own text) and a located one for `common.mcrl2`, where the
+    // undeclared name actually lives — order between the two isn't guaranteed.
+    let first = next_diagnostics(&mut rx).await;
+    let second = next_diagnostics(&mut rx).await;
+    let (main_params, common_params) = if first.uri == main_uri { (first, second) } else { (second, first) };
+
+    assert_eq!(main_params.uri, main_uri);
+    assert!(main_params.diagnostics.is_empty(), "main.mcrl2 has nothing wrong with its own text: {main_params:?}");
+
+    assert_eq!(common_params.uri, common_uri);
+    assert_eq!(common_params.diagnostics.len(), 1, "expected the undeclared name to be reported: {common_params:?}");
+    let diag = &common_params.diagnostics[0];
+    assert_eq!(diag.source.as_deref(), Some("merc-lsp:types"));
+    assert_eq!(
+        diag.range.start,
+        position_of(&std::fs::read_to_string(&common_path).unwrap(), "undeclared"),
+        "diagnostic should be located at 'undeclared' inside common.mcrl2 itself, not at a placeholder range: {diag:?}"
+    );
+}

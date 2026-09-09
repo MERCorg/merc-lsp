@@ -7,6 +7,7 @@
 //! ever runs for a `did_open`, a `did_save`, or a stale `merc/didFocusTextDocument` (see
 //! [`crate::focus`]), deliberately never for a `did_change` — see `analyze`'s own doc comment.
 
+use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
@@ -536,8 +537,25 @@ async fn analyze(
 
     let mut document = Document::new(text, version, outcome, checked, sources);
     document.semantic_tokens = document.compute_semantic_tokens();
-    // Computed now, off `document` as just built, before it's handed to the map below.
-    let diags = document.diagnostics();
+    // Computed now, off `document` as just built, before it's handed to the map below. Grouped by
+    // the URI each diagnostic actually belongs to (see `Document::diagnostics`'s doc comment): a
+    // diagnostic about content this document `%import`s is published against that file's own URI,
+    // with its own real range, rather than mislocated against `uri` itself.
+    let mut diags_by_uri: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
+    for (target_uri, diagnostic) in document.diagnostics(&uri) {
+        diags_by_uri.entry(target_uri).or_default().push(diagnostic);
+    }
+    // Always publish (even if empty) against `uri` itself — an empty list is what clears any
+    // diagnostics left over from a previous, failing analysis.
+    diags_by_uri.entry(uri.clone()).or_default();
+    let foreign_uris: Vec<Url> = diags_by_uri.keys().filter(|&target| target != &uri).cloned().collect();
+    document.published_foreign_uris = foreign_uris.clone();
+
+    // Diagnostics from a previous analysis, published against a foreign URI that this one no
+    // longer has anything to say about, must be explicitly cleared (published as an empty list) —
+    // nothing else would ever tell the client to drop them, since they were never tied to `uri`'s
+    // own document version in the first place.
+    let mut stale_foreign_uris = Vec::new();
 
     // Discard this analysis if it's for an older version than what's already committed.
     match documents.entry(uri.clone()) {
@@ -556,6 +574,14 @@ async fn analyze(
                 document.pending_version = existing.pending_version;
             }
 
+            stale_foreign_uris.extend(
+                existing
+                    .published_foreign_uris
+                    .iter()
+                    .filter(|old| !foreign_uris.contains(old))
+                    .cloned(),
+            );
+
             *occupied.get_mut() = document;
         }
         Entry::Vacant(vacant) => {
@@ -563,7 +589,15 @@ async fn analyze(
         }
     }
 
-    publish_diagnostics(&client, uri, diags, version);
+    for (target_uri, diagnostics) in diags_by_uri {
+        // Only `uri` itself has a meaningful document version from the client's perspective; a
+        // foreign URI's diagnostics aren't tied to any particular version it knows about.
+        let target_version = if target_uri == uri { Some(version) } else { None };
+        publish_diagnostics(&client, target_uri, diagnostics, target_version);
+    }
+    for stale_uri in stale_foreign_uris {
+        publish_diagnostics(&client, stale_uri, Vec::new(), None);
+    }
 
     if refresh_views {
         // Both are standalone `workspace/*/refresh` requests, not tied to `uri`: the client
@@ -582,12 +616,12 @@ fn publish_diagnostics(
     client: &ClientSocket,
     uri: Url,
     diagnostics: Vec<Diagnostic>,
-    version: i32,
+    version: Option<i32>,
 ) {
     let params = PublishDiagnosticsParams {
         uri,
         diagnostics,
-        version: Some(version),
+        version,
     };
     if let Err(error) = client.notify::<notification::PublishDiagnostics>(params) {
         log::warn!("failed to publish diagnostics: {error}");
