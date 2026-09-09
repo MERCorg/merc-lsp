@@ -211,6 +211,26 @@ pub(crate) fn location(sources: &SourceMap, line_indexes: &[LineIndex], span: &S
     Some(Location { uri, range })
 }
 
+/// Resolves `span` to the text of whichever file it actually falls into, together with a span
+/// local to that file's own text — the root document's own `text`/`span` unchanged whenever
+/// `sources` has nothing loaded yet (the plain, single-file parse path — see `parse.rs`'s module
+/// docs — which never offsets a span at all), otherwise rebased through `sources` the same way
+/// [`location`] rebases one into a [`Range`].
+pub(crate) fn local_text_and_span<'a>(text: &'a str, sources: &'a SourceMap, span: &Span) -> (&'a str, Span) {
+    if sources.file_count() == 0 {
+        return (text, span.clone());
+    }
+
+    let (id, local_start) = split(sources, span.start);
+    let local_end = span.end - sources.base_offset(id);
+    (sources.text(id), Span::new(local_start, local_end))
+}
+
+/// Whether `span` is local to the root document itself.
+pub(crate) fn is_local_span(sources: &SourceMap, span: &Span) -> bool {
+    sources.file_count() == 0 || sources.lookup(span.start).value() == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

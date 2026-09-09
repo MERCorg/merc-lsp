@@ -54,6 +54,7 @@ use merc_syntax::ProcessExpr;
 use merc_syntax::ProcessExprKind;
 use merc_syntax::RegFrm;
 use merc_syntax::RegFrmKind;
+use merc_syntax::SourceMap;
 use merc_syntax::Span;
 use merc_syntax::Spanned;
 use merc_syntax::StateFrm;
@@ -64,6 +65,8 @@ use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
+
+use crate::convert;
 
 /// One occurrence of the ambiguous shape: `outer_span` is the outer (tighter-binding) prefix
 /// operator's own span — for a chain of several (`!!exists ...`), the outermost one, since only the
@@ -237,13 +240,7 @@ fn swallows_infix<K>(
 /// always wins that competition outright and swallows the whole thing, exactly like a single one
 /// does; there's no lower-numbered rival for it to lose to. So this is a proven non-issue, not an
 /// unverified one, and no `<=` is needed.
-fn check_prefix_shape<K>(
-    node: &Spanned<K>,
-    prefix_shape: PrefixShape<K>,
-    is_infix: IsInfix<K>,
-    text: &str,
-    hits: &mut Vec<AmbiguousPrefixConflict>,
-) {
+fn check_prefix_shape<K>(node: &Spanned<K>, prefix_shape: PrefixShape<K>, is_infix: IsInfix<K>, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     let Some((outer_level, child)) = prefix_shape(&node.node) else {
         return;
     };
@@ -252,7 +249,7 @@ fn check_prefix_shape<K>(
     };
     if inner_level < outer_level
         && swallows_infix(child, prefix_shape, is_infix)
-        && !is_already_parenthesized(text, &child.span)
+        && !is_already_parenthesized(text, sources, &child.span)
     {
         hits.push(AmbiguousPrefixConflict {
             outer_span: node.span.clone(),
@@ -261,76 +258,74 @@ fn check_prefix_shape<K>(
     }
 }
 
-/// True when `span` is already wrapped in a matching `(...)` in `text`. Parentheses are transparent
-/// to the AST (`merc_syntax`'s `*Brackets`/`*Parens` rules unwrap and re-parse their inner
-/// expression, keeping only the inner span), so an operator the author already disambiguated by
-/// hand looks identical, node-for-node, to one that wasn't — this is the only place that distinction
-/// can still be recovered, by checking the raw source text immediately around `span` instead of the
-/// AST.
-fn is_already_parenthesized(text: &str, span: &Span) -> bool {
+/// True when `span` is already wrapped in a matching `(...)` in its own source text. Parentheses
+/// are transparent to the AST (`merc_syntax`'s `*Brackets`/`*Parens` rules unwrap and re-parse
+/// their inner expression, keeping only the inner span), so an operator the author already
+/// disambiguated by hand looks identical, node-for-node, to one that wasn't — this is the only
+/// place that distinction can still be recovered, by checking the raw source text immediately
+/// around `span` instead of the AST.
+fn is_already_parenthesized(text: &str, sources: &SourceMap, span: &Span) -> bool {
+    let (text, span) = convert::local_text_and_span(text, sources, span);
     text[..span.start].trim_end().ends_with('(') && text[span.end..].trim_start().starts_with(')')
 }
 
 /// Finds every occurrence of the shape in one [`DataExpr`] subtree, appending to `hits`.
-fn find_in_dataexpr(expr: &DataExpr, text: &str, hits: &mut Vec<AmbiguousPrefixConflict>) {
+fn find_in_dataexpr(expr: &DataExpr, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     expr.visit::<(), _>(|node| {
-        check_prefix_shape(node, dataexpr_prefix_shape, dataexpr_is_infix, text, hits);
+        check_prefix_shape(node, dataexpr_prefix_shape, dataexpr_is_infix, text, sources, hits);
         ControlFlow::Continue(())
     });
 }
 
 /// As [`find_in_dataexpr`], across a whole process specification: every process declaration's
-/// body, `init`, and the data specification's own equations.
-pub fn find_in_process_specification(
-    spec: &UntypedProcessSpecification,
-    text: &str,
-) -> Vec<AmbiguousPrefixConflict> {
+/// body, `init`, and the data specification's own equations. `text` is the root document's own
+/// text and `sources` its [`SourceMap`] (empty for a plain, import-free parse) — together they let
+/// [`is_already_parenthesized`] resolve a node's span correctly even when that node came from
+/// something the document `%import`s rather than from `text` itself.
+pub fn find_in_process_specification(spec: &UntypedProcessSpecification, text: &str, sources: &SourceMap) -> Vec<AmbiguousPrefixConflict> {
     let mut hits = Vec::new();
     for decl in &spec.process_declarations {
-        walk_process_expr(&decl.body, text, &mut hits);
+        walk_process_expr(&decl.body, text, sources, &mut hits);
     }
     if let Some(init) = &spec.init {
-        walk_process_expr(init, text, &mut hits);
+        walk_process_expr(init, text, sources, &mut hits);
     }
-    walk_data_specification(&spec.data_specification, text, &mut hits);
+    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
     hits
 }
 
 /// As [`find_in_process_specification`], for a PBES: every equation's formula, `init`'s own
 /// arguments, and the data specification's equations.
-pub fn find_in_pbes_specification(spec: &UntypedPbes, text: &str) -> Vec<AmbiguousPrefixConflict> {
+pub fn find_in_pbes_specification(spec: &UntypedPbes, text: &str, sources: &SourceMap) -> Vec<AmbiguousPrefixConflict> {
     let mut hits = Vec::new();
     for eqn in &spec.equations {
-        walk_pbes_expr(&eqn.formula, text, &mut hits);
+        walk_pbes_expr(&eqn.formula, text, sources, &mut hits);
     }
     for argument in &spec.init.node.arguments {
-        find_in_dataexpr(argument, text, &mut hits);
+        find_in_dataexpr(argument, text, sources, &mut hits);
     }
-    walk_data_specification(&spec.data_specification, text, &mut hits);
+    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
     hits
 }
 
 /// As [`find_in_pbes_specification`], for a PRES.
-pub fn find_in_pres_specification(spec: &UntypedPres, text: &str) -> Vec<AmbiguousPrefixConflict> {
+pub fn find_in_pres_specification(spec: &UntypedPres, text: &str, sources: &SourceMap) -> Vec<AmbiguousPrefixConflict> {
     let mut hits = Vec::new();
     for eqn in &spec.equations {
-        walk_pres_expr(&eqn.formula, text, &mut hits);
+        walk_pres_expr(&eqn.formula, text, sources, &mut hits);
     }
     for argument in &spec.init.node.arguments {
-        find_in_dataexpr(argument, text, &mut hits);
+        find_in_dataexpr(argument, text, sources, &mut hits);
     }
-    walk_data_specification(&spec.data_specification, text, &mut hits);
+    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
     hits
 }
 
 /// As [`find_in_process_specification`], for a modal (mu-calculus) formula.
-pub fn find_in_modal_specification(
-    spec: &UntypedStateFrmSpec,
-    text: &str,
-) -> Vec<AmbiguousPrefixConflict> {
+pub fn find_in_modal_specification(spec: &UntypedStateFrmSpec, text: &str, sources: &SourceMap) -> Vec<AmbiguousPrefixConflict> {
     let mut hits = Vec::new();
-    walk_state_frm(&spec.formula, text, &mut hits);
-    walk_data_specification(&spec.data_specification, text, &mut hits);
+    walk_state_frm(&spec.formula, text, sources, &mut hits);
+    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
     hits
 }
 
@@ -340,22 +335,22 @@ pub fn find_in_modal_specification(
 /// (`.`/`+`/`||`/...) are a different, already-handled ambiguity class — see
 /// `merc_typecheck::disambiguate_process_specification` — so `ProcessExprKind` gets no
 /// `check_prefix_shape` call of its own here, only the `DataExpr`s nested inside it.
-fn walk_process_expr(expr: &ProcessExpr, text: &str, hits: &mut Vec<AmbiguousPrefixConflict>) {
+fn walk_process_expr(expr: &ProcessExpr, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     expr.visit::<(), _>(|node| {
         match &node.node {
             ProcessExprKind::Action(_, args) => {
                 for arg in args {
-                    find_in_dataexpr(arg, text, hits);
+                    find_in_dataexpr(arg, text, sources, hits);
                 }
             }
             ProcessExprKind::Id(_, assignments) => {
                 for assignment in assignments {
-                    find_in_dataexpr(&assignment.node.expr, text, hits);
+                    find_in_dataexpr(&assignment.node.expr, text, sources, hits);
                 }
             }
-            ProcessExprKind::Dist { expr: weight, .. } => find_in_dataexpr(weight, text, hits),
-            ProcessExprKind::Condition { condition, .. } => find_in_dataexpr(condition, text, hits),
-            ProcessExprKind::At { operand, .. } => find_in_dataexpr(operand, text, hits),
+            ProcessExprKind::Dist { expr: weight, .. } => find_in_dataexpr(weight, text, sources, hits),
+            ProcessExprKind::Condition { condition, .. } => find_in_dataexpr(condition, text, sources, hits),
+            ProcessExprKind::At { operand, .. } => find_in_dataexpr(operand, text, sources, hits),
             _ => {}
         }
         ControlFlow::Continue(())
@@ -365,14 +360,14 @@ fn walk_process_expr(expr: &ProcessExpr, text: &str, hits: &mut Vec<AmbiguousPre
 /// As [`walk_process_expr`], for a [`PbesExpr`] tree — `.visit()` also runs [`check_prefix_shape`]
 /// on every `PbesExpr` node along the way (see the module doc comment), not just the `DataExpr`s
 /// nested inside it.
-fn walk_pbes_expr(expr: &PbesExpr, text: &str, hits: &mut Vec<AmbiguousPrefixConflict>) {
+fn walk_pbes_expr(expr: &PbesExpr, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     expr.visit::<(), _>(|node| {
-        check_prefix_shape(node, pbesexpr_prefix_shape, pbesexpr_is_infix, text, hits);
+        check_prefix_shape(node, pbesexpr_prefix_shape, pbesexpr_is_infix, text, sources, hits);
         match &node.node {
-            PbesExprKind::DataValExpr(value) => find_in_dataexpr(value, text, hits),
+            PbesExprKind::DataValExpr(value) => find_in_dataexpr(value, text, sources, hits),
             PbesExprKind::PropVarInst(inst) => {
                 for argument in &inst.node.arguments {
-                    find_in_dataexpr(argument, text, hits);
+                    find_in_dataexpr(argument, text, sources, hits);
                 }
             }
             _ => {}
@@ -382,19 +377,19 @@ fn walk_pbes_expr(expr: &PbesExpr, text: &str, hits: &mut Vec<AmbiguousPrefixCon
 }
 
 /// As [`walk_pbes_expr`], for a [`PresExpr`] tree.
-fn walk_pres_expr(expr: &PresExpr, text: &str, hits: &mut Vec<AmbiguousPrefixConflict>) {
+fn walk_pres_expr(expr: &PresExpr, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     expr.visit::<(), _>(|node| {
-        check_prefix_shape(node, presexpr_prefix_shape, presexpr_is_infix, text, hits);
+        check_prefix_shape(node, presexpr_prefix_shape, presexpr_is_infix, text, sources, hits);
         match &node.node {
-            PresExprKind::DataValExpr(value) => find_in_dataexpr(value, text, hits),
+            PresExprKind::DataValExpr(value) => find_in_dataexpr(value, text, sources, hits),
             PresExprKind::PropVarInst(inst) => {
                 for argument in &inst.node.arguments {
-                    find_in_dataexpr(argument, text, hits);
+                    find_in_dataexpr(argument, text, sources, hits);
                 }
             }
             PresExprKind::RightConstantMultiply { constant, .. }
             | PresExprKind::LeftConstantMultiply { constant, .. } => {
-                find_in_dataexpr(constant, text, hits);
+                find_in_dataexpr(constant, text, sources, hits);
             }
             _ => {}
         }
@@ -408,31 +403,31 @@ fn walk_pres_expr(expr: &PresExpr, text: &str, hits: &mut Vec<AmbiguousPrefixCon
 /// only has to reach into the *other*-typed fields `Traverse` won't cross into on its own: a
 /// `DataExpr` (`Delay`/`Yaled`'s time, `Id`/`Resolved`'s arguments, `DataValExpr(LeftMult)`, a
 /// `FixedPoint` variable's initial values) or a `RegFrm` (a `Modality`'s own formula).
-fn walk_state_frm(formula: &StateFrm, text: &str, hits: &mut Vec<AmbiguousPrefixConflict>) {
+fn walk_state_frm(formula: &StateFrm, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     formula.visit::<(), _>(|node| {
-        check_prefix_shape(node, statefrm_prefix_shape, statefrm_is_infix, text, hits);
+        check_prefix_shape(node, statefrm_prefix_shape, statefrm_is_infix, text, sources, hits);
         match &node.node {
             StateFrmKind::Delay(time) | StateFrmKind::Yaled(time) => {
                 if let Some(time) = time {
-                    find_in_dataexpr(time, text, hits);
+                    find_in_dataexpr(time, text, sources, hits);
                 }
             }
             StateFrmKind::Id(_, arguments) | StateFrmKind::Resolved(_, arguments, _) => {
                 for argument in arguments {
-                    find_in_dataexpr(argument, text, hits);
+                    find_in_dataexpr(argument, text, sources, hits);
                 }
             }
-            StateFrmKind::DataValExpr(expr) => find_in_dataexpr(expr, text, hits),
+            StateFrmKind::DataValExpr(expr) => find_in_dataexpr(expr, text, sources, hits),
             StateFrmKind::DataValExprLeftMult(constant, _) => {
-                find_in_dataexpr(constant, text, hits)
+                find_in_dataexpr(constant, text, sources, hits)
             }
             StateFrmKind::DataValExprRightMult(_, constant) => {
-                find_in_dataexpr(constant, text, hits)
+                find_in_dataexpr(constant, text, sources, hits)
             }
-            StateFrmKind::Modality { formula: reg, .. } => walk_reg_frm(reg, text, hits),
+            StateFrmKind::Modality { formula: reg, .. } => walk_reg_frm(reg, text, sources, hits),
             StateFrmKind::FixedPoint { variable, .. } => {
                 for argument in &variable.arguments {
-                    find_in_dataexpr(&argument.expr, text, hits);
+                    find_in_dataexpr(&argument.expr, text, sources, hits);
                 }
             }
             _ => {}
@@ -448,30 +443,30 @@ fn walk_state_frm(formula: &StateFrm, text: &str, hits: &mut Vec<AmbiguousPrefix
 /// are postfix, `.`/`+` in the regular-formula sense are infix — see [`prefix_shape`]'s doc comment
 /// on why postfix operators are out of scope, and there's no *prefix* regular-formula operator to
 /// even compete with them in the first place).
-fn walk_reg_frm(formula: &RegFrm, text: &str, hits: &mut Vec<AmbiguousPrefixConflict>) {
+fn walk_reg_frm(formula: &RegFrm, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     match &formula.node {
-        RegFrmKind::Action(action) => walk_act_frm(action, text, hits),
-        RegFrmKind::Iteration(inner) | RegFrmKind::Plus(inner) => walk_reg_frm(inner, text, hits),
+        RegFrmKind::Action(action) => walk_act_frm(action, text, sources, hits),
+        RegFrmKind::Iteration(inner) | RegFrmKind::Plus(inner) => walk_reg_frm(inner, text, sources, hits),
         RegFrmKind::Sequence { lhs, rhs } | RegFrmKind::Choice { lhs, rhs } => {
-            walk_reg_frm(lhs, text, hits);
-            walk_reg_frm(rhs, text, hits);
+            walk_reg_frm(lhs, text, sources, hits);
+            walk_reg_frm(rhs, text, sources, hits);
         }
     }
 }
 
 /// As [`walk_pbes_expr`], for an action formula (`a(1) && !b`).
-fn walk_act_frm(formula: &ActFrm, text: &str, hits: &mut Vec<AmbiguousPrefixConflict>) {
+fn walk_act_frm(formula: &ActFrm, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     formula.visit::<(), _>(|node| {
-        check_prefix_shape(node, actfrm_prefix_shape, actfrm_is_infix, text, hits);
+        check_prefix_shape(node, actfrm_prefix_shape, actfrm_is_infix, text, sources, hits);
         match &node.node {
             ActFrmKind::MultAct(multi_action) => {
                 for action in &multi_action.actions {
                     for argument in &action.args {
-                        find_in_dataexpr(argument, text, hits);
+                        find_in_dataexpr(argument, text, sources, hits);
                     }
                 }
             }
-            ActFrmKind::DataExprVal(expr) => find_in_dataexpr(expr, text, hits),
+            ActFrmKind::DataExprVal(expr) => find_in_dataexpr(expr, text, sources, hits),
             _ => {}
         }
         ControlFlow::Continue(())
@@ -479,17 +474,13 @@ fn walk_act_frm(formula: &ActFrm, text: &str, hits: &mut Vec<AmbiguousPrefixConf
 }
 
 /// Every equation's LHS/RHS/condition, in `data`'s own `var ... eqn ...` blocks.
-fn walk_data_specification(
-    data: &UntypedDataSpecification,
-    text: &str,
-    hits: &mut Vec<AmbiguousPrefixConflict>,
-) {
+fn walk_data_specification(data: &UntypedDataSpecification, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     for eqn_spec in &data.equation_declarations {
         for eqn in &eqn_spec.node.equations {
-            find_in_dataexpr(&eqn.lhs, text, hits);
-            find_in_dataexpr(&eqn.rhs, text, hits);
+            find_in_dataexpr(&eqn.lhs, text, sources, hits);
+            find_in_dataexpr(&eqn.rhs, text, sources, hits);
             if let Some(condition) = &eqn.condition {
-                find_in_dataexpr(condition, text, hits);
+                find_in_dataexpr(condition, text, sources, hits);
             }
         }
     }
