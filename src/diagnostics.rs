@@ -21,6 +21,7 @@ use merc_typecheck::ProcessError;
 use merc_typecheck::WellTypedError;
 use merc_utilities::MercError;
 use lsp_types::Diagnostic;
+use lsp_types::DiagnosticRelatedInformation;
 use lsp_types::DiagnosticSeverity;
 use lsp_types::NumberOrString;
 use lsp_types::Range;
@@ -59,10 +60,10 @@ pub const AMBIGUOUS_PREFIX_CONFLICT_CODE: &str = "ambiguous-prefix-conflict";
 ///
 /// Returns an empty vector for [`ParseOutcome::Ok`] — publishing that empty
 /// vector is what clears any diagnostics from a previous, failing parse.
-pub fn diagnostics(text: &str, line_index: &LineIndex, outcome: &ParseOutcome) -> Vec<Diagnostic> {
+pub fn diagnostics(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], outcome: &ParseOutcome) -> Vec<Diagnostic> {
     match outcome {
         ParseOutcome::Ok(_) => Vec::new(),
-        ParseOutcome::ParseError(error) => vec![parse_error_diagnostic(text, line_index, error)],
+        ParseOutcome::ParseError(error) => vec![parse_error_diagnostic(text, line_index, sources, line_indexes, error)],
         ParseOutcome::Internal(message) => vec![internal_diagnostic(message, SOURCE)],
     }
 }
@@ -200,20 +201,18 @@ fn ambiguity_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap,
     let (_, local_inner) = convert::local_text_and_span(text, sources, &hit.inner_span);
     let outer_token = local_text[local_outer.start..local_inner.start].trim();
     let inner_token = local_text[local_inner.start..local_inner.end].split_whitespace().next().unwrap_or_default();
-    let range = if convert::is_local_span(sources, &span) {
-        line_index.range(text, &span)
-    } else {
-        convert::location(sources, line_indexes, &span).map_or_else(Range::default, |location| location.range)
-    };
+    let message = format!(
+        "merc and the real mCRL2 parser can disagree on how far `{outer_token}` reaches here. Add parentheses around `{inner_token}`'s highlighted \
+         span so both parsers agree."
+    );
+    let (range, related_information) = locate(text, line_index, sources, line_indexes, &span, &message);
     Diagnostic {
         range,
         severity: Some(DiagnosticSeverity::WARNING),
         source: Some(AMBIGUITY_SOURCE.to_string()),
         code: Some(NumberOrString::String(AMBIGUOUS_PREFIX_CONFLICT_CODE.to_string())),
-        message: format!(
-            "merc and the real mCRL2 parser can disagree on how far `{outer_token}` reaches here. Add parentheses around `{inner_token}`'s highlighted \
-             span so both parsers agree."
-        ),
+        message,
+        related_information,
         ..Diagnostic::default()
     }
 }
@@ -302,8 +301,42 @@ fn suggestion_for_modal_error(error: &ModalError, spec: &UntypedStateFrmSpec) ->
     }
 }
 
-/// Builds a located type-error [`Diagnostic`], shared by [`type_diagnostics`],
-/// [`pbes_type_diagnostics`], [`pres_type_diagnostics`], and [`modal_type_diagnostics`].
+/// Resolves `span` for a [`Diagnostic`] published against `text`'s own document — shared by
+/// [`error_diagnostic`] and [`ambiguity_diagnostic`].
+///
+/// A `Diagnostic::range` is only ever meaningful relative to the one URI its containing
+/// `PublishDiagnosticsParams` is published under (`backend::publish_diagnostics` always publishes
+/// against the root document's own URI) — so when `span` falls inside `text` itself this returns
+/// an accurate range, but when it falls into something `text` `%import`s, a range built from that
+/// *other* file's own [`LineIndex`] would land at the byte/line coordinates of a completely
+/// different document and mean nothing there. In that case this returns a zero-width fallback
+/// range instead, paired with `related_information` carrying the real [`lsp_types::Location`] (its
+/// own correct URI and range) so LSP clients can still point the user at the actual file and
+/// position.
+fn locate(
+    text: &str,
+    line_index: &LineIndex,
+    sources: &SourceMap,
+    line_indexes: &[LineIndex],
+    span: &Span,
+    related_message: &str,
+) -> (Range, Option<Vec<DiagnosticRelatedInformation>>) {
+    if convert::is_local_span(sources, span) {
+        (line_index.range(text, span), None)
+    } else {
+        match convert::location(sources, line_indexes, span) {
+            Some(location) => (
+                Range::default(),
+                Some(vec![DiagnosticRelatedInformation {
+                    location,
+                    message: related_message.to_string(),
+                }]),
+            ),
+            None => (Range::default(), None),
+        }
+    }
+}
+
 /// Builds a located type-error [`Diagnostic`] for `span`, shared by [`type_diagnostics`] and its
 /// PBES/PRES/modal-formula counterparts.
 fn error_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], span: Option<&Span>, message: String) -> Diagnostic {
@@ -316,44 +349,48 @@ fn error_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap, lin
             ..Diagnostic::default()
         };
     };
-    let (range, message) = if sources.file_count() == 0 || sources.lookup(span.start).value() == 0 {
-        (line_index.range(text, span), message)
-    } else {
-        match convert::location(sources, line_indexes, span) {
-            Some(location) => (Range::default(), format!("{message} (reported against {})", location.uri)),
-            None => (Range::default(), message),
-        }
-    };
+    let (range, related_information) = locate(text, line_index, sources, line_indexes, span, &message);
     Diagnostic {
         range,
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some(TYPE_SOURCE.to_string()),
         message,
+        related_information,
         ..Diagnostic::default()
     }
 }
 
-fn parse_error_diagnostic(text: &str, line_index: &LineIndex, error: &MercError) -> Diagnostic {
+fn parse_error_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], error: &MercError) -> Diagnostic {
     match error.downcast_ref::<PestError<Rule>>() {
-        Some(pest_error) => Diagnostic {
-            range: range_for_location(text, line_index, &pest_error.location),
-            severity: Some(DiagnosticSeverity::ERROR),
-            source: Some(SOURCE.to_string()),
-            message: pest_error.variant.message().into_owned(),
-            ..Diagnostic::default()
-        },
+        Some(pest_error) => {
+            let message = pest_error.variant.message().into_owned();
+            let span = parse_error_span(text, sources, &pest_error.location);
+            let (range, related_information) = locate(text, line_index, sources, line_indexes, &span, &message);
+            Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some(SOURCE.to_string()),
+                message,
+                related_information,
+                ..Diagnostic::default()
+            }
+        }
         None => {
-            // Some other error type got wrapped as a MercError.
-            let full = error.to_string();
-
-            // We only want the first line of the error message, because it
-            // could contain a stack trace.
-            let message = full.split('\n').next().unwrap_or(&full).to_string();
+            // A document parsed via `merc_syntax::imports` (any `%import`-capable document backed
+            // by a real path — see `parse.rs`'s module docs) never reaches this arm with a
+            // downcastable `PestError<Rule>` at all: `Resolver::load_with_text` immediately
+            // stringifies every file's own parse error (`format!("in {path}:\n{error}")`, in the
+            // pinned `merc_syntax::imports` source) before it ever gets back here, discarding the
+            // structured location along with the original error type. This is the common case in
+            // practice (any saved `.mcrl2`/`.mcf` file), so keep the *whole* message — it still
+            // carries the real reason (and, textually, `path`/pest's own line:col) — rather than
+            // just its first line; that used to matter only to cut a possible backtrace off a raw
+            // caught panic, a class of error `parse.rs`'s module docs say no longer reaches here.
             Diagnostic {
                 range: Range::default(),
                 severity: Some(DiagnosticSeverity::ERROR),
                 source: Some(SOURCE.to_string()),
-                message,
+                message: error.to_string(),
                 ..Diagnostic::default()
             }
         }
@@ -370,17 +407,24 @@ fn internal_diagnostic(message: &str, source: &str) -> Diagnostic {
     }
 }
 
-fn range_for_location(text: &str, line_index: &LineIndex, location: &InputLocation) -> Range {
-    let span = match location {
+/// Builds the (global, into `sources`) [`Span`] a pest [`InputLocation`] names. `text`/`sources`
+/// parsing with `%import`s in play pads each file's text by its own `base_offset` before handing
+/// it to pest (see [`merc_syntax::SourceMap::base_offset`]'s doc comment), so `location`'s offsets
+/// are already global — a parse error can land in something the root document `%import`s just as
+/// easily as in `text` itself.
+fn parse_error_span(text: &str, sources: &SourceMap, location: &InputLocation) -> Span {
+    match location {
         InputLocation::Span((start, end)) => Span { start: *start, end: *end },
         InputLocation::Pos(offset) => {
             // A zero-width range renders poorly in most editors; widen it to cover the token
-            // starting at `offset`, or at minimum one character.
-            let end = widen_to_token_end(text, *offset);
+            // starting at `offset`, or at minimum one character — against whichever file `offset`
+            // actually falls into, since that file's own text is what the token's bytes come from.
+            let (local_text, local_span) = convert::local_text_and_span(text, sources, &Span { start: *offset, end: *offset });
+            let local_end = widen_to_token_end(local_text, local_span.start);
+            let end = offset + (local_end - local_span.start);
             Span { start: *offset, end }
         }
-    };
-    line_index.range(text, &span)
+    }
 }
 
 /// Finds the end of the identifier-like token starting at `offset`, or `offset + 1` if `offset`
@@ -405,7 +449,7 @@ mod tests {
         let text = "sort D;\ninit delta;";
         let outcome = parse(SpecKind::Process, text.to_string()).await;
         let line_index = LineIndex::new(text);
-        assert!(diagnostics(text, &line_index, &outcome).is_empty());
+        assert!(diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome).is_empty());
     }
 
     #[tokio::test]
@@ -426,7 +470,7 @@ mod tests {
         let text = "sort D\ninit delta;"; // missing ';' after 'sort D'
         let outcome = parse(SpecKind::Process, text.to_string()).await;
         let line_index = LineIndex::new(text);
-        let diags = diagnostics(text, &line_index, &outcome);
+        let diags = diagnostics(text, &line_index, &SourceMap::new(), &[], &outcome);
 
         assert_eq!(diags.len(), 1);
         let diag = &diags[0];
