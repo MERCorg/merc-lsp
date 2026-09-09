@@ -20,6 +20,7 @@ mod convert;
 mod diagnostics;
 mod document;
 mod edit_distance;
+mod focus;
 mod generate;
 mod goto_definition;
 mod hover;

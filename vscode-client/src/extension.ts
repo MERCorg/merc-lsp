@@ -5,6 +5,7 @@ import { CancellationToken, commands, ExtensionContext, OutputChannel, Uri, wind
 import {
 	LanguageClient,
 	LanguageClientOptions,
+	NotificationType,
 	RequestType,
 	ServerOptions,
 	TransportKind
@@ -30,6 +31,39 @@ const virtualDocumentRequest = new RequestType<{ uri: string }, string | null, v
  * parsed process specification. Mirrors `../src/generate.rs`'s `GenerateFullSpec` request.
  */
 const generateFullSpecRequest = new RequestType<{ uri: string }, string | null, void>('merc/generateFullSpec');
+
+/**
+ * `DidFocusTextDocument` notification `{ uri: string }` out: sent whenever the active editor
+ * switches to an already-open document. Plain LSP has no "editor became active" signal of its
+ * own — only `didOpen`/`didChange`/`didSave`/`didClose` — so a document that `%import`s another
+ * file never learns that import changed (and was saved) while it wasn't the focused editor,
+ * since it gets no `didSave` of its own to trigger a reanalysis. Mirrors
+ * `../src/focus.rs`'s `DidFocusTextDocument` notification.
+ */
+const didFocusTextDocumentNotification = new NotificationType<{ uri: string }>('merc/didFocusTextDocument');
+
+/**
+ * Registers a `window.onDidChangeActiveTextEditor` listener that notifies the server whenever
+ * focus switches to a document the language client is handling (real files and `merc-builtin:`
+ * virtual documents alike — see {@link startClient}'s `documentSelector`), so it can catch up on
+ * any `%import`ed file that changed while this document wasn't the active editor (see
+ * {@link didFocusTextDocumentNotification}).
+ */
+function registerFocusListener(context: ExtensionContext) {
+	context.subscriptions.push(
+		window.onDidChangeActiveTextEditor((editor) => {
+			if (!client || !editor) {
+				return;
+			}
+			const languageIds = ['merc', 'merc-pbes', 'merc-pres', 'merc-mcf'];
+			const schemes = ['file', VIRTUAL_DOCUMENT_SCHEME];
+			if (!languageIds.includes(editor.document.languageId) || !schemes.includes(editor.document.uri.scheme)) {
+				return;
+			}
+			client.sendNotification(didFocusTextDocumentNotification, { uri: editor.document.uri.toString() });
+		})
+	);
+}
 
 /**
  * `merc-lsp.generateFullSpec`: writes the active `.mcrl2` editor's merged specification to a
@@ -223,6 +257,7 @@ export function activate(context: ExtensionContext) {
 	);
 
 	registerVirtualDocumentProvider(context);
+	registerFocusListener(context);
 
 	client = startClient(context);
 }
