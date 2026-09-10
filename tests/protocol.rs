@@ -19,8 +19,11 @@ use lsp_types::CompletionItemKind;
 use lsp_types::CompletionParams;
 use lsp_types::CompletionResponse;
 use lsp_types::DidChangeTextDocumentParams;
+use lsp_types::DidChangeWatchedFilesParams;
 use lsp_types::DidOpenTextDocumentParams;
 use lsp_types::DidSaveTextDocumentParams;
+use lsp_types::FileChangeType;
+use lsp_types::FileEvent;
 use lsp_types::DocumentSymbolParams;
 use lsp_types::DocumentSymbolResponse;
 use lsp_types::GotoDefinitionParams;
@@ -557,6 +560,33 @@ async fn completion_in_a_sort_expression_is_scoped_to_sorts() {
     assert!(!items.iter().any(|item| item.label == "f"), "a mapping is not a valid sort");
 }
 
+/// The cursor sits mid-way through an `%import` directive's path, *before* its closing quote has
+/// been typed — the actual moment completion fires while a user types the directive out by hand.
+/// Needs a real on-disk directory (unlike `uri()`'s fake `file:///...`) since
+/// `completion::import_path_completions` lists real directory entries.
+#[tokio::test]
+async fn completion_mid_import_directive_offers_matching_files_not_data_expressions() {
+    let (server, _result, mut rx) = start().await;
+
+    let dir = tempfile::tempdir().expect("should create a temp directory");
+    std::fs::write(dir.path().join("common.mcrl2"), "").expect("should write common.mcrl2");
+    let main_path = dir.path().join("main.mcrl2");
+    let text = "%import \"co";
+    std::fs::write(&main_path, text).expect("should write main.mcrl2");
+    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), text))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    let position = Position { line: 0, character: text.len() as u32 };
+    let items = completion_at(&server, main_uri, position).await;
+
+    assert!(items.iter().any(|item| item.label == "common.mcrl2"), "expected common.mcrl2 among {items:?}");
+    assert!(!items.iter().any(|item| item.label == "true"), "should not fall back to data-expression completions, got {items:?}");
+}
+
 /// A `.pbes` document is routed to `UntypedPbes::parse` (via `SpecKind::from_uri`), not the plain
 /// mCRL2 process-specification grammar — a well-formed PBES should parse cleanly and publish no
 /// diagnostics.
@@ -872,20 +902,61 @@ async fn switching_focus_back_to_a_document_reanalyzes_it_if_an_import_changed_o
     assert_eq!(second.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
 }
 
-/// A type error whose real span lands in an `%import`ed file, not the document that was actually
-/// opened/saved, must be published against *that* file's own URI with an accurate range — not
-/// mislocated (at a meaningless zero-width range) against the importing document's URI, which is
-/// all a single `publishDiagnostics` per analysis could ever manage. `backend::analyze` publishes
-/// one `publishDiagnostics` notification per URI a diagnostic actually resolves to.
+/// As `switching_focus_back_to_a_document_reanalyzes_it_if_an_import_changed_on_disk`, but for
+/// the case `merc/didFocusTextDocument` can't catch on its own: `main.mcrl2` never stops being the
+/// active editor (so `window.onDidChangeActiveTextEditor` never fires), yet `common.mcrl2` still
+/// changes on disk — e.g. edited by an external tool or another VS Code window. The client's file
+/// watcher (`vscode-client/src/extension.ts`'s `synchronize.fileEvents`) forwards that as a plain
+/// `workspace/didChangeWatchedFiles` notification, which must reanalyze every open document
+/// `Document::is_stale` flags rather than relying on focus changing at all.
 #[tokio::test]
-async fn a_type_error_in_an_imported_file_is_published_against_that_files_own_uri() {
+async fn a_watched_file_change_reanalyzes_documents_that_import_it_even_without_a_focus_change() {
+    let (server, _result, mut rx) = start().await;
+
+    let dir = tempfile::tempdir().expect("should create a temp directory");
+    let main_path = dir.path().join("main.mcrl2");
+    let common_path = dir.path().join("common.mcrl2");
+    std::fs::write(&main_path, "%import \"common.mcrl2\"\ninit b;\n").expect("should write main.mcrl2");
+    std::fs::write(&common_path, "act b;\n").expect("should write common.mcrl2");
+    let main_text = std::fs::read_to_string(&main_path).unwrap();
+    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), &main_text))
+        .expect("didOpen should be queued");
+    let first = next_diagnostics(&mut rx).await;
+    assert!(first.diagnostics.is_empty(), "main.mcrl2 should type check via its import: {first:?}");
+
+    std::fs::write(&common_path, "act c;\n").expect("should rewrite common.mcrl2");
+
+    server
+        .notify::<notification::DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+            changes: vec![FileEvent {
+                uri: common_uri,
+                typ: FileChangeType::CHANGED,
+            }],
+        })
+        .expect("workspace/didChangeWatchedFiles should be queued");
+
+    let second = next_diagnostics(&mut rx).await;
+    assert_eq!(second.diagnostics.len(), 1, "expected 'b' to be reported as undeclared: {second:?}");
+    assert_eq!(second.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
+}
+
+/// A type error whose real span lands in an `%import`ed file, not the document that was actually
+/// opened/saved, must be published against that imported file's own URI, at its own real
+/// location — not mislocated against the importing document's `%import "..."` line.
+#[tokio::test]
+async fn a_type_error_in_an_imported_file_is_shown_at_its_real_location() {
     let (server, _result, mut rx) = start().await;
 
     let dir = tempfile::tempdir().expect("should create a temp directory");
     let main_path = dir.path().join("main.mcrl2");
     let common_path = dir.path().join("common.mcrl2");
     std::fs::write(&main_path, "%import \"common.mcrl2\"\ninit delta;\n").expect("should write main.mcrl2");
-    std::fs::write(&common_path, "map f: Bool;\neqn f = undeclared;\n").expect("should write common.mcrl2");
+    let common_text = "map f: Bool;\neqn f = undeclared;\n";
+    std::fs::write(&common_path, common_text).expect("should write common.mcrl2");
     let main_text = std::fs::read_to_string(&main_path).unwrap();
     let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
     let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
@@ -894,15 +965,11 @@ async fn a_type_error_in_an_imported_file_is_published_against_that_files_own_ur
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), &main_text))
         .expect("didOpen should be queued");
 
-    // Two `publishDiagnostics` notifications come back: an empty one for `main.mcrl2` itself
-    // (there's nothing wrong with its own text) and a located one for `common.mcrl2`, where the
-    // undeclared name actually lives — order between the two isn't guaranteed.
+    // Two `publishDiagnostics` notifications come back, in no particular order: an empty one for
+    // `main.mcrl2` itself (clearing any stale diagnostics) and the real one for `common.mcrl2`.
     let first = next_diagnostics(&mut rx).await;
     let second = next_diagnostics(&mut rx).await;
-    let (main_params, common_params) = if first.uri == main_uri { (first, second) } else { (second, first) };
-
-    assert_eq!(main_params.uri, main_uri);
-    assert!(main_params.diagnostics.is_empty(), "main.mcrl2 has nothing wrong with its own text: {main_params:?}");
+    let common_params = if first.uri == common_uri { first } else { second };
 
     assert_eq!(common_params.uri, common_uri);
     assert_eq!(common_params.diagnostics.len(), 1, "expected the undeclared name to be reported: {common_params:?}");
@@ -910,7 +977,74 @@ async fn a_type_error_in_an_imported_file_is_published_against_that_files_own_ur
     assert_eq!(diag.source.as_deref(), Some("merc-lsp:types"));
     assert_eq!(
         diag.range.start,
-        position_of(&std::fs::read_to_string(&common_path).unwrap(), "undeclared"),
-        "diagnostic should be located at 'undeclared' inside common.mcrl2 itself, not at a placeholder range: {diag:?}"
+        position_of(common_text, "undeclared"),
+        "diagnostic should be located at 'undeclared' inside common.mcrl2 itself, not at main.mcrl2's %import line: {diag:?}"
     );
+}
+
+/// A *parse* error whose real location lands in an `%import`ed file — as opposed to
+/// `a_type_error_in_an_imported_file_is_shown_at_its_real_location`'s *type* error — must be
+/// located the same way: against that imported file's own URI, at its own real location.
+///
+/// Regression test: the pest error recovered from an `ImportError::Parse` is local to the failing
+/// file's own zero-based text (`merc_syntax::imports` parses each file's raw text before splicing
+/// it into the shared `SourceMap` space), not already global — treating it as global without
+/// rebasing it by that file's `base_offset` first mislocated the diagnostic inside whichever file
+/// happened to occupy that low a byte offset, typically the importing document itself.
+#[tokio::test]
+async fn a_parse_error_in_an_imported_file_is_shown_at_its_real_location() {
+    let (server, _result, mut rx) = start().await;
+
+    let dir = tempfile::tempdir().expect("should create a temp directory");
+    let main_path = dir.path().join("main.mcrl2");
+    let common_path = dir.path().join("common.mcrl2");
+    std::fs::write(&main_path, "%import \"common.mcrl2\"\ninit delta;\n").expect("should write main.mcrl2");
+    let common_text = "sort D\ninit delta;\n"; // missing ';' after 'sort D'
+    std::fs::write(&common_path, common_text).expect("should write common.mcrl2");
+    let main_text = std::fs::read_to_string(&main_path).unwrap();
+    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), &main_text))
+        .expect("didOpen should be queued");
+
+    let first = next_diagnostics(&mut rx).await;
+    let second = next_diagnostics(&mut rx).await;
+    let common_params = if first.uri == common_uri { first } else { second };
+
+    assert_eq!(common_params.uri, common_uri);
+    assert_eq!(common_params.diagnostics.len(), 1, "expected the parse error to be reported: {common_params:?}");
+    let diag = &common_params.diagnostics[0];
+    assert_eq!(
+        diag.range.start,
+        position_of(common_text, "D\n"),
+        "diagnostic should be located at the 'D' inside common.mcrl2 itself, not offset into main.mcrl2's own text: {diag:?}"
+    );
+}
+
+/// A missing `%import` target is located directly against the importing document's own directive
+/// — there's no file to point into instead.
+#[tokio::test]
+async fn a_missing_import_is_located_on_its_own_directive() {
+    let (server, _result, mut rx) = start().await;
+
+    let dir = tempfile::tempdir().expect("should create a temp directory");
+    let main_path = dir.path().join("main.mcrl2");
+    let main_text = "%import \"doesnotexist.mcrl2\"\ninit delta;\n";
+    std::fs::write(&main_path, main_text).expect("should write main.mcrl2");
+    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), main_text))
+        .expect("didOpen should be queued");
+
+    let main_params = next_diagnostics(&mut rx).await;
+
+    assert_eq!(main_params.uri, main_uri);
+    assert_eq!(main_params.diagnostics.len(), 1, "expected the unresolved import to be reported: {main_params:?}");
+    let diag = &main_params.diagnostics[0];
+    assert!(diag.message.contains("doesnotexist.mcrl2"), "message was: {}", diag.message);
+    assert_eq!(diag.range.start, position_of(main_text, "%import"));
+    assert_eq!(diag.range.end, position_of(main_text, "\ninit"));
 }
