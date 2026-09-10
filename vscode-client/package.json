@@ -186,6 +186,20 @@
 					"description": "Traces the communication between VS Code and the merc-lsp language server."
 				}
 			}
+		},
+		"configurationDefaults": {
+			"[merc]": {
+				"editor.quickSuggestions": { "strings": true }
+			},
+			"[merc-pbes]": {
+				"editor.quickSuggestions": { "strings": true }
+			},
+			"[merc-pres]": {
+				"editor.quickSuggestions": { "strings": true }
+			},
+			"[merc-mcf]": {
+				"editor.quickSuggestions": { "strings": true }
+			}
 		}
 	},
 	"scripts": {

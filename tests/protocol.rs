@@ -996,8 +996,10 @@ async fn an_error_in_an_imported_file_also_gets_a_companion_diagnostic_on_the_im
     let common_path = dir.path().join("common.mcrl2");
     let main_text = "%import \"common.mcrl2\"\ninit delta;\n";
     std::fs::write(&main_path, main_text).expect("should write main.mcrl2");
-    std::fs::write(&common_path, "map f: Bool;\neqn f = undeclared;\n").expect("should write common.mcrl2");
+    let common_text = "map f: Bool;\neqn f = undeclared;\n";
+    std::fs::write(&common_path, common_text).expect("should write common.mcrl2");
     let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), main_text))
@@ -1017,6 +1019,15 @@ async fn an_error_in_an_imported_file_also_gets_a_companion_diagnostic_on_the_im
     assert_eq!(diag.range.start, position_of(main_text, "%import"));
     assert_eq!(diag.range.end, position_of(main_text, "\ninit"));
     assert!(diag.message.contains("error"), "message was: {}", diag.message);
+
+    // The companion diagnostic must carry the real error as `related_information`, so an editor
+    // can jump straight from the `%import` line to `undeclared` inside common.mcrl2, without
+    // requiring the user to separately open it first.
+    let related = diag.related_information.as_ref().expect("expected related_information for goto navigation");
+    assert_eq!(related.len(), 1);
+    assert_eq!(related[0].location.uri, common_uri);
+    assert_eq!(related[0].location.range.start, position_of(common_text, "undeclared"));
+    assert!(related[0].message.contains("undeclared"), "related message was: {}", related[0].message);
 }
 
 /// A *parse* error whose real location lands in an `%import`ed file — as opposed to

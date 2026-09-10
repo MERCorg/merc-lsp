@@ -27,7 +27,9 @@ use merc_typecheck::ProcessError;
 use merc_typecheck::WellTypedError;
 use merc_utilities::MercError;
 use lsp_types::Diagnostic;
+use lsp_types::DiagnosticRelatedInformation;
 use lsp_types::DiagnosticSeverity;
+use lsp_types::Location;
 use lsp_types::NumberOrString;
 use lsp_types::Range;
 use lsp_types::Url;
@@ -387,7 +389,7 @@ pub fn import_error_diagnostics(text: &str, line_index: &LineIndex, sources: &So
         return Vec::new();
     };
 
-    let mut counts: HashMap<Span, usize> = HashMap::new();
+    let mut related: HashMap<Span, Vec<DiagnosticRelatedInformation>> = HashMap::new();
     for (target_uri, diagnostic) in diags {
         if target_uri == uri || diagnostic.severity != Some(DiagnosticSeverity::ERROR) {
             continue;
@@ -395,16 +397,19 @@ pub fn import_error_diagnostics(text: &str, line_index: &LineIndex, sources: &So
         let Ok(path) = target_uri.to_file_path() else { continue };
         let Some(id) = resolve_source(sources, &path) else { continue };
         let Some(directive) = owning_import_directive(text, sources, &dir, id) else { continue };
-        *counts.entry(directive.span).or_default() += 1;
+        related.entry(directive.span).or_default().push(DiagnosticRelatedInformation {
+            location: Location { uri: target_uri.clone(), range: diagnostic.range },
+            message: diagnostic.message.clone(),
+        });
     }
 
-    counts
+    related
         .into_iter()
-        .map(|(span, count)| {
-            let message = if count == 1 {
+        .map(|(span, related_information)| {
+            let message = if related_information.len() == 1 {
                 "the imported file has an error".to_string()
             } else {
-                format!("the imported file has {count} errors")
+                format!("the imported file has {} errors", related_information.len())
             };
             (
                 uri.clone(),
@@ -413,6 +418,7 @@ pub fn import_error_diagnostics(text: &str, line_index: &LineIndex, sources: &So
                     severity: Some(DiagnosticSeverity::ERROR),
                     source: Some(SOURCE.to_string()),
                     message,
+                    related_information: Some(related_information),
                     ..Diagnostic::default()
                 },
             )
