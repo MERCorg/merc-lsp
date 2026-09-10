@@ -34,7 +34,7 @@ pub struct VirtualDocumentParams {
 }
 
 /// Resolves a `merc-builtin:` URI to the text it stands for, or `null` (`None`)
-/// if the server has no entry under that name
+/// if the server has no entry under that name.
 pub enum VirtualDocument {}
 
 impl Request for VirtualDocument {
