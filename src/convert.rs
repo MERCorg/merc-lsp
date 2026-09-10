@@ -2,6 +2,10 @@
 //! and the UTF-16-code-unit based [`Position`]/[`Range`] types used by the Language Server
 //! Protocol.
 
+use line_index::LineCol;
+use line_index::TextSize;
+use line_index::WideEncoding;
+use line_index::WideLineCol;
 use lsp_types::Location;
 use lsp_types::Position;
 use lsp_types::Range;
@@ -9,6 +13,10 @@ use lsp_types::Url;
 use merc_syntax::SourceId;
 use merc_syntax::SourceMap;
 use merc_syntax::Span;
+use percent_encoding::AsciiSet;
+use percent_encoding::NON_ALPHANUMERIC;
+use percent_encoding::percent_decode_str;
+use percent_encoding::utf8_percent_encode;
 
 /// Used to find word boundaries when narrowing a declaration's span down to
 /// just its identifier, and to widen a zero-width parse-error location to a
@@ -17,26 +25,19 @@ pub(crate) fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'\''
 }
 
-/// A single indexed line of the document, used to convert between byte offsets and UTF-16
-/// based [`Position`]s in O(1) for the common (pure-ASCII) case.
-#[derive(Debug, Clone, Copy)]
-struct Line {
-    /// Byte offset of the first byte of this line relative to the start of the
-    /// document.
-    start: usize,
-
-    /// Whether every byte on this line is ASCII, letting the byte offset double as the UTF-16
-    /// offset within the line without walking the text.
-    is_ascii: bool,
-}
-
 /// Maps byte offsets within a document's source text to and from LSP [`Position`]s.
+///
+/// A thin adapter over the [`line_index`] crate (the same one rust-analyzer maintains and uses for
+/// this exact job) onto this crate's own [`Position`]/[`Span`] types — every method still takes
+/// `text` even though [`line_index::LineIndex`] itself doesn't need it, both so `text` must be the
+/// same text this index was built from stays load-bearing documentation at every call site, and
+/// because [`Self::offset`]'s own clamping (see its doc comment) needs the line's actual text to
+/// measure.
 ///
 /// Built once per document version; re-built whenever the text changes.
 #[derive(Debug, Clone)]
 pub struct LineIndex {
-    /// One entry per line, in order; `lines[0].start` is always `0`.
-    lines: Vec<Line>,
+    inner: line_index::LineIndex,
     /// Total length of the document in bytes, used to clamp out-of-range offsets.
     len: usize,
 }
@@ -44,23 +45,10 @@ pub struct LineIndex {
 impl LineIndex {
     /// Builds a [`LineIndex`] for the given document text.
     pub fn new(text: &str) -> Self {
-        let mut lines = Vec::new();
-        let mut start = 0;
-        let mut is_ascii = true;
-
-        for (offset, byte) in text.bytes().enumerate() {
-            if !byte.is_ascii() {
-                is_ascii = false;
-            }
-            if byte == b'\n' {
-                lines.push(Line { start, is_ascii });
-                start = offset + 1;
-                is_ascii = true;
-            }
+        LineIndex {
+            inner: line_index::LineIndex::new(text),
+            len: text.len(),
         }
-        lines.push(Line { start, is_ascii });
-
-        LineIndex { lines, len: text.len() }
     }
 
     /// Converts a byte offset into this document to a 0-based, UTF-16
@@ -70,36 +58,18 @@ impl LineIndex {
     /// offsets are clamped to the end of the document rather than panicking,
     /// since `merc_syntax` spans can be a synthetic [`Span::default`].
     pub fn position(&self, text: &str, offset: usize) -> Position {
-        let offset = offset.min(self.len);
-
-        // Binary search for the last line whose start is <= offset.
-        let line_idx = match self.lines.binary_search_by_key(&offset, |line| line.start) {
-            Ok(idx) => idx,
-            Err(idx) => idx.saturating_sub(1),
-        };
-        let line = self.lines[line_idx];
-
-        let character = if line.is_ascii {
-            // Fast path: byte offset within the line is already the UTF-16 offset.
-            (offset - line.start) as u32
-        } else {
-            // Slow path: walk the line counting UTF-16 code units up to `offset`.
-            let line_end = self.lines.get(line_idx + 1).map_or(self.len, |next| next.start);
-            let line_text = &text[line.start..line_end.min(text.len())];
-            let mut units = 0u32;
-            for (byte_offset, ch) in line_text.char_indices() {
-                if line.start + byte_offset >= offset {
-                    break;
-                }
-                units += ch.len_utf16() as u32;
-            }
-            units
-        };
-
-        Position {
-            line: line_idx as u32,
-            character,
+        let mut offset = offset.min(self.len);
+        // A span boundary should always already sit on one, but clamping above can turn a valid
+        // offset into `self.len`, and nothing guarantees every caller's raw offset does either —
+        // walk back to the nearest one rather than let `try_line_col` reject it. `self.len` and `0`
+        // are always boundaries, so this is guaranteed to terminate.
+        while !text.is_char_boundary(offset) {
+            offset -= 1;
         }
+
+        let line_col = self.inner.try_line_col(TextSize::from(offset as u32)).unwrap_or(LineCol { line: 0, col: 0 });
+        let wide = self.inner.to_wide(WideEncoding::Utf16, line_col).unwrap_or(WideLineCol { line: line_col.line, col: line_col.col });
+        Position { line: wide.line, character: wide.col }
     }
 
     /// Converts a [`Span`] into this document to an LSP [`Range`].
@@ -113,49 +83,34 @@ impl LineIndex {
     /// Converts a 0-based, UTF-16 [`Position`] back to a byte offset into this document.
     ///
     /// Returns `None` if `position` names a line beyond the end of the document; a `character`
-    /// past the end of an existing line clamps to the line's end instead of failing, matching
+    /// past the end of an existing line clamps to the line's end (i.e. its own trailing newline,
+    /// if any, included — so this lands at the *next* line's start) instead of failing, matching
     /// how most LSP clients send positions that are momentarily out of sync with the server.
     ///
     /// Used by `backend::completion_request` to find the byte offset a completion request's
     /// cursor position names, for [`crate::completion_context`] to classify.
     pub fn offset(&self, text: &str, position: Position) -> Option<usize> {
-        let line = *self.lines.get(position.line as usize)?;
-        let line_end = self
-            .lines
-            .get(position.line as usize + 1)
-            .map_or(self.len, |next| next.start);
-        let line_text = &text[line.start..line_end.min(text.len())];
+        let line_range = self.inner.line(position.line)?;
+        let line_text = &text[usize::from(line_range.start())..usize::from(line_range.end()).min(text.len())];
+        let line_wide_len = WideEncoding::Utf16.measure(line_text) as u32;
 
-        if line.is_ascii {
-            let offset = line.start + position.character as usize;
-            return Some(offset.min(line_end));
-        }
-
-        let mut units = 0u32;
-        for (byte_offset, ch) in line_text.char_indices() {
-            if units >= position.character {
-                return Some(line.start + byte_offset);
-            }
-            units += ch.len_utf16() as u32;
-        }
-        Some(line_end)
+        let wide = WideLineCol { line: position.line, col: position.character.min(line_wide_len) };
+        let line_col = self.inner.to_utf8(WideEncoding::Utf16, wide)?;
+        self.inner.offset(line_col).map(usize::from)
     }
 }
 
 /// The URI scheme a [`location`] builds for a span into *virtual* content.
 pub(crate) const VIRTUAL_DOCUMENT_SCHEME: &str = "merc-builtin";
 
+/// Characters [`virtual_uri`] leaves unescaped — the URI-path "unreserved" set (RFC 3986):
+/// alphanumerics plus `-_.~`. Everything else, [`NON_ALPHANUMERIC`] would also escape.
+const VIRTUAL_NAME_UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
+
 /// Encodes `name` — a virtual [`merc_syntax::SourceMap`] entry's own registered name, e.g.
 /// `<builtin>/nat.mcrl2` or `<generated>/struct/c1.mcrl2` — as a [`VIRTUAL_DOCUMENT_SCHEME`] URI.
 pub(crate) fn virtual_uri(name: &str) -> Url {
-    let mut encoded = String::with_capacity(name.len());
-    for byte in name.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            encoded.push(byte as char);
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
-        }
-    }
+    let encoded = utf8_percent_encode(name, VIRTUAL_NAME_UNRESERVED);
     Url::parse(&format!("{VIRTUAL_DOCUMENT_SCHEME}:///{encoded}")).expect("a percent-encoded name is always a valid URI path")
 }
 
@@ -166,21 +121,7 @@ pub(crate) fn decode_virtual_uri(uri: &Url) -> Option<String> {
         return None;
     }
     let path = uri.path().trim_start_matches('/');
-    let mut bytes = Vec::with_capacity(path.len());
-    let mut rest = path.as_bytes();
-    while let [byte, tail @ ..] = rest {
-        rest = tail;
-        if *byte == b'%' {
-            let [hi, lo, tail @ ..] = rest else { return None };
-            let hex_bytes = [*hi, *lo];
-            let hex = std::str::from_utf8(&hex_bytes).ok()?;
-            bytes.push(u8::from_str_radix(hex, 16).ok()?);
-            rest = tail;
-        } else {
-            bytes.push(*byte);
-        }
-    }
-    String::from_utf8(bytes).ok()
+    percent_decode_str(path).decode_utf8().ok().map(std::borrow::Cow::into_owned)
 }
 
 /// Resolves a global byte offset to the [`SourceId`] it falls in.
@@ -199,10 +140,20 @@ pub(crate) fn location(sources: &SourceMap, line_indexes: &[LineIndex], span: &S
     // A span is never produced straddling two files, so rebasing `span.end` by
     // the *same* file's base offset is always correct.
     let local_end = span.end - sources.base_offset(id);
-    let local_span = Span::new(local_start, local_end);
+    location_for(sources, line_indexes, id, &Span::new(local_start, local_end))
+}
 
+/// Builds an LSP [`Location`] for `local_span`, already known to belong to `id` — the other half
+/// of [`location`], split out for a caller that resolved `id` some other way than looking up a
+/// global offset (see [`crate::diagnostics::parse_error_diagnostic`], where a parse error's own
+/// [`merc_syntax::ImportError::Parse`] names the failing file directly, which a global-offset
+/// lookup can't reliably do for an offset that sits exactly on a file boundary — e.g. a syntax
+/// error at the end of a file immediately followed by an imported one).
+///
+/// `None` only if `id` is a file index past the end of `line_indexes`.
+pub(crate) fn location_for(sources: &SourceMap, line_indexes: &[LineIndex], id: SourceId, local_span: &Span) -> Option<Location> {
     let line_index = line_indexes.get(id.value())?;
-    let range = line_index.range(sources.text(id), &local_span);
+    let range = line_index.range(sources.text(id), local_span);
     let uri = if sources.is_virtual(id) {
         virtual_uri(sources.path(id))
     } else {
@@ -353,5 +304,36 @@ mod tests {
                 end: Position { line: 0, character: 18 },
             }
         );
+    }
+
+    #[test]
+    fn virtual_uri_round_trips_a_name_with_reserved_characters() {
+        let name = "<builtin>/struct/c1.mcrl2";
+        let uri = virtual_uri(name);
+        assert_eq!(uri.scheme(), VIRTUAL_DOCUMENT_SCHEME);
+        assert_eq!(decode_virtual_uri(&uri).as_deref(), Some(name));
+    }
+
+    #[test]
+    fn virtual_uri_leaves_unreserved_characters_unescaped() {
+        // A byte-identical check of the actual encoded form, not just that it round-trips: `-_.~`
+        // and alphanumerics stay literal, matching RFC 3986's unreserved set.
+        let uri = virtual_uri("a-b_c.d~e f");
+        assert_eq!(uri.path(), "/a-b_c.d~e%20f");
+    }
+
+    #[test]
+    fn decode_virtual_uri_rejects_a_non_virtual_scheme() {
+        let uri = Url::parse("file:///a/b.mcrl2").unwrap();
+        assert_eq!(decode_virtual_uri(&uri), None);
+    }
+
+    #[test]
+    fn decode_virtual_uri_rejects_malformed_percent_encoding() {
+        // `Url::parse` itself doesn't validate that a `%XX` escape decodes to valid UTF-8, so this
+        // reaches `decode_virtual_uri` — which must fail cleanly rather than panicking or silently
+        // returning corrupted text.
+        let uri = Url::parse(&format!("{VIRTUAL_DOCUMENT_SCHEME}:///%FF%FE")).unwrap();
+        assert_eq!(decode_virtual_uri(&uri), None);
     }
 }
