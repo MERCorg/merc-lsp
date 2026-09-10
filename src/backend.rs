@@ -14,6 +14,7 @@ use std::sync::Arc;
 use async_lsp::ClientSocket;
 use async_lsp::router::Router;
 use dashmap::Entry;
+use lsp_types::CompletionList;
 use lsp_types::CompletionParams;
 use lsp_types::CompletionResponse;
 use lsp_types::Diagnostic;
@@ -44,6 +45,7 @@ use crate::code_action;
 use crate::completion;
 use crate::completion::CompletionCategory;
 use crate::completion_context;
+use crate::convert::LineIndex;
 use crate::document::CheckedOutcome;
 use crate::document::Document;
 use crate::document::DocumentStore;
@@ -208,6 +210,21 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
             }
             ControlFlow::Continue(())
         })
+        .notification::<notification::DidChangeWatchedFiles>(|state, _params| {
+            // The client watches every `.mcrl2`/`.pbes`/`.pres`/`.mcf` file in the workspace (see
+            // `vscode-client/src/extension.ts`'s `synchronize.fileEvents`) and forwards every
+            // create/change/delete here.
+            let stale: Vec<(Url, String, i32)> = state
+                .documents
+                .iter()
+                .filter(|entry| entry.value().is_stale())
+                .map(|entry| (entry.key().clone(), entry.value().text.clone(), entry.value().version))
+                .collect();
+            for (uri, text, version) in stale {
+                spawn_analyze(state, uri, text, version, true);
+            }
+            ControlFlow::Continue(())
+        })
         // Ignore anything we don't handle instead of taking the server down.
         .unhandled_notification(|_, _| ControlFlow::Continue(()));
 
@@ -224,16 +241,16 @@ fn document_symbol(
     };
     let symbols = match spec {
         Specification::Process(spec) => {
-            symbols::document_symbols(&document.text, &document.line_index, spec)
+            symbols::document_symbols(&document.text, &document.line_index, &document.sources, spec)
         }
         Specification::Pbes(spec) => {
-            symbols::pbes_symbols(&document.text, &document.line_index, spec)
+            symbols::pbes_symbols(&document.text, &document.line_index, &document.sources, spec)
         }
         Specification::Pres(spec) => {
-            symbols::pres_symbols(&document.text, &document.line_index, spec)
+            symbols::pres_symbols(&document.text, &document.line_index, &document.sources, spec)
         }
         Specification::Modal(spec) => {
-            symbols::modal_symbols(&document.text, &document.line_index, spec)
+            symbols::modal_symbols(&document.text, &document.line_index, &document.sources, spec)
         }
     };
     Some(DocumentSymbolResponse::Nested(symbols))
@@ -250,9 +267,23 @@ fn completion_request(
     // Checked ahead of (and independently from) the AST-driven categories below, the same way
     // `goto_definition_request` checks `import_directive_target` first — an `%import` directive
     // isn't part of any of the four grammars this crate parses (see `parse.rs`'s module docs), so
-    // this needs no successful parse at all, unlike everything below it.
-    if let Some(items) = completion::import_path_completions(&document.text, &document.line_index, parse::path_of(uri).as_deref(), position) {
-        return Some(CompletionResponse::Array(items));
+    // this needs no successful parse at all, unlike everything below it. Deliberately read off
+    // `pending_text` (the live buffer `did_change` last recorded), not `text` (the snapshot from
+    // whenever this document was last opened/saved/focused) — unlike everything below, which needs
+    // a fresh parse and so is stuck on that snapshot until the next `analyze` run, this needs
+    // nothing but the raw text, so there's no reason to make the user save just to see the
+    // directory listing for a path they're still typing.
+    let pending_line_index = LineIndex::new(&document.pending_text);
+    if let Some(items) = completion::import_path_completions(&document.pending_text, &pending_line_index, parse::path_of(uri).as_deref(), position) {
+        // `is_incomplete: true` (not a plain `Array`, which implies `false`) — an item's `label`
+        // is a bare file/directory name (`"common.mcrl2"`, `"sub/"`), never prefixed with
+        // whatever path segment the user already typed, so it only ever literally prefix-matches
+        // client-side filtering by sheer coincidence (typing into an empty path, or the exact
+        // start of a name). The moment the user types a `.` (`./`, `../`) or anything else that
+        // isn't itself a name prefix, a client that filters this same list locally instead of
+        // asking again finds nothing and the suggestions silently vanish; flagging the list
+        // incomplete tells it to always re-request instead of ever reusing a stale one.
+        return Some(CompletionResponse::List(CompletionList { is_incomplete: true, items }));
     }
 
     // Same "no parse, nothing to offer" rule as `document_symbol`/`semantic_tokens_full`.

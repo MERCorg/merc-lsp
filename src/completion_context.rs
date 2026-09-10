@@ -41,7 +41,6 @@ use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
-use merc_syntax::scan_imports;
 
 /// What kind of declared name, if any, a completion request's cursor sits where one is expected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,11 +79,27 @@ fn contains(span: &Span, offset: usize) -> bool {
 }
 
 /// The part of an `%import "relative/path"` directive's own quoted path that's already been typed.
+///
+/// Deliberately hand-rolled rather than built on [`merc_syntax::scan_imports`]: that scanner only
+/// recognizes a line once it already has its *closing* quote.
 pub fn import_path_prefix(text: &str, offset: usize) -> Option<&str> {
-    let directive = scan_imports(text)
-        .into_iter()
-        .find(|directive| (directive.node.path_span.start..=directive.node.path_span.end).contains(&offset))?;
-    Some(&text[directive.node.path_span.start..offset])
+    let line_start = text[..offset].rfind('\n').map_or(0, |index| index + 1);
+    let line_end = text[offset..].find('\n').map_or(text.len(), |index| offset + index);
+    let line = &text[line_start..line_end];
+
+    let after_keyword = line.trim_start().strip_prefix("%import")?;
+    // Require at least one whitespace character between the keyword and the opening quote, so
+    // `%importance` is not misparsed as a directive — same rule as `parse_import_line`.
+    let after_whitespace = after_keyword.strip_prefix(char::is_whitespace)?.trim_start();
+    let after_quote = after_whitespace.strip_prefix('"')?;
+
+    let path_start = line_start + (line.len() - after_whitespace.len()) + 1;
+    let path_end = match after_quote.find('"') {
+        Some(index) => path_start + index,
+        None => line_end,
+    };
+
+    (path_start <= offset && offset <= path_end).then(|| &text[path_start..offset])
 }
 
 /// Whether `offset` sits somewhere inside `expr` — a data-expression's own span always covers its
@@ -662,5 +677,15 @@ mod tests {
         let text = "%import \"common.mcrl2\"\ninit delta;\n";
         assert_eq!(import_path_prefix(text, 0), None);
         assert_eq!(import_path_prefix(text, text.find("init").unwrap()), None);
+    }
+
+    #[test]
+    fn import_path_prefix_works_before_the_closing_quote_is_typed() {
+        // The state completion actually fires in: the user has typed the opening quote and part
+        // of the path, but not yet the closing quote — `merc_syntax::scan_imports` doesn't
+        // recognize the line as a directive at all until the closing quote exists, which used to
+        // make completion fall through to the general (data-expression) path instead.
+        let text = "%import \"sub/co";
+        assert_eq!(import_path_prefix(text, text.len()), Some("sub/co"));
     }
 }

@@ -133,13 +133,7 @@ impl Document {
     /// succeeded — any type errors (tagged with a distinct `source`; see
     /// [`crate::diagnostics::type_diagnostics`] and its PBES/PRES/modal-formula counterparts).
     ///
-    /// Each diagnostic is paired with the URI of the file it actually belongs to — `uri` (this
-    /// document's own) for anything local to `self.text`, but the URI of whichever `%import`ed
-    /// file a diagnostic's span actually falls into otherwise (see
-    /// [`crate::diagnostics::locate`]'s doc comment), so a diagnostic about content that came from
-    /// somewhere else lands its red squiggle in that file rather than at a meaningless zero-width
-    /// range superimposed on `uri`'s own text. `backend::analyze` is responsible for actually
-    /// publishing each group against its own URI.
+    /// Each diagnostic is paired with the URI it should actually be published against.
     pub fn diagnostics(&self, uri: &Url) -> Vec<(Url, Diagnostic)> {
         let mut diags = diagnostics::diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, &self.parsed, uri);
         // Purely syntactic (see `crate::ambiguity`'s module doc comment), so — unlike the
@@ -452,18 +446,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ambiguity_warning_is_published_against_the_importing_file() {
-        // As `diagnostics_stay_correctly_located_once_a_document_imports_another_file`, but for the
-        // `AmbiguousPrefixConflict` lint: `ambiguity::find_in_process_specification` walks the
-        // *merged* data specification, so a flagged expression can come from something the root
-        // document `%import`s rather than from the root document's own text.
-        //
-        // A `Diagnostic::range` only ever means something relative to the one URI it's published
-        // under, so a hit whose real position is in `common.mcrl2` can't be reported as a `range`
-        // against `main.mcrl2`'s URI at all — `diagnostics::locate` instead resolves the (URI,
-        // range) pair to publish against, which `backend::analyze` then actually publishes,
-        // landing the diagnostic's red squiggle in `common.mcrl2` itself, at its own real
-        // position — not silently mislocated in `main.mcrl2`.
+    async fn ambiguity_warning_in_an_import_is_shown_at_its_real_location() {
+        // `ambiguity::find_in_process_specification` walks the *merged* data specification, so a
+        // flagged expression can come from something the root document `%import`s rather than
+        // from the root document's own text. `diagnostics::locate` publishes it against that
+        // file's own URI, at its own real location, rather than mislocating it against the root
+        // document's `%import "common.mcrl2"` line.
         let dir = temp_project(&[
             ("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"),
             (
@@ -474,13 +462,11 @@ mod tests {
         let main_path = dir.path().join("main.mcrl2");
         let common_path = dir.path().join("common.mcrl2");
         let main_uri = Url::from_file_path(&main_path).expect("valid file path");
+        let common_uri = Url::from_file_path(&common_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let common_text = std::fs::read_to_string(&common_path).unwrap();
-        // The warning's span starts at the outer `!`'s own span (`AmbiguousPrefixConflict::whole_span`),
-        // not at `exists`.
         let expected_offset = common_text.find("!exists").expect("fixture contains '!exists'");
         let expected = LineIndex::new(&common_text).position(&common_text, expected_offset);
-        let expected_uri = Url::from_file_path(&common_path).expect("valid file path");
 
         let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
@@ -494,15 +480,15 @@ mod tests {
             .iter()
             .find(|(_, diag)| diag.source.as_deref() == Some("merc-lsp:ambiguity"))
             .expect("expected the ambiguous prefix conflict to be reported");
-        assert_eq!(uri, &expected_uri, "should be published against common.mcrl2, not main.mcrl2: {ambiguity_diag:?}");
+        assert_eq!(uri, &common_uri, "should be published against common.mcrl2, at its own real location: {ambiguity_diag:?}");
         assert_eq!(ambiguity_diag.range.start, expected);
     }
 
     #[tokio::test]
-    async fn type_error_is_published_against_the_importing_file() {
-        // As `ambiguity_warning_is_published_against_the_importing_file`, but for a genuine type
-        // error (an undeclared name) whose span lands in an `%import`ed file's own content rather
-        // than in the root document.
+    async fn type_error_in_an_import_is_shown_at_its_real_location() {
+        // As `ambiguity_warning_in_an_import_is_shown_at_its_real_location`, but for a genuine
+        // type error (an undeclared name) whose span lands in an `%import`ed file's own content
+        // rather than in the root document.
         let dir = temp_project(&[
             ("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"),
             ("common.mcrl2", "map f: Bool;\neqn f = undeclared;\n"),
@@ -510,11 +496,11 @@ mod tests {
         let main_path = dir.path().join("main.mcrl2");
         let common_path = dir.path().join("common.mcrl2");
         let main_uri = Url::from_file_path(&main_path).expect("valid file path");
+        let common_uri = Url::from_file_path(&common_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let common_text = std::fs::read_to_string(&common_path).unwrap();
         let expected_offset = common_text.find("undeclared").expect("fixture contains 'undeclared'");
         let expected = LineIndex::new(&common_text).position(&common_text, expected_offset);
-        let expected_uri = Url::from_file_path(&common_path).expect("valid file path");
 
         let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
@@ -528,29 +514,27 @@ mod tests {
             .iter()
             .find(|(_, diag)| diag.source.as_deref() == Some("merc-lsp:types"))
             .expect("expected the undeclared name to be reported");
-        assert_eq!(uri, &expected_uri, "should be published against common.mcrl2, not main.mcrl2: {type_diag:?}");
+        assert_eq!(uri, &common_uri, "should be published against common.mcrl2, at its own real location: {type_diag:?}");
         assert_eq!(type_diag.range.start, expected);
     }
 
     #[tokio::test]
-    async fn parse_error_in_an_imported_file_keeps_its_full_message() {
-        // A syntax error anywhere in the import graph of a real (`%import`-capable) document never
-        // reaches `diagnostics::parse_error_diagnostic` as a downcastable `PestError<Rule>` at all —
-        // `merc_syntax::imports::Resolver::load_with_text` stringifies it first (`format!("in
-        // {path}:\n{error}")`), discarding the structured location before it ever crosses into
-        // `merc-lsp`. That's a real gap, but it lives upstream in `merc_syntax`, not here: the only
-        // thing `merc-lsp` can still get right without that structured location is to not throw
-        // away what text it *does* get — this pins that the diagnostic keeps pest's actual message
-        // (which file, what was expected) rather than truncating to just "in <path>:" (its own
-        // first line) the way it used to, and stays published against `main.mcrl2` (the only URI
-        // it can meaningfully resolve to without a structured location).
+    async fn parse_error_in_an_import_is_shown_at_its_real_location() {
+        // A syntax error anywhere in the import graph of a real (`%import`-capable) document
+        // reaches `merc-lsp` wrapped in one or more `merc_syntax::ImportError` layers; the
+        // recovered pest error's own span still lands inside the broken file itself, so it goes
+        // through the same cross-file `diagnostics::locate` path as any other import-local span,
+        // and is published against that file's own URI.
         let dir = temp_project(&[
             ("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"),
             ("common.mcrl2", "act a\n"), // missing ';'
         ]);
         let main_path = dir.path().join("main.mcrl2");
+        let common_path = dir.path().join("common.mcrl2");
         let main_uri = Url::from_file_path(&main_path).expect("valid file path");
+        let common_uri = Url::from_file_path(&common_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
+        let common_text = std::fs::read_to_string(&common_path).unwrap();
 
         let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::ParseError(_) = &outcome else {
@@ -561,12 +545,42 @@ mod tests {
         let diags = document.diagnostics(&main_uri);
         assert_eq!(diags.len(), 1);
         let (uri, diag) = &diags[0];
-        assert_eq!(uri, &main_uri);
+        assert_eq!(uri, &common_uri, "should be published against common.mcrl2, at its own real location: {diag:?}");
         assert_eq!(diag.source.as_deref(), Some("merc-lsp"));
-        assert_eq!(diag.range, Range::default(), "no structured location survives the stringified upstream error: {diag:?}");
-        assert!(
-            diag.message.contains("common.mcrl2") && diag.message.lines().count() > 1,
-            "message should keep pest's own detail, not just its first line: {diag:?}"
+        let expected = LineIndex::new(&common_text).position(&common_text, common_text.find('\n').unwrap() - 1);
+        assert_eq!(diag.range.start, expected);
+        assert!(!diag.message.contains("-->"), "message should not contain pest's caret block: {diag:?}");
+    }
+
+    #[tokio::test]
+    async fn missing_import_is_located_at_its_own_directive() {
+        // A missing `%import` target has no pest error to recover a location from — the
+        // underlying failure is just "file not found" — but `merc_syntax::ImportError::Unresolved`
+        // still carries the span of the failing `%import "..."` directive itself, which the
+        // diagnostic should be located at instead of falling back to (0,0). The directive is
+        // deliberately not on the fixture's first line, so a diagnostic that actually landed at
+        // (0,0) (the old, un-located fallback) would be distinguishable from one correctly
+        // resolved to the directive's own line.
+        let dir = temp_project(&[("main.mcrl2", "act a: Bool;\n%import \"missing.mcrl2\"\ninit delta;\n")]);
+        let main_path = dir.path().join("main.mcrl2");
+        let main_uri = Url::from_file_path(&main_path).expect("valid file path");
+        let text = std::fs::read_to_string(&main_path).unwrap();
+        let expected_offset = text.find("%import").expect("fixture contains '%import'");
+        let expected = LineIndex::new(&text).position(&text, expected_offset);
+
+        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let ParseOutcome::ParseError(_) = &outcome else {
+            panic!("fixture should fail to parse");
+        };
+        let document = Document::new(text, 0, outcome, None, sources);
+
+        let diags = document.diagnostics(&main_uri);
+        assert_eq!(diags.len(), 1);
+        let (uri, diag) = &diags[0];
+        assert_eq!(uri, &main_uri, "should be published against main.mcrl2 itself: {diag:?}");
+        assert_eq!(
+            diag.range.start, expected,
+            "should be located at the failing %import directive, not (0,0): {diag:?}"
         );
     }
 

@@ -6,13 +6,18 @@
 //! category of name the error is about, the same categories
 //! [`crate::completion_context`] classifies a cursor position into.
 
+use std::path::Path;
+
+use merc_syntax::ImportError;
 use merc_syntax::Rule;
+use merc_syntax::SourceId;
 use merc_syntax::SourceMap;
 use merc_syntax::Span;
 use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
+use merc_syntax::scan_imports;
 use merc_typecheck::InferenceError;
 use merc_typecheck::ModalError;
 use merc_typecheck::PbesError;
@@ -310,23 +315,79 @@ fn suggestion_for_modal_error(error: &ModalError, spec: &UntypedStateFrmSpec) ->
 }
 
 /// Resolves `span` to the URI and [`Range`] a [`Diagnostic`] about it should actually be published
-/// against — shared by [`error_diagnostic`] and [`ambiguity_diagnostic`].
+/// against — shared by [`error_diagnostic`], [`ambiguity_diagnostic`], and [`parse_error_diagnostic`].
 ///
 /// A `Diagnostic::range` is only ever meaningful relative to the one URI its containing
 /// `PublishDiagnosticsParams` is published under — so when `span` falls inside `text` itself
-/// (`root_uri`'s own document) this returns an accurate range against `root_uri`. But when `span`
-/// falls into something `text` `%import`s, a range built from that *other* file's own
-/// [`LineIndex`] would mean nothing superimposed on `root_uri`'s text: `backend::analyze` publishes
-/// whatever URI this returns, not just `root_uri`, precisely so a diagnostic like that can be
-/// published against — and land the red squiggle correctly in — the file it actually belongs to.
+/// (`root_uri`'s own document) this returns an accurate range against `root_uri`. Otherwise, this
+/// publishes directly against whichever file `span` actually falls into (e.g. something `text`
+/// `%import`s), so the diagnostic lands on the real error location rather than on the `%import`
+/// directive that brought that file in.
 fn locate(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], span: &Span, root_uri: &Url) -> (Url, Range) {
     if convert::is_local_span(sources, span) {
-        (root_uri.clone(), line_index.range(text, span))
-    } else {
-        match convert::location(sources, line_indexes, span) {
-            Some(location) => (location.uri, location.range),
-            None => (root_uri.clone(), Range::default()),
-        }
+        return (root_uri.clone(), line_index.range(text, span));
+    }
+
+    match convert::location(sources, line_indexes, span) {
+        Some(location) => (location.uri, location.range),
+        None => (root_uri.clone(), Range::default()),
+    }
+}
+
+/// The directory `root_uri`'s own `%import` directives resolve relative paths against.
+pub(crate) fn root_import_directory(sources: &SourceMap) -> Option<std::path::PathBuf> {
+    if sources.file_count() == 0 {
+        return None;
+    }
+    let root_path = Path::new(sources.path(SourceId::new(0)));
+    Some(root_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf())
+}
+
+/// The `%import` directive, within `text` (a document living in `dir`), that (directly or
+/// transitively) pulls in the file `target` belongs to — `None` if no import reachable from
+/// `text` leads there..
+pub(crate) fn owning_import_directive(text: &str, sources: &SourceMap, dir: &Path, target: SourceId) -> Option<merc_utilities::Spanned<merc_syntax::ImportDirective>> {
+    scan_imports(text).into_iter().find_map(|directive| {
+        let import_path = dir.join(&directive.node.path);
+        let child_id = resolve_source(sources, &import_path)?;
+        contains_source(sources, &import_path, child_id, target).then_some(directive)
+    })
+}
+
+/// Whether `target` is `id`'s own file, or something `id`'s file (transitively) `%import`s. `path`
+/// is `id`'s own path, exactly as resolved to reach it — needed to resolve *its* `%import`s in
+/// turn, relative to its own directory.
+fn contains_source(sources: &SourceMap, path: &Path, id: SourceId, target: SourceId) -> bool {
+    if id == target {
+        return true;
+    }
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    scan_imports(sources.text(id)).into_iter().any(|directive| {
+        let import_path = dir.join(&directive.node.path);
+        resolve_source(sources, &import_path).is_some_and(|child_id| contains_source(sources, &import_path, child_id, target))
+    })
+}
+
+/// Finds the [`SourceId`] already loaded into `sources` for `path`.
+fn resolve_source(sources: &SourceMap, path: &Path) -> Option<SourceId> {
+    (0..sources.file_count())
+        .map(SourceId::new)
+        .find(|&id| Path::new(sources.path(id)) == path)
+        .or_else(|| {
+            let canonical = path.canonicalize().ok()?;
+            (0..sources.file_count()).map(SourceId::new).find(|&id| Path::new(sources.path(id)).canonicalize().ok().as_deref() == Some(canonical.as_path()))
+        })
+}
+
+/// The path of the file whose own parse actually failed, for an [`ImportError`] ultimately caused
+/// by a parse failure — the same file [`ImportError::pest_error`] recovers the structured pest
+/// error from, however many [`ImportError::Unresolved`] layers deep it is. `None` for
+/// [`ImportError::Cycle`], which isn't anchored to one file's parse..
+fn import_parse_error_path(error: &ImportError) -> Option<&Path> {
+    match error {
+        ImportError::Parse { path, .. } => Some(path.as_path()),
+        ImportError::Unresolved { cause, .. } => cause.downcast_ref::<ImportError>().and_then(import_parse_error_path),
+        ImportError::Cycle { .. } => None,
     }
 }
 
@@ -359,10 +420,21 @@ fn error_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap, lin
 }
 
 fn parse_error_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], error: &MercError, root_uri: &Url) -> (Url, Diagnostic) {
-    match error.downcast_ref::<PestError<Rule>>() {
+    // A document parsed via `merc_syntax::imports` (any `%import`-capable document backed by a
+    // real path — see `parse.rs`'s module docs) never carries a directly downcastable
+    // `PestError<Rule>` at the top level.
+    let import_error = error.downcast_ref::<ImportError>();
+    let pest_error = error.downcast_ref::<PestError<Rule>>().or_else(|| import_error.and_then(ImportError::pest_error));
+    match pest_error {
         Some(pest_error) => {
             let message = pest_error.variant.message().into_owned();
-            let span = parse_error_span(text, sources, &pest_error.location);
+            // `pest_error.location` is local to whichever file actually failed to parse.
+            let base = import_error
+                .and_then(import_parse_error_path)
+                .and_then(|path| resolve_source(sources, path))
+                .map(|id| sources.base_offset(id))
+                .unwrap_or(0);
+            let span = parse_error_span(text, sources, &pest_error.location, base);
             let (uri, range) = locate(text, line_index, sources, line_indexes, &span, root_uri);
             (
                 uri,
@@ -376,25 +448,21 @@ fn parse_error_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMa
             )
         }
         None => {
-            // A document parsed via `merc_syntax::imports` (any `%import`-capable document backed
-            // by a real path — see `parse.rs`'s module docs) never reaches this arm with a
-            // downcastable `PestError<Rule>` at all: `Resolver::load_with_text` immediately
-            // stringifies every file's own parse error (`format!("in {path}:\n{error}")`, in the
-            // pinned `merc_syntax::imports` source) before it ever gets back here, discarding the
-            // structured location along with the original error type. This is the common case in
-            // practice (any saved `.mcrl2`/`.mcf` file), so keep the *whole* message — it still
-            // carries the real reason (and, textually, `path`/pest's own line:col) — rather than
-            // just its first line; that used to matter only to cut a possible backtrace off a raw
-            // caught panic, a class of error `parse.rs`'s module docs say no longer reaches here.
-            // Also always published against `root_uri`, since no structured location survives to
-            // resolve against anything else.
+            // Neither a bare pest error nor an `ImportError` wrapping one with a recoverable pest
+            // error.
+            let message = error.to_string();
+            let span = import_error.and_then(ImportError::span);
+            let (uri, range) = match span {
+                Some(span) => locate(text, line_index, sources, line_indexes, span, root_uri),
+                None => (root_uri.clone(), Range::default()),
+            };
             (
-                root_uri.clone(),
+                uri,
                 Diagnostic {
-                    range: Range::default(),
+                    range,
                     severity: Some(DiagnosticSeverity::ERROR),
                     source: Some(SOURCE.to_string()),
-                    message: error.to_string(),
+                    message,
                     ..Diagnostic::default()
                 },
             )
@@ -415,22 +483,19 @@ fn internal_diagnostic(message: &str, source: &str, root_uri: &Url) -> (Url, Dia
     )
 }
 
-/// Builds the (global, into `sources`) [`Span`] a pest [`InputLocation`] names. `text`/`sources`
-/// parsing with `%import`s in play pads each file's text by its own `base_offset` before handing
-/// it to pest (see [`merc_syntax::SourceMap::base_offset`]'s doc comment), so `location`'s offsets
-/// are already global — a parse error can land in something the root document `%import`s just as
-/// easily as in `text` itself.
-fn parse_error_span(text: &str, sources: &SourceMap, location: &InputLocation) -> Span {
+/// Builds the (global, into `sources`) [`Span`] a pest [`InputLocation`] names.
+fn parse_error_span(text: &str, sources: &SourceMap, location: &InputLocation, base: usize) -> Span {
     match location {
-        InputLocation::Span((start, end)) => Span { start: *start, end: *end },
+        InputLocation::Span((start, end)) => Span { start: base + *start, end: base + *end },
         InputLocation::Pos(offset) => {
+            let offset = base + *offset;
             // A zero-width range renders poorly in most editors; widen it to cover the token
             // starting at `offset`, or at minimum one character — against whichever file `offset`
             // actually falls into, since that file's own text is what the token's bytes come from.
-            let (local_text, local_span) = convert::local_text_and_span(text, sources, &Span { start: *offset, end: *offset });
+            let (local_text, local_span) = convert::local_text_and_span(text, sources, &Span { start: offset, end: offset });
             let local_end = widen_to_token_end(local_text, local_span.start);
             let end = offset + (local_end - local_span.start);
-            Span { start: *offset, end }
+            Span { start: offset, end }
         }
     }
 }
