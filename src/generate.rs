@@ -45,19 +45,14 @@ impl Request for GenerateFullSpec {
     const METHOD: &'static str = "merc/generateFullSpec";
 }
 
-/// The actual request handler: looks `params.uri` up in `documents` and, if it parsed as a process
-/// specification, renders it via [`std::fmt::Display`].
-///
-/// `None` covers every reason there's nothing to render — the document isn't open, it isn't a
-/// process specification (see [`crate::document::Document::parsed_process_specification`]), or its
-/// latest analyzed text didn't parse — uniformly, the same way [`crate::virtual_document`]'s
-/// request does; there's no finer-grained error to report that the client could act on
-/// differently.
+/// The actual request handler: looks `params.uri` up in `documents` and, if it's a process
+/// specification that both parsed *and* type checked, renders it via [`std::fmt::Display`].
 pub fn generate_full_spec_request(
     documents: &DocumentStore,
     params: GenerateFullSpecParams,
 ) -> Option<String> {
     let document = documents.get(&params.uri)?;
+    document.checked_process_specification()?;
     let spec = document.parsed_process_specification()?;
     Some(spec.to_string())
 }
@@ -67,6 +62,7 @@ mod tests {
     use merc_syntax::SourceMap;
 
     use super::*;
+    use crate::document::CheckedOutcome;
     use crate::document::Document;
     use crate::parse::ParseOutcome;
     use crate::parse::SpecKind;
@@ -74,10 +70,15 @@ mod tests {
     use crate::parse::parse_ignoring_sources;
 
     #[tokio::test]
-    async fn renders_a_parsed_process_specification() {
+    async fn renders_a_well_typed_process_specification() {
         let text = "act a;\ninit a;".to_string();
         let parsed = parse_ignoring_sources(SpecKind::Process, text.clone()).await;
-        let document = Document::new(text, 0, parsed, None, SourceMap::new());
+        let spec = match &parsed {
+            ParseOutcome::Ok(Specification::Process(spec)) => (**spec).clone(),
+            _ => panic!("fixture failed to parse"),
+        };
+        let checked = crate::typecheck::typecheck_ignoring_sources(spec).await;
+        let document = Document::new(text, 0, parsed, Some(CheckedOutcome::Process(checked)), SourceMap::new());
 
         let documents = DocumentStore::default();
         let uri: Url = "file:///a.mcrl2".parse().unwrap();
@@ -87,6 +88,26 @@ mod tests {
             .expect("should render");
         assert!(rendered.contains("act"));
         assert!(rendered.contains("init a;"));
+    }
+
+    #[tokio::test]
+    async fn is_none_for_an_ill_typed_process_specification() {
+        // `undeclared` isn't declared anywhere, so this parses but fails to type check.
+        let text = "map f: Bool;\neqn f = undeclared;\ninit delta;".to_string();
+        let parsed = parse_ignoring_sources(SpecKind::Process, text.clone()).await;
+        let spec = match &parsed {
+            ParseOutcome::Ok(Specification::Process(spec)) => (**spec).clone(),
+            _ => panic!("fixture failed to parse"),
+        };
+        let checked = crate::typecheck::typecheck_ignoring_sources(spec).await;
+        assert!(matches!(checked, crate::typecheck::TypecheckOutcome::Error(_)));
+        let document = Document::new(text, 0, parsed, Some(CheckedOutcome::Process(checked)), SourceMap::new());
+
+        let documents = DocumentStore::default();
+        let uri: Url = "file:///ill-typed.mcrl2".parse().unwrap();
+        documents.insert(uri.clone(), document);
+
+        assert!(generate_full_spec_request(&documents, GenerateFullSpecParams { uri }).is_none());
     }
 
     #[tokio::test]
