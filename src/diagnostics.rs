@@ -6,6 +6,7 @@
 //! category of name the error is about, the same categories
 //! [`crate::completion_context`] classifies a cursor position into.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use merc_syntax::ImportError;
@@ -377,6 +378,46 @@ fn resolve_source(sources: &SourceMap, path: &Path) -> Option<SourceId> {
             let canonical = path.canonicalize().ok()?;
             (0..sources.file_count()).map(SourceId::new).find(|&id| Path::new(sources.path(id)).canonicalize().ok().as_deref() == Some(canonical.as_path()))
         })
+}
+
+/// Companion diagnostics for `uri`'s own `%import` directives, so a broken import is visible right
+/// there instead of only inside whatever file it actually pulls in.
+pub fn import_error_diagnostics(text: &str, line_index: &LineIndex, sources: &SourceMap, uri: &Url, diags: &[(Url, Diagnostic)]) -> Vec<(Url, Diagnostic)> {
+    let Some(dir) = root_import_directory(sources) else {
+        return Vec::new();
+    };
+
+    let mut counts: HashMap<Span, usize> = HashMap::new();
+    for (target_uri, diagnostic) in diags {
+        if target_uri == uri || diagnostic.severity != Some(DiagnosticSeverity::ERROR) {
+            continue;
+        }
+        let Ok(path) = target_uri.to_file_path() else { continue };
+        let Some(id) = resolve_source(sources, &path) else { continue };
+        let Some(directive) = owning_import_directive(text, sources, &dir, id) else { continue };
+        *counts.entry(directive.span).or_default() += 1;
+    }
+
+    counts
+        .into_iter()
+        .map(|(span, count)| {
+            let message = if count == 1 {
+                "the imported file has an error".to_string()
+            } else {
+                format!("the imported file has {count} errors")
+            };
+            (
+                uri.clone(),
+                Diagnostic {
+                    range: line_index.range(text, &span),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    source: Some(SOURCE.to_string()),
+                    message,
+                    ..Diagnostic::default()
+                },
+            )
+        })
+        .collect()
 }
 
 /// The path of the file whose own parse actually failed, for an [`ImportError`] ultimately caused

@@ -513,10 +513,11 @@ async fn completion_at(server: &ServerSocket, document_uri: Url, position: Posit
         .await
         .expect("completion should succeed");
 
-    let Some(CompletionResponse::Array(items)) = response else {
-        panic!("expected a completion item array, got {response:?}");
-    };
-    items
+    match response {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        None => panic!("expected completion items, got None"),
+    }
 }
 
 /// The cursor sits on the left-hand side of an equation — a data-expression position, so
@@ -980,6 +981,42 @@ async fn a_type_error_in_an_imported_file_is_shown_at_its_real_location() {
         position_of(common_text, "undeclared"),
         "diagnostic should be located at 'undeclared' inside common.mcrl2 itself, not at main.mcrl2's %import line: {diag:?}"
     );
+}
+
+/// An error inside an `%import`ed file must also surface as a companion diagnostic directly on
+/// the importing document's own `%import` line — not just against the imported file's own URI
+/// (see `a_type_error_in_an_imported_file_is_shown_at_its_real_location`) — so the problem is
+/// visible without having to separately open the imported file.
+#[tokio::test]
+async fn an_error_in_an_imported_file_also_gets_a_companion_diagnostic_on_the_import_line() {
+    let (server, _result, mut rx) = start().await;
+
+    let dir = tempfile::tempdir().expect("should create a temp directory");
+    let main_path = dir.path().join("main.mcrl2");
+    let common_path = dir.path().join("common.mcrl2");
+    let main_text = "%import \"common.mcrl2\"\ninit delta;\n";
+    std::fs::write(&main_path, main_text).expect("should write main.mcrl2");
+    std::fs::write(&common_path, "map f: Bool;\neqn f = undeclared;\n").expect("should write common.mcrl2");
+    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), main_text))
+        .expect("didOpen should be queued");
+
+    let first = next_diagnostics(&mut rx).await;
+    let second = next_diagnostics(&mut rx).await;
+    let main_params = if first.uri == main_uri { first } else { second };
+
+    assert_eq!(main_params.uri, main_uri);
+    assert_eq!(
+        main_params.diagnostics.len(),
+        1,
+        "expected a companion diagnostic on main.mcrl2's own %import line: {main_params:?}"
+    );
+    let diag = &main_params.diagnostics[0];
+    assert_eq!(diag.range.start, position_of(main_text, "%import"));
+    assert_eq!(diag.range.end, position_of(main_text, "\ninit"));
+    assert!(diag.message.contains("error"), "message was: {}", diag.message);
 }
 
 /// A *parse* error whose real location lands in an `%import`ed file — as opposed to

@@ -169,6 +169,8 @@ impl Document {
             }
             None => {}
         }
+        let import_diags = diagnostics::import_error_diagnostics(&self.text, &self.line_index, &self.sources, uri, &diags);
+        diags.extend(import_diags);
         diags
     }
 
@@ -543,8 +545,13 @@ mod tests {
         let document = Document::new(text, 0, outcome, None, sources);
 
         let diags = document.diagnostics(&main_uri);
-        assert_eq!(diags.len(), 1);
-        let (uri, diag) = &diags[0];
+        // Two diagnostics now: the real one against `common.mcrl2` itself, plus a companion one on
+        // `main.mcrl2`'s own `%import` line (see `diagnostics::import_error_diagnostics`).
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        let (uri, diag) = diags
+            .iter()
+            .find(|(uri, _)| uri == &common_uri)
+            .expect("expected a diagnostic located against common.mcrl2 itself");
         assert_eq!(uri, &common_uri, "should be published against common.mcrl2, at its own real location: {diag:?}");
         assert_eq!(diag.source.as_deref(), Some("merc-lsp"));
         let expected = LineIndex::new(&common_text).position(&common_text, common_text.find('\n').unwrap() - 1);

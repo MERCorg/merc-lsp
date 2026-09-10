@@ -77,6 +77,10 @@ pub fn import_path_completions(text: &str, line_index: &LineIndex, doc_path: Opt
                     range: edit_range,
                     new_text: label.clone(),
                 })),
+                // Editors that locally re-filter a still-open completion list as the user keeps
+                // typing (rather than waiting for the next server round trip) compare that typed
+                // text against `filterText`.
+                filter_text: Some(format!("{sub_dir}{label}")),
                 kind: Some(kind),
                 label,
                 ..CompletionItem::default()
@@ -563,5 +567,32 @@ mod tests {
         let start_offset = line_index.offset(&text, edit.range.start).unwrap();
         let end_offset = line_index.offset(&text, edit.range.end).unwrap();
         assert_eq!(&text[start_offset..end_offset], "co", "should only replace the partial filename, not 'sub/'");
+    }
+
+    #[test]
+    fn import_path_completion_sets_filter_text_to_the_full_typed_path() {
+        // Regression test: a `./`-prefixed path used to fail to complete in editors (e.g.
+        // VS Code) that locally re-filter an already-open completion list against `filterText`
+        // (which defaults to the bare `label`) as the user keeps typing, instead of always
+        // waiting for a fresh request. `../` happened to still work because its second `.`
+        // immediately empties that local list (no label has two `.`s), closing the stale session
+        // before the next keystroke — but `./`'s single `.` still fuzzy-matches the `.` inside
+        // `common.mcrl2`, keeping the stale session open long enough for the following `/` to
+        // wipe it out locally, racing the fresh (correct) results this directory listing computes.
+        // `filterText` must include `sub_dir` (here "./"), not just the bare label, so every
+        // character the user has actually typed remains a real prefix of it.
+        let dir = tempfile::tempdir().expect("should create a temp directory");
+        std::fs::write(dir.path().join("common.mcrl2"), "").unwrap();
+        let main_path = dir.path().join("main.mcrl2");
+        let text = "%import \"./\"\ninit delta;\n".to_string();
+        std::fs::write(&main_path, &text).unwrap();
+
+        let line_index = LineIndex::new(&text);
+        let offset = text.find("./\"").unwrap() + "./".len();
+        let position = line_index.position(&text, offset);
+        let items = import_path_completions(&text, &line_index, Some(main_path.as_path()), position).expect("should offer import completions");
+
+        let item = items.iter().find(|item| item.label == "common.mcrl2").expect("expected common.mcrl2 among {items:?}");
+        assert_eq!(item.filter_text.as_deref(), Some("./common.mcrl2"));
     }
 }
