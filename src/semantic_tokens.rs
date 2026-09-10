@@ -53,8 +53,9 @@ enum TokenKind {
     /// A process reference, whether a `proc` declaration itself or an
     /// instantiation of one. Deliberately kept a distinct token type from
     /// [`TokenKind::Event`], so a theme colors a process instantiation
-    /// differently from an action instantiation even though both can parse as
-    /// the same [`ProcessExprKind::Action`] shape (see the module docs above).
+    /// differently from an action instantiation even though the grammar parses both the same way,
+    /// as [`ProcessExprKind::Action`] — `a(x)` is only known to name a process rather than an
+    /// action once its name is resolved against the specification's declarations.
     Method = 2,
     /// An action declaration or instantiation. Kept a separate token type from
     /// [`TokenKind::Method`] specifically so actions and processes don't end up
@@ -289,8 +290,9 @@ fn tag_data_specification(data: &UntypedDataSpecification, symbols: &SymbolTable
 /// Which declared identifiers name what — the disambiguation a TextMate grammar cannot do, since
 /// the grammar gives the same shape to several different declaration kinds. Used to classify a
 /// bare [`DataExprKind::Id`] (function, constructor, parameter, or variable) and a
-/// [`ProcessExprKind::Action`] whose name might actually belong to a process, not an action (see
-/// the module docs above).
+/// [`ProcessExprKind::Action`] whose name might actually belong to a process, not an action —
+/// grammatically identical (`a(x)`), and only distinguished by which declaration its name
+/// resolves to.
 struct SymbolTable<'a> {
     maps: HashSet<&'a str>,
     constructors: HashSet<&'a str>,
@@ -405,8 +407,8 @@ impl<'a> SymbolTable<'a> {
         }
     }
 
-    /// Classifies a [`ProcessExprKind::Action`] occurrence, which — per the module docs — is also
-    /// how a parenthesis-less process reference parses.
+    /// Classifies a [`ProcessExprKind::Action`] occurrence, which is also how a process
+    /// instantiation parses — the grammar doesn't distinguish the two shapes.
     fn classify_action(&self, name: &str) -> TokenKind {
         if self.processes.contains(name) {
             TokenKind::Method
@@ -1172,11 +1174,10 @@ mod tests {
 
     #[tokio::test]
     async fn ordinary_parameter_use_is_tagged_parameter_not_variable() {
-        // `x` in the recursive call `P(x)` is a *positional* use of `P`'s own parameter — parsed
-        // as an ordinary `ProcessExprKind::Action` argument (see the module docs' `ProcExprId`
-        // quirk: positional process instantiation isn't `ProcessExprKind::Id` at all), not the
-        // assignment form the test above covers, so it went through `classify_data_id`'s bound/
-        // free-variable fallback before `SymbolTable::parameters` existed.
+        // `x` in the recursive call `P(x)` is a *positional* use of `P`'s own parameter, parsed as
+        // an ordinary `ProcessExprKind::Action` argument (a positional process instantiation isn't
+        // `ProcessExprKind::Id`) — distinct from the assignment form (`P(x = x)`) the test above
+        // covers.
         let text = "act a: Bool;\nproc P(x: Bool) = a(x).P(x);\ninit P(true);";
         let tokens = tokens_for(text).await;
         let positions = absolute(&tokens);

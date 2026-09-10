@@ -210,8 +210,7 @@ fn state_var_assignment_symbol(text: &str, line_index: &LineIndex, argument: &St
 
 /// The `sort`/`cons`/`map`/`eqn` part of the outline, shared by [`document_symbols`],
 /// [`pbes_symbols`], [`pres_symbols`], and [`modal_symbols`] — every declaration here goes through
-/// [`place`], so one `%import`ed from another file lands in `groups` instead of the returned
-/// `Vec` (see this module's own doc comment).
+/// [`place`], so one `%import`ed from another file lands in `groups` instead of the returned `Vec`.
 fn data_specification_symbols(text: &str, line_index: &LineIndex, sources: &SourceMap, data: &UntypedDataSpecification, groups: &mut ImportGroups) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
 
@@ -287,8 +286,8 @@ fn pbes_init_symbol(text: &str, line_index: &LineIndex, init: &PropVarInst) -> D
 /// this document's own `text`/`line_index`, or — for a declaration `%import`ed from elsewhere,
 /// which `DocumentSymbol` has no way to point outside the requested document for at all — a fixed
 /// anchor [`Range`] shared by every symbol pulled in through the same `%import` line: that line
-/// itself, in *this* document. See this module's own doc comment, [`ImportGroups`], and [`place`]
-/// for how a declaration ends up with one or the other.
+/// itself, in *this* document. See [`ImportGroups`] and [`place`] for how a declaration ends up
+/// with one or the other.
 #[derive(Clone, Copy)]
 enum SpanTarget<'a> {
     Local { text: &'a str, line_index: &'a LineIndex },
@@ -306,13 +305,10 @@ impl SpanTarget<'_> {
 
 /// Builds a symbol whose `range`/`selectionRange` both come from `target` — either `span` itself,
 /// resolved locally, or (see [`SpanTarget::Imported`]) a fixed anchor that ignores `span`
-/// entirely. For a declaration kind (`SortDecl`, `IdDecl`) whose own span `merc_syntax` now gives
-/// precisely the identifier itself (previously the whole group in `sort A, B, C;` and its
-/// `cons`/`map`/`var`/`glob` siblings all shared one span, byte-identical for every sibling), or,
-/// for `ActDecl`/`ProcDecl`/`PropVarDecl` — whose own span still covers the whole declaration
-/// (`act a, b: Nat;`, `proc P(n: Nat) = ...;`) — the identifier's own precise span
-/// (`decl.identifier.span`), now that `identifier` on those three carries a [`Span`] of its own
-/// rather than being a plain `String`.
+/// entirely. `span` is the identifier's own precise span: for a declaration kind (`SortDecl`,
+/// `IdDecl`) that's `merc_syntax`'s own per-declaration span; for `ActDecl`/`ProcDecl`/
+/// `PropVarDecl` — whose own span still covers the whole declaration (`act a, b: Nat;`,
+/// `proc P(n: Nat) = ...;`) — it's `decl.identifier.span` instead.
 fn symbol_at(name: String, detail: Option<String>, kind: SymbolKind, target: SpanTarget, span: &Span, children: Option<Vec<DocumentSymbol>>) -> DocumentSymbol {
     let range = target.range(span);
     build_symbol(name, detail, kind, range, range, children)
@@ -354,8 +350,9 @@ fn place(symbols: &mut Vec<DocumentSymbol>, groups: &mut ImportGroups, text: &st
 }
 
 /// Accumulates every symbol `text`'s own `%import`s (transitively) contribute, grouped by
-/// directive — see this module's own doc comment for why grouping (rather than showing each one
-/// at its real, out-of-document location) is the only representable option here.
+/// directive — grouping (rather than showing each one at its real, out-of-document location) is
+/// the only representable option here, since `DocumentSymbol` has no way to point outside the
+/// requested document at all (see [`SpanTarget`]'s own doc comment).
 #[derive(Default)]
 struct ImportGroups {
     /// One entry per `%import` directive that has contributed at least one symbol so far, in the

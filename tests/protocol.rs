@@ -20,6 +20,7 @@ use lsp_types::CompletionParams;
 use lsp_types::CompletionResponse;
 use lsp_types::DidChangeTextDocumentParams;
 use lsp_types::DidChangeWatchedFilesParams;
+use lsp_types::DidCloseTextDocumentParams;
 use lsp_types::DidOpenTextDocumentParams;
 use lsp_types::DidSaveTextDocumentParams;
 use lsp_types::FileChangeType;
@@ -848,6 +849,61 @@ async fn goto_definition_jumps_from_a_sort_reference_to_its_declaration() {
     assert_eq!(location.range.start, position_of(WITH_A_MAPPING, "D;"));
 }
 
+/// Goto-definition on an `%import` directive's path must read the *live* buffer — the same as
+/// completion already does for import-path completion (see `backend::completion_request`) — not
+/// the last-*saved*/analyzed snapshot, so it resolves correctly against an edit that hasn't been
+/// saved yet.
+#[tokio::test]
+async fn goto_definition_on_an_unsaved_import_directive_resolves_against_the_live_buffer() {
+    let (server, _result, mut rx) = start().await;
+
+    let dir = tempfile::tempdir().expect("should create a temp directory");
+    std::fs::write(dir.path().join("common.mcrl2"), "").expect("should write common.mcrl2");
+    let main_path = dir.path().join("main.mcrl2");
+    let original_text = "init delta;\n";
+    std::fs::write(&main_path, original_text).expect("should write main.mcrl2");
+    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri = Url::from_file_path(dir.path().join("common.mcrl2")).expect("common.mcrl2 should have a valid file:// URI");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), original_text))
+        .expect("didOpen should be queued");
+    let _ = next_diagnostics(&mut rx).await;
+
+    // Prepend an %import directive without saving — main.mcrl2's last-analyzed snapshot still has
+    // no import at all, so resolving this against it (rather than the live buffer) would find
+    // nothing at this position.
+    let edited_text = "%import \"common.mcrl2\"\ninit delta;\n";
+    server
+        .notify::<notification::DidChangeTextDocument>(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier { uri: main_uri.clone(), version: 2 },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: edited_text.to_string(),
+            }],
+        })
+        .expect("didChange should be queued");
+
+    let response = server
+        .request::<request::GotoDefinition>(GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: main_uri.clone() },
+                position: position_of(edited_text, "common.mcrl2"),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .expect("goto-definition should succeed");
+
+    let Some(GotoDefinitionResponse::Link(links)) = response else {
+        panic!("expected a link goto-definition response for the %import directive, got {response:?}");
+    };
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].target_uri, common_uri);
+}
+
 /// A minimal stand-in for `vscode-client`'s own `merc/didFocusTextDocument` notification (see
 /// `merc_lsp::focus`'s module doc comment) — a plain client just needs to match the wire method
 /// name and JSON shape, not link against the server crate's own type, so this test defines its
@@ -945,6 +1001,44 @@ async fn a_watched_file_change_reanalyzes_documents_that_import_it_even_without_
     assert_eq!(second.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
 }
 
+/// Creating a file that a still-open document `%import`s, but that didn't exist (and so was never
+/// loaded, never landing in `Document::import_mtimes`) when that document was last analyzed, must
+/// trigger reanalysis just like an edit to an already-resolved import does — `Document::is_stale`
+/// alone can't detect this, since it only re-checks files already known to have loaded
+/// successfully; see `Document::has_newly_available_import`.
+#[tokio::test]
+async fn creating_a_previously_missing_import_target_reanalyzes_the_importing_document() {
+    let (server, _result, mut rx) = start().await;
+
+    let dir = tempfile::tempdir().expect("should create a temp directory");
+    let main_path = dir.path().join("main.mcrl2");
+    let common_path = dir.path().join("common.mcrl2");
+    let main_text = "%import \"common.mcrl2\"\ninit delta;\n";
+    std::fs::write(&main_path, main_text).expect("should write main.mcrl2");
+    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), main_text))
+        .expect("didOpen should be queued");
+    let first = next_diagnostics(&mut rx).await;
+    assert_eq!(first.diagnostics.len(), 1, "expected the unresolved import to be reported: {first:?}");
+
+    // common.mcrl2 now comes into existence — e.g. created by another tool, another editor tab, or
+    // checked out via version control.
+    std::fs::write(&common_path, "").expect("should write common.mcrl2");
+
+    server
+        .notify::<notification::DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+            changes: vec![FileEvent { uri: common_uri, typ: FileChangeType::CREATED }],
+        })
+        .expect("workspace/didChangeWatchedFiles should be queued");
+
+    let second = next_diagnostics(&mut rx).await;
+    assert_eq!(second.uri, main_uri);
+    assert!(second.diagnostics.is_empty(), "expected the now-resolved import's error to be cleared: {second:?}");
+}
+
 /// A type error whose real span lands in an `%import`ed file, not the document that was actually
 /// opened/saved, must be published against that imported file's own URI, at its own real
 /// location — not mislocated against the importing document's `%import "..."` line.
@@ -1030,6 +1124,129 @@ async fn an_error_in_an_imported_file_also_gets_a_companion_diagnostic_on_the_im
     assert!(related[0].message.contains("undeclared"), "related message was: {}", related[0].message);
 }
 
+/// Closing the only document that `%import`s a broken file must clear the diagnostic it published
+/// on that file — otherwise it stays forever, since the imported file itself was never opened and
+/// so has no document of its own that could ever republish (and so clear) it.
+#[tokio::test]
+async fn closing_the_only_importer_clears_the_diagnostic_it_published_on_the_imported_file() {
+    let (server, _result, mut rx) = start().await;
+
+    let dir = tempfile::tempdir().expect("should create a temp directory");
+    let main_path = dir.path().join("main.mcrl2");
+    let common_path = dir.path().join("common.mcrl2");
+    let main_text = "%import \"common.mcrl2\"\ninit delta;\n";
+    std::fs::write(&main_path, main_text).expect("should write main.mcrl2");
+    std::fs::write(&common_path, "map f: Bool;\neqn f = undeclared;\n").expect("should write common.mcrl2");
+    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), main_text))
+        .expect("didOpen should be queued");
+    let first = next_diagnostics(&mut rx).await;
+    let second = next_diagnostics(&mut rx).await;
+    assert!(!first.diagnostics.is_empty() && !second.diagnostics.is_empty(), "expected both main.mcrl2 and common.mcrl2 to get a diagnostic: {first:?}, {second:?}");
+
+    server
+        .notify::<notification::DidCloseTextDocument>(DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri: main_uri.clone() },
+        })
+        .expect("didClose should be queued");
+
+    let cleared = next_diagnostics(&mut rx).await;
+    assert_eq!(cleared.uri, common_uri, "expected common.mcrl2's diagnostic to be cleared on close: {cleared:?}");
+    assert!(cleared.diagnostics.is_empty(), "expected common.mcrl2's diagnostic to be cleared: {cleared:?}");
+}
+
+/// Two open documents `%import`ing the same broken file must not clobber each other's diagnostics
+/// on it: closing one of them clears only its own contribution, leaving the other importer's
+/// diagnostic on the shared file in place until it, too, closes (or stops importing it).
+#[tokio::test]
+async fn two_importers_of_the_same_broken_file_do_not_clobber_each_others_diagnostics() {
+    let (server, _result, mut rx) = start().await;
+
+    let dir = tempfile::tempdir().expect("should create a temp directory");
+    let a_path = dir.path().join("a.mcrl2");
+    let b_path = dir.path().join("b.mcrl2");
+    let common_path = dir.path().join("common.mcrl2");
+    let a_text = "%import \"common.mcrl2\"\ninit delta;\n";
+    let b_text = "%import \"common.mcrl2\"\ninit delta;\n";
+    std::fs::write(&a_path, a_text).expect("should write a.mcrl2");
+    std::fs::write(&b_path, b_text).expect("should write b.mcrl2");
+    std::fs::write(&common_path, "map f: Bool;\neqn f = undeclared;\n").expect("should write common.mcrl2");
+    let a_uri = Url::from_file_path(&a_path).expect("a.mcrl2 should have a valid file:// URI");
+    let b_uri = Url::from_file_path(&b_path).expect("b.mcrl2 should have a valid file:// URI");
+    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(a_uri.clone(), a_text))
+        .expect("didOpen should be queued");
+    next_diagnostics(&mut rx).await;
+    next_diagnostics(&mut rx).await;
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(b_uri.clone(), b_text))
+        .expect("didOpen should be queued");
+    // b.mcrl2 analyzing itself publishes both its own companion diagnostic and, since it's now
+    // also an owner of common.mcrl2's diagnostic, a republish of common.mcrl2's (unioned, so still
+    // just the one underlying error) diagnostic.
+    let first = next_diagnostics(&mut rx).await;
+    let second = next_diagnostics(&mut rx).await;
+    let common_params = if first.uri == common_uri { first } else { second };
+    assert_eq!(common_params.uri, common_uri);
+    assert_eq!(common_params.diagnostics.len(), 1, "expected exactly one (not duplicated) diagnostic on common.mcrl2: {common_params:?}");
+
+    server
+        .notify::<notification::DidCloseTextDocument>(DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri: a_uri.clone() },
+        })
+        .expect("didClose should be queued");
+
+    let still_owned = next_diagnostics(&mut rx).await;
+    assert_eq!(still_owned.uri, common_uri, "expected a republish for common.mcrl2 after closing a.mcrl2: {still_owned:?}");
+    assert_eq!(
+        still_owned.diagnostics.len(),
+        1,
+        "b.mcrl2 still imports common.mcrl2, so its diagnostic must survive closing a.mcrl2: {still_owned:?}"
+    );
+
+    server
+        .notify::<notification::DidCloseTextDocument>(DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri: b_uri.clone() },
+        })
+        .expect("didClose should be queued");
+
+    let cleared = next_diagnostics(&mut rx).await;
+    assert_eq!(cleared.uri, common_uri);
+    assert!(cleared.diagnostics.is_empty(), "expected common.mcrl2's diagnostic to be cleared once both importers are closed: {cleared:?}");
+}
+
+/// Opening a `merc-builtin:` virtual document (the read-only scheme goto-definition into a
+/// built-in like `Bool` resolves to — see `vscode-client/src/extension.ts`'s
+/// `registerVirtualDocumentProvider`, whose `documentSelector` opens these as ordinary documents)
+/// must not analyze it as if it were a whole, standalone specification: it's only ever a fragment
+/// (a single builtin's own declaration), so type checking it in isolation would spuriously flag
+/// every name it doesn't itself declare.
+#[tokio::test]
+async fn opening_a_virtual_builtin_document_publishes_no_diagnostics() {
+    let (server, _result, mut rx) = start().await;
+
+    // Malformed on its own (references `Nat`, which isn't declared in this fragment) — if this
+    // were analyzed as a real document, it would produce diagnostics.
+    let text = "map f: Nat;\n";
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            Url::parse("merc-builtin:///%3Cbuiltin%3E%2Fbool.mcrl2").expect("valid merc-builtin URI"),
+            text,
+        ))
+        .expect("didOpen should be queued");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), next_diagnostics(&mut rx)).await.is_err(),
+        "opening a merc-builtin: document must not trigger analysis or publish diagnostics"
+    );
+}
+
 /// A *parse* error whose real location lands in an `%import`ed file — as opposed to
 /// `a_type_error_in_an_imported_file_is_shown_at_its_real_location`'s *type* error — must be
 /// located the same way: against that imported file's own URI, at its own real location.
@@ -1095,4 +1312,39 @@ async fn a_missing_import_is_located_on_its_own_directive() {
     assert!(diag.message.contains("doesnotexist.mcrl2"), "message was: {}", diag.message);
     assert_eq!(diag.range.start, position_of(main_text, "%import"));
     assert_eq!(diag.range.end, position_of(main_text, "\ninit"));
+}
+
+/// A syntax error at the very end of the importing file — immediately followed, in the shared
+/// offset space, by the imported file's own text — must still be reported against the importing
+/// file, not misattributed to the imported one just because the two byte ranges happen to touch.
+#[tokio::test]
+async fn a_syntax_error_at_the_end_of_the_importing_file_is_shown_on_the_importing_file() {
+    let (server, _result, mut rx) = start().await;
+
+    let dir = tempfile::tempdir().expect("should create a temp directory");
+    let main_path = dir.path().join("main.mcrl2");
+    let common_path = dir.path().join("common.mcrl2");
+    // No trailing ';' and no trailing newline, so the parse error's own end-of-input offset lands
+    // exactly on common.mcrl2's base offset in the shared, global byte space.
+    let main_text = "%import \"common.mcrl2\"\ninit delta";
+    std::fs::write(&main_path, main_text).expect("should write main.mcrl2");
+    std::fs::write(&common_path, "act a;\n").expect("should write common.mcrl2");
+    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), main_text))
+        .expect("didOpen should be queued");
+
+    // common.mcrl2 is well-formed, so (unlike the "error in an imported file" tests) it never
+    // gets a diagnostics publish of its own — only main.mcrl2's does.
+    let main_params = next_diagnostics(&mut rx).await;
+    assert_eq!(main_params.uri, main_uri, "unexpected diagnostics on {}: {main_params:?}", common_uri);
+    assert_eq!(main_params.diagnostics.len(), 1, "expected the syntax error to be reported on main.mcrl2 itself: {main_params:?}");
+    let diag = &main_params.diagnostics[0];
+    let end_of_main = position_of(main_text, "delta");
+    assert!(
+        diag.range.start.line == end_of_main.line && diag.range.start.character >= end_of_main.character,
+        "diagnostic should be located inside main.mcrl2, at or after 'delta': {diag:?}"
+    );
 }

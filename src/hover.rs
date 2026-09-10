@@ -24,7 +24,7 @@ use crate::convert;
 use crate::convert::LineIndex;
 use crate::parse::Specification;
 
-/// Everything [`hover`] needs that doesn't vary per request is added.
+/// Everything [`hover`] needs that doesn't vary per request, bundled together.
 /// `position` stays a separate argument to [`hover`] since it's the one input
 /// that actually differs across a burst of requests against the same document.
 pub struct HoverContext<'a> {
@@ -254,10 +254,11 @@ fn hover_markdown(ctx: &HoverContext, node: &TypedNode) -> String {
 /// outside the currently open document entirely — into an `%import`ed file, or into virtual
 /// (Appendix-B/built-in) content — the same cross-file case `goto_definition::definition_locations`
 /// already handles via [`convert::location`]. Resolving through `sources`/`line_indexes` first
-/// (same as that function) keeps the link correct in that case; only when `sources` has nothing
-/// loaded at all (a unit-test fixture that builds a bare `HoverContext` without going through
-/// `crate::document::Document`) does this fall back to treating `span` as local to `doc_uri`
-/// itself, matching this function's old, single-document-only behavior.
+/// (same as that function) keeps the link correct in that case. Falls back to treating `span` as
+/// local to `doc_uri` itself — needed whenever `convert::location` can't build a real `file://`
+/// URI for it: an untitled/unsaved buffer has no on-disk path of its own to build one from, and a
+/// unit-test fixture that hand-builds a `HoverContext` without going through
+/// `crate::document::Document` (so with nothing loaded into `sources` at all) hits the same case.
 fn goto_def_link(span: &Span, doc_uri: Option<&Url>, sources: &SourceMap, line_indexes: &[LineIndex], line_index: &LineIndex, text: &str) -> String {
     let Some(doc_uri) = doc_uri else {
         return String::new();
@@ -540,27 +541,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hovers_a_built_in_sort_reference_as_system_defined_with_no_link() {
+    async fn hovering_a_built_in_sort_reference_links_into_its_virtual_declaration() {
         // `Bool` parses straight to `SortExpressionKind::Simple`, never a named `Reference` — so it
-        // resolves to `ResolvedName::SystemDefined` (since Milestone 3 gives it a real declaration
-        // span too, the same way a system-defined constructor/mapping already did), not `Sort`.
-        // Still no "Go to definition" link, though: that span is in Appendix B content, a
-        // different "document" in `SourceMap` terms `goto_def_link` isn't equipped to render
-        // against — see its call site's own comment.
+        // resolves to `ResolvedName::SystemDefined`, not `Sort`. Its declaration span lands in
+        // Appendix B (system-defined/built-in) content — a *virtual* `SourceMap` entry —
+        // `goto_def_link` resolves the same way it resolves a span into a real `%import`ed file:
+        // into a `merc-builtin:` URI serving that content (see `crate::virtual_document`). Needs
+        // `document_for` (real `sources`/`line_indexes`, not a hand-built, sourceless
+        // `HoverContext`) to actually reach that content.
         let text = "map f: Bool;\ninit delta;";
-        let (typing_info, actions, processes, spec) = typing_info_for(text).await;
-        let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let mut document = document_for(text, None).await;
+        let typing_info = document.typing_info().expect("fixture should type check");
+        let actions = document.checked_process_specification().map_or(&[][..], |spec| spec.action_declarations());
+        let processes = document.checked_process_specification().map_or(&[][..], |spec| spec.process_declarations());
+        let line_index = document.line_index.clone();
+        let uri = Url::parse("file:///test.mcrl2").unwrap();
+        let ctx = HoverContext {
+            text: &document.text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions,
+            processes,
+            spec: None,
+            doc_uri: Some(&uri),
+            sources: &document.sources,
+            line_indexes: &document.line_indexes,
+        };
 
         let offset = text.find("Bool").unwrap();
         let position = line_index.position(text, offset);
-        let hover = hover(&ctx, position).expect("Bool should now resolve to a system-defined hover");
+        let hover = hover(&ctx, position).expect("Bool should resolve to a system-defined hover");
         let HoverContents::Markup(markup) = hover.contents else {
             panic!("expected markup hover contents");
         };
         assert!(markup.value.contains("Bool"));
         assert!(markup.value.contains("system-defined"));
-        assert!(!markup.value.contains("Go to definition"));
+        assert!(
+            markup.value.contains("merc-builtin:"),
+            "expected a Go to definition link into the merc-builtin: virtual document, got: {}",
+            markup.value
+        );
     }
 
     #[tokio::test]

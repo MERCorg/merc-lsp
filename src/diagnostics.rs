@@ -7,7 +7,9 @@
 //! [`crate::completion_context`] classifies a cursor position into.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
+use std::path::PathBuf;
 
 use merc_syntax::ImportError;
 use merc_syntax::Rule;
@@ -348,38 +350,66 @@ pub(crate) fn root_import_directory(sources: &SourceMap) -> Option<std::path::Pa
 
 /// The `%import` directive, within `text` (a document living in `dir`), that (directly or
 /// transitively) pulls in the file `target` belongs to — `None` if no import reachable from
-/// `text` leads there..
+/// `text` leads there.
 pub(crate) fn owning_import_directive(text: &str, sources: &SourceMap, dir: &Path, target: SourceId) -> Option<merc_utilities::Spanned<merc_syntax::ImportDirective>> {
+    // Built once per call rather than re-resolved (each with its own linear scan and, on a miss,
+    // a `canonicalize()` syscall) at every node of the DFS below.
+    let index = path_index(sources);
+    let mut visited = HashSet::new();
     scan_imports(text).into_iter().find_map(|directive| {
         let import_path = dir.join(&directive.node.path);
-        let child_id = resolve_source(sources, &import_path)?;
-        contains_source(sources, &import_path, child_id, target).then_some(directive)
+        let child_id = resolve_indexed(&index, &import_path)?;
+        // A fresh search from each top-level directive: a file reachable from one directive but
+        // not another must still be explored for the other.
+        visited.clear();
+        contains_source(sources, &index, &import_path, child_id, target, &mut visited).then_some(directive)
     })
 }
 
 /// Whether `target` is `id`'s own file, or something `id`'s file (transitively) `%import`s. `path`
 /// is `id`'s own path, exactly as resolved to reach it — needed to resolve *its* `%import`s in
-/// turn, relative to its own directory.
-fn contains_source(sources: &SourceMap, path: &Path, id: SourceId, target: SourceId) -> bool {
+/// turn, relative to its own directory. `visited` guards against a cycle recursing forever; a
+/// resolvable import graph can't actually contain one today (`merc_syntax::imports::Resolver`
+/// itself rejects a cycle before this ever runs — see its own `stack` field), but nothing ties
+/// that invariant to this function, so it's guarded directly rather than assumed.
+fn contains_source(sources: &SourceMap, index: &HashMap<PathBuf, SourceId>, path: &Path, id: SourceId, target: SourceId, visited: &mut HashSet<SourceId>) -> bool {
     if id == target {
         return true;
+    }
+    if !visited.insert(id) {
+        return false;
     }
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     scan_imports(sources.text(id)).into_iter().any(|directive| {
         let import_path = dir.join(&directive.node.path);
-        resolve_source(sources, &import_path).is_some_and(|child_id| contains_source(sources, &import_path, child_id, target))
+        resolve_indexed(index, &import_path).is_some_and(|child_id| contains_source(sources, index, &import_path, child_id, target, visited))
     })
 }
 
 /// Finds the [`SourceId`] already loaded into `sources` for `path`.
 fn resolve_source(sources: &SourceMap, path: &Path) -> Option<SourceId> {
-    (0..sources.file_count())
-        .map(SourceId::new)
-        .find(|&id| Path::new(sources.path(id)) == path)
-        .or_else(|| {
-            let canonical = path.canonicalize().ok()?;
-            (0..sources.file_count()).map(SourceId::new).find(|&id| Path::new(sources.path(id)).canonicalize().ok().as_deref() == Some(canonical.as_path()))
-        })
+    resolve_indexed(&path_index(sources), path)
+}
+
+/// Every file in `sources`, indexed by both its own (non-canonical) path and, where it resolves,
+/// its canonical one — the same two forms [`resolve_indexed`] tries in turn, just computed once
+/// up front instead of on every lookup.
+fn path_index(sources: &SourceMap) -> HashMap<PathBuf, SourceId> {
+    let mut index: HashMap<PathBuf, SourceId> = HashMap::new();
+    for id in (0..sources.file_count()).map(SourceId::new) {
+        let path = PathBuf::from(sources.path(id));
+        if let Ok(canonical) = path.canonicalize() {
+            index.entry(canonical).or_insert(id);
+        }
+        index.entry(path).or_insert(id);
+    }
+    index
+}
+
+/// Looks `path` up in `index`, trying it as given first and, on a miss, canonicalized — matching
+/// how the file it names was itself indexed by [`path_index`].
+fn resolve_indexed(index: &HashMap<PathBuf, SourceId>, path: &Path) -> Option<SourceId> {
+    index.get(path).copied().or_else(|| index.get(&path.canonicalize().ok()?).copied())
 }
 
 /// Companion diagnostics for `uri`'s own `%import` directives, so a broken import is visible right
@@ -429,7 +459,7 @@ pub fn import_error_diagnostics(text: &str, line_index: &LineIndex, sources: &So
 /// The path of the file whose own parse actually failed, for an [`ImportError`] ultimately caused
 /// by a parse failure — the same file [`ImportError::pest_error`] recovers the structured pest
 /// error from, however many [`ImportError::Unresolved`] layers deep it is. `None` for
-/// [`ImportError::Cycle`], which isn't anchored to one file's parse..
+/// [`ImportError::Cycle`], which isn't anchored to one file's parse.
 fn import_parse_error_path(error: &ImportError) -> Option<&Path> {
     match error {
         ImportError::Parse { path, .. } => Some(path.as_path()),
@@ -475,14 +505,18 @@ fn parse_error_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMa
     match pest_error {
         Some(pest_error) => {
             let message = pest_error.variant.message().into_owned();
-            // `pest_error.location` is local to whichever file actually failed to parse.
-            let base = import_error
-                .and_then(import_parse_error_path)
-                .and_then(|path| resolve_source(sources, path))
-                .map(|id| sources.base_offset(id))
-                .unwrap_or(0);
-            let span = parse_error_span(text, sources, &pest_error.location, base);
-            let (uri, range) = locate(text, line_index, sources, line_indexes, &span, root_uri);
+            // The file whose own parse actually failed, known directly from `ImportError::Parse`'s
+            // own `path` — not re-derived from a global offset. An offset exactly on a file
+            // boundary (e.g. a syntax error at the end of a file immediately followed by an
+            // imported one) can't be resolved back to the right file by value alone, since it's
+            // simultaneously "end of this file" and "start of the next" in the shared offset space.
+            let id = import_error.and_then(import_parse_error_path).and_then(|path| resolve_source(sources, path));
+            let (local_text, id) = match id {
+                Some(id) => (sources.text(id), id),
+                None => (text, SourceId::new(0)),
+            };
+            let local_span = pest_location_to_local_span(&pest_error.location, local_text);
+            let (uri, range) = locate_local(text, line_index, sources, line_indexes, id, &local_span, root_uri);
             (
                 uri,
                 Diagnostic {
@@ -530,20 +564,27 @@ fn internal_diagnostic(message: &str, source: &str, root_uri: &Url) -> (Url, Dia
     )
 }
 
-/// Builds the (global, into `sources`) [`Span`] a pest [`InputLocation`] names.
-fn parse_error_span(text: &str, sources: &SourceMap, location: &InputLocation, base: usize) -> Span {
+/// Builds the [`Span`] a pest [`InputLocation`] names, local to `local_text` — the same file the
+/// `InputLocation` itself is already local to (pest never sees any other file's text).
+fn pest_location_to_local_span(location: &InputLocation, local_text: &str) -> Span {
     match location {
-        InputLocation::Span((start, end)) => Span { start: base + *start, end: base + *end },
-        InputLocation::Pos(offset) => {
-            let offset = base + *offset;
-            // A zero-width range renders poorly in most editors; widen it to cover the token
-            // starting at `offset`, or at minimum one character — against whichever file `offset`
-            // actually falls into, since that file's own text is what the token's bytes come from.
-            let (local_text, local_span) = convert::local_text_and_span(text, sources, &Span { start: offset, end: offset });
-            let local_end = widen_to_token_end(local_text, local_span.start);
-            let end = offset + (local_end - local_span.start);
-            Span { start: offset, end }
-        }
+        InputLocation::Span((start, end)) => Span { start: *start, end: *end },
+        // A zero-width range renders poorly in most editors; widen it to cover the token starting
+        // at `offset`, or at minimum one character.
+        InputLocation::Pos(offset) => Span { start: *offset, end: widen_to_token_end(local_text, *offset) },
+    }
+}
+
+/// As [`locate`], but for a span already resolved to a known file `id` (and local to it) rather
+/// than a global offset — see [`convert::location_for`] for why that distinction matters at a file
+/// boundary.
+fn locate_local(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], id: SourceId, local_span: &Span, root_uri: &Url) -> (Url, Range) {
+    if id.value() == 0 {
+        return (root_uri.clone(), line_index.range(text, local_span));
+    }
+    match convert::location_for(sources, line_indexes, id, local_span) {
+        Some(location) => (location.uri, location.range),
+        None => (root_uri.clone(), Range::default()),
     }
 }
 

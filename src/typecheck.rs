@@ -69,10 +69,10 @@ pub enum ModalTypecheckOutcome {
 /// Type checks `spec`, off the async executor.
 ///
 /// Takes `spec` by value because the work is moved onto a blocking thread via
-/// [`tokio::task::spawn_blocking`], which requires a `'static` closure The
-/// caller clones it out of the document's parsed AST (kept separately so
-/// `symbols`/`semantic_tokens` keep working even when this fails — see
-/// `PLAN.md`).
+/// [`tokio::task::spawn_blocking`], which requires a `'static` closure. The
+/// caller clones it out of the document's parsed AST, kept separately so
+/// `symbols`/`semantic_tokens` — which only need the parse, not the type check — keep working even
+/// when this fails.
 pub async fn typecheck(spec: UntypedProcessSpecification, sources: SourceMap) -> (TypecheckOutcome, SourceMap) {
     match tokio::task::spawn_blocking(move || {
         let mut sources = sources;

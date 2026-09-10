@@ -1,3 +1,6 @@
+//! `textDocument/codeAction`: quick fixes for [`crate::ambiguity`]'s lint, parenthesizing the
+//! flagged expression so it reads the same regardless of which parser's precedence table a reader
+//! (or the real mCRL2 toolset) applies.
 
 use std::collections::HashMap;
 
@@ -43,8 +46,10 @@ pub fn code_actions(
 
     let actions: Vec<CodeActionOrCommand> = hits
         .iter()
-        // A hit's spans are global offsets into `document.sources`',but only
-        // allow local edits.
+        // A hit's spans are global offsets into `document.sources`, so one could in principle fall
+        // inside an `%import`ed file rather than `uri` itself — but the `WorkspaceEdit` this builds
+        // (see `parenthesize_quick_fix`) only ever edits `uri`, so a foreign hit is dropped rather
+        // than mislocated.
         .filter(|hit| convert::is_local_span(&document.sources, &hit.whole_span()))
         .filter(|hit| overlaps(&document.line_index, &document.text, hit, params.range))
         .map(|hit| parenthesize_quick_fix(&uri, &document.text, &document.line_index, hit))

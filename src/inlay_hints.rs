@@ -29,7 +29,7 @@
 //!
 //! `merc_syntax::Traverse` doesn't cross between node types (a `ProcessExpr`/`PbesExpr` traversal
 //! doesn't descend into the `DataExpr`s inside its actions/conditions/`dist` weights/`val(...)`
-//! expressions — see `symbols.rs`'s module doc comment), so [`inlay_hints`]/[`pbes_inlay_hints`]
+//! expressions), so [`inlay_hints`]/[`pbes_inlay_hints`]
 //! each walk their own tree by hand for its `DataExpr`-bearing fields, then hand each one to
 //! [`walk_struct_applications`], which *does* use `Traverse` (`DataExpr` recurses fully into
 //! itself) to find every nested struct-constructor application within it, including the field's
@@ -75,6 +75,7 @@ use merc_typecheck::ProcessSpecification;
 use merc_typecheck::ResolvedName;
 use merc_typecheck::TypingInfo;
 
+use crate::convert;
 use crate::convert::LineIndex;
 
 /// Everything threaded unchanged through every helper below, bundled so none of them has to spell
@@ -667,9 +668,9 @@ fn push_hint(
     // `ctx.line_index` (always the root document's own) would silently clamp to the end of the
     // document (see `LineIndex::position`'s doc comment) rather than the argument's real position —
     // in practice a pile of hints all stacked on the document's last line whenever it imports
-    // anything. `sources.file_count() == 0` is the unit-test-fixture case below, parsed standalone
-    // with no real `SourceMap`, where every span is trivially local.
-    if ctx.sources.file_count() > 0 && ctx.sources.lookup(argument.span.start).value() != 0 {
+    // anything. Inlay hints have nowhere to point a foreign one at anyway (no per-hint URI in the
+    // protocol), so it's dropped rather than mislocated.
+    if !convert::is_local_span(ctx.sources, &argument.span) {
         return;
     }
 

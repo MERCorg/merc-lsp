@@ -572,9 +572,11 @@ mod tests {
     #[test]
     fn flags_a_pres_negation_over_a_bound_reaching_a_right_constant_multiply() {
         // As the `StateFrm` case above, but for `PresExpr`'s `RightConstantMultiply`
-        // (`PresExpr * DataValExpr`): `!` is the tightest prefix (level 2), directly wrapping `sup`
-        // (loosest, level 0) whose own body reaches the `* val(...)`.
-        let text = "pres mu X = !sup n: Nat . X * val(n); init X;";
+        // (`PresExpr * DataValExpr`): negation is the tightest prefix (level 2), directly wrapping
+        // `sup` (loosest, level 0) whose own body reaches the `* val(...)`. Unlike every other
+        // expression kind here (Data/StateFrm/ActFrm/Pbes), PRES's own negation token is `-`, not
+        // `!` (`PresExprNegation = { "-" }` in the grammar).
+        let text = "pres mu X = -sup n: Nat . X * val(n); init X;";
         let spec = merc_syntax::UntypedPres::parse(text).expect("fixture should parse");
         assert_eq!(find_in_pres_specification(&spec, text, &SourceMap::new()).len(), 1);
     }

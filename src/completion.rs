@@ -1,11 +1,11 @@
 //! `textDocument/completion`: the names a document declares (sorts, constructors, mappings,
-//! actions/processes or propositional-variable equations, global/equation variables), plus
-//! mCRL2's reserved keywords and built-in sort names — filtered by [`CompletionCategory`] to just
-//! the kind of name expected at the cursor (see [`crate::completion_context`]). Covers all three
-//! grammars this server parses — process specifications, PBES, and PRES — unlike
-//! hover/goto-definition/inlay-hints, which stay mCRL2/PBES-only: none of those three needs a
-//! *checked* specification (see below), so PRES having no type checker upstream yet doesn't block
-//! it here the way it does everywhere else.
+//! actions/processes or propositional-/state-variable equations, global/equation/bound variables),
+//! plus mCRL2's reserved keywords and built-in sort names — filtered by [`CompletionCategory`] to
+//! just the kind of name expected at the cursor (see [`crate::completion_context`]). Covers all
+//! four grammars this server parses — process specifications, PBES, PRES, and modal formulas —
+//! same as hover/goto-definition/inlay-hints. Unlike those, completion needs no *checked*
+//! specification (see below), so it keeps offering something even for a kind whose type checker
+//! hasn't run yet, or failed.
 //!
 //! Filtering by category is still not full lexical scoping: within a category, every declaration
 //! of that kind document-wide is offered, the same unscoped way this module always worked (see
@@ -91,10 +91,6 @@ pub fn import_path_completions(text: &str, line_index: &LineIndex, doc_path: Opt
     Some(items)
 }
 
-/// Keywords worth offering inside a sort expression — none beyond the built-in sort names
-/// themselves, which are offered separately (see [`SYSTEM_SORTS`]).
-const SORT_KEYWORDS: &[&str] = &[];
-
 /// Keywords that start or continue a data expression.
 const DATA_KEYWORDS: &[&str] = &["true", "false", "whr", "end", "forall", "exists", "lambda"];
 
@@ -116,7 +112,9 @@ const STATE_FORMULA_KEYWORDS: &[&str] = &["true", "false", "val", "forall", "exi
 /// behavior before cursor context existed).
 fn keywords_for(category: CompletionCategory) -> &'static [&'static str] {
     match category {
-        CompletionCategory::Sort => SORT_KEYWORDS,
+        // No keywords beyond the built-in sort names themselves, which are offered separately
+        // (see `SYSTEM_SORTS`).
+        CompletionCategory::Sort => &[],
         CompletionCategory::Data => DATA_KEYWORDS,
         CompletionCategory::ActionOrProcess => PROCESS_KEYWORDS,
         CompletionCategory::PropositionalVariable => FORMULA_KEYWORDS,

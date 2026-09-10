@@ -18,8 +18,10 @@ use crate::convert::LineIndex;
 
 /// The declaration location(s) for the identifier at `position` — empty if it doesn't resolve to
 /// a declaration site at all, one for almost every [`ResolvedName`] variant, or more than one only
-/// for a [`ResolvedName::ActionSet`] naming several `act` declarations at once (see the module
-/// docs above). `sources`/`line_indexes` are `document.sources`/`document.line_indexes` — see
+/// for a [`ResolvedName::ActionSet`] naming several `act` declarations at once (a bare action name
+/// inside a `hide`/`block`/`allow`/`comm`/`rename` action set, which can match more than one `act`
+/// declaration sharing that name). `sources`/`line_indexes` are `document.sources`/
+/// `document.line_indexes` — see
 /// [`convert::location`], which resolves each declaration span through them; a location a span
 /// resolves to but that [`convert::location`] can't build a `Location` for (shouldn't arise in
 /// practice — see its own doc comment) is silently dropped rather than shown wrong.
@@ -199,9 +201,9 @@ mod tests {
 
     #[tokio::test]
     async fn jumps_from_a_struct_constructor_use_to_its_name_in_the_struct_declaration() {
-        // A struct-desugared constructor used to have no declaration site at all (`declaration:
-        // None`, per this module's own doc comment) — `merc_syntax::ConstructorDecl` now carries a
-        // real span for the constructor's own name, so this resolves like any other constructor.
+        // A struct-desugared constructor (`c1` in `sort D = struct c1(a: Bool) | c2;`) resolves
+        // like any other constructor: `merc_syntax::ConstructorDecl` carries a real span for the
+        // constructor's own name.
         let text = "sort D = struct c1(a: Bool) | c2;\nmap f: D -> Bool;\neqn f(c1(true)) = true;\ninit delta;";
         let typing_info = typing_info_for(text).await;
         let line_index = LineIndex::new(text);

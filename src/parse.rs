@@ -2,15 +2,11 @@
 //!
 //! Parsing is synchronous and CPU-bound, so it is dispatched onto a blocking thread rather than
 //! run inline on the async runtime, keeping a large or pathological input from stalling other
-//! documents' requests. No panic guard around the parse itself: `merc_syntax`'s AST-building layer
-//! used to carry `unwrap`/`expect`/`unreachable!` sites reachable from a malformed-but-
-//! grammatically-valid input, which this module used to catch with `catch_unwind` so a parser bug
-//! degraded to an "internal error" diagnostic instead of taking a request down; that class of bug
-//! is fixed upstream now, so a panic here is a genuine, reproducible bug in this server, not
-//! something a client retry (or a user re-typing the same input) can route around — see
-//! `ParseOutcome::Internal`'s doc comment for what still happens if one occurs anyway, and
-//! `vscode-client`'s `merc-lsp.restartServer` command for recovering the running server without
-//! reloading the whole editor window.
+//! documents' requests. No panic guard around the parse itself: a panic here is a genuine,
+//! reproducible bug in `merc_syntax`'s AST-building layer, not something a client retry (or a user
+//! re-typing the same input) can route around — see `ParseOutcome::Internal`'s doc comment for what
+//! still happens if one occurs anyway, and `vscode-client`'s `merc-lsp.restartServer` command for
+//! recovering the running server without reloading the whole editor window.
 //!
 //! Four document kinds are supported ([`SpecKind`]): plain mCRL2 process specifications, PBES
 //! (parameterised boolean equation systems), PRES (parameterised real equation systems), and
@@ -27,8 +23,8 @@
 //! [`SpecKind::Process`]/[`SpecKind::Modal`] below) is parsed via
 //! `UntypedProcessSpecification::parse_with_imports`/`UntypedStateFrmSpec::parse_with_imports`
 //! instead of a plain `T::parse`, resolving every `%import "relative/path"` directive the file (or
-//! anything it transitively imports) contains — see `../merc/docs/lsp-imports.md`. Every other
-//! case falls back to a plain, single-file parse.
+//! anything it transitively imports) contains. Every other case falls back to a plain,
+//! single-file parse.
 //!
 //! Either way, [`parse`] always returns a [`SourceMap`] alongside the [`ParseOutcome`]: every span
 //! in the returned AST is a *global* offset into it, not a plain byte offset into `text`.
@@ -59,19 +55,20 @@ pub enum SpecKind {
 }
 
 impl SpecKind {
-    /// Picks a [`SpecKind`] from `uri`'s file extension: `.pbes`, `.pres`, and `.mcf`
-    /// (case-sensitively, matching the extensions registered in `vscode-client/package.json`)
-    /// select PBES/PRES/Modal; everything else falls back to [`SpecKind::Process`].
+    /// Picks a [`SpecKind`] from `uri`'s file extension: `.pbes`, `.pres`, and `.mcf` (matched
+    /// case-insensitively, so `Model.PBES` or `spec.Mcf` still select PBES/Modal — case-insensitive
+    /// filesystems and shells make an unexpected-case extension routine rather than exotic) select
+    /// PBES/PRES/Modal; everything else falls back to [`SpecKind::Process`].
     pub fn from_uri(uri: &Url) -> SpecKind {
-        let path = uri.path();
-        if path.ends_with(".pbes") {
-            SpecKind::Pbes
-        } else if path.ends_with(".pres") {
-            SpecKind::Pres
-        } else if path.ends_with(".mcf") {
-            SpecKind::Modal
-        } else {
-            SpecKind::Process
+        let extension = std::path::Path::new(uri.path())
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_ascii_lowercase);
+        match extension.as_deref() {
+            Some("pbes") => SpecKind::Pbes,
+            Some("pres") => SpecKind::Pres,
+            Some("mcf") => SpecKind::Modal,
+            _ => SpecKind::Process,
         }
     }
 }
@@ -303,6 +300,13 @@ mod tests {
     }
 
     #[test]
+    fn spec_kind_from_uri_extension_is_case_insensitive() {
+        assert_eq!(SpecKind::from_uri(&"file:///a/Spec.PBES".parse().unwrap()), SpecKind::Pbes);
+        assert_eq!(SpecKind::from_uri(&"file:///a/Spec.Pres".parse().unwrap()), SpecKind::Pres);
+        assert_eq!(SpecKind::from_uri(&"file:///a/Spec.MCF".parse().unwrap()), SpecKind::Modal);
+    }
+
+    #[test]
     fn path_of_extracts_a_real_files_path() {
         assert!(path_of(&"file:///a/b.mcrl2".parse().unwrap()).is_some());
         assert!(path_of(&"untitled:Untitled-1".parse().unwrap()).is_none());
@@ -381,18 +385,6 @@ mod tests {
             (ParseOutcome::Ok(_), _) => panic!("expected a Process specification"),
             (ParseOutcome::ParseError(error), _) => panic!("unexpected parse error: {error}"),
             (ParseOutcome::Internal(message), _) => panic!("unexpected internal error: {message}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn probe_missing_import() {
-        let dir = temp_project(&[("main.mcrl2", "%import \"nope.mcrl2\"\ninit delta;\n")]);
-        let path = dir.path().join("main.mcrl2");
-        let text = std::fs::read_to_string(&path).unwrap();
-        match parse(SpecKind::Process, text, Some(path)).await {
-            (ParseOutcome::Ok(_), _) => eprintln!("PROBE: unexpectedly parsed ok"),
-            (ParseOutcome::ParseError(error), _) => eprintln!("PROBE parse error: {error:?}\nPROBE display: {error}"),
-            (ParseOutcome::Internal(message), _) => eprintln!("PROBE internal: {message}"),
         }
     }
 }

@@ -32,12 +32,12 @@ use crate::typecheck::TypecheckOutcome;
 
 /// A single open (or otherwise tracked) document.
 ///
-/// `text`, `line_index`, `parsed`, `checked`, and `semantic_tokens` are the last *analyzed*
-/// snapshot — always mutually consistent, all five updated together, only by `backend::analyze`
-/// (on `did_open` or `did_save`) — and every completion/hover/goto-definition/inlay-hint/
-/// semantic-tokens/document-symbol request reads exactly this snapshot, stale or not. `checked` is
-/// `None` only when `parsed` isn't [`ParseOutcome::Ok`] — type checking only makes sense once
-/// parsing has already succeeded — since every parsed kind now has a type checker (see
+/// `text`, `line_index`, `parsed`, `checked`, `semantic_tokens`, `sources`, and `line_indexes` are
+/// the last *analyzed* snapshot — always mutually consistent, all seven updated together, only by
+/// `backend::analyze` (on `did_open` or `did_save`) — and every completion/hover/goto-definition/
+/// inlay-hint/semantic-tokens/document-symbol request reads exactly this snapshot, stale or not.
+/// `checked` is `None` only when `parsed` isn't [`ParseOutcome::Ok`] — type checking only makes
+/// sense once parsing has already succeeded — since every parsed kind now has a type checker (see
 /// `backend::analyze`).
 ///
 /// `pending_text`/`pending_version` are the separate, *unanalyzed* half: the latest buffer
@@ -126,6 +126,24 @@ impl Document {
         self.import_mtimes.iter().any(|(path, &snapshot)| {
             let current = std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
             current != Some(snapshot)
+        })
+    }
+
+    /// Whether this document's own text `%import`s a file among `changed_paths` that wasn't
+    /// resolved (and so isn't in [`Self::import_mtimes`]) at this document's last analysis — the
+    /// case [`Self::is_stale`] can't detect on its own, since it only re-checks files already
+    /// known to have loaded successfully. `own_path` is this document's own on-disk path (`None`
+    /// for an untitled/unsaved buffer, which — like `%import` resolution itself, see `parse.rs`'s
+    /// module docs — has no directory a relative import path could resolve against).
+    pub fn has_newly_available_import(&self, own_path: Option<&std::path::Path>, changed_paths: &[std::path::PathBuf]) -> bool {
+        let Some(own_path) = own_path else { return false };
+        if changed_paths.is_empty() {
+            return false;
+        }
+        let dir = own_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        merc_syntax::scan_imports(&self.text).into_iter().any(|directive| {
+            let import_path = dir.join(&directive.node.path);
+            changed_paths.iter().any(|changed| paths_match(changed, &import_path))
         })
     }
 
@@ -307,13 +325,18 @@ impl Document {
     }
 }
 
+/// Whether `a` and `b` name the same file: exactly, or — since an `%import` directive's path is
+/// joined against its importing file's directory without canonicalizing, while a
+/// `didChangeWatchedFiles` URI's path typically already is — once both sides are canonicalized.
+fn paths_match(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
 /// The set of documents currently tracked by the server, keyed by URI.
 pub type DocumentStore = DashMap<Url, Document>;
 
 #[cfg(test)]
 mod tests {
-    use lsp_types::Range;
-
     use super::*;
     use crate::parse::ParseOutcome;
     use crate::parse::SpecKind;
