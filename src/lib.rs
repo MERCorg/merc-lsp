@@ -20,7 +20,9 @@ mod convert;
 mod diagnostics;
 mod document;
 mod edit_distance;
+#[cfg(feature = "lsp-extensions")]
 mod focus;
+#[cfg(feature = "lsp-extensions")]
 mod generate;
 mod goto_definition;
 mod hover;
@@ -30,6 +32,7 @@ mod parse;
 mod semantic_tokens;
 mod symbols;
 mod typecheck;
+#[cfg(feature = "lsp-extensions")]
 mod virtual_document;
 
 use async_lsp::client_monitor::ClientProcessMonitorLayer;

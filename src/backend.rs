@@ -51,9 +51,13 @@ use crate::convert::LineIndex;
 use crate::document::CheckedOutcome;
 use crate::document::Document;
 use crate::document::DocumentStore;
+#[cfg(feature = "lsp-extensions")]
 use crate::focus::DidFocusTextDocument;
+#[cfg(feature = "lsp-extensions")]
 use crate::focus::DidFocusTextDocumentParams;
+#[cfg(feature = "lsp-extensions")]
 use crate::generate;
+#[cfg(feature = "lsp-extensions")]
 use crate::generate::GenerateFullSpec;
 use crate::goto_definition;
 use crate::hover;
@@ -64,8 +68,11 @@ use crate::parse::SpecKind;
 use crate::parse::Specification;
 use crate::symbols;
 use crate::typecheck;
+#[cfg(feature = "lsp-extensions")]
 use crate::virtual_document;
+#[cfg(feature = "lsp-extensions")]
 use crate::virtual_document::VirtualDocument;
+#[cfg(feature = "lsp-extensions")]
 use crate::virtual_document::VirtualDocumentStore;
 
 /// Diagnostics published against a URI on some document's behalf because a span in its analysis
@@ -88,7 +95,9 @@ type ForeignDiagnostics = DashMap<Url, HashMap<Url, Vec<Diagnostic>>>;
 pub struct Backend {
     client: ClientSocket,
     documents: Arc<DocumentStore>,
-    /// See [`crate::virtual_document`]'s module doc comment.
+    /// See [`crate::virtual_document`]'s module doc comment. Only present when the
+    /// `lsp-extensions` Cargo feature (see `Cargo.toml`) is enabled.
+    #[cfg(feature = "lsp-extensions")]
     virtual_documents: Arc<VirtualDocumentStore>,
     foreign_diagnostics: Arc<ForeignDiagnostics>,
 }
@@ -102,6 +111,7 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
     let mut router = Router::new(Backend {
         client,
         documents: Arc::new(DocumentStore::default()),
+        #[cfg(feature = "lsp-extensions")]
         virtual_documents: Arc::new(VirtualDocumentStore::default()),
         foreign_diagnostics: Arc::new(ForeignDiagnostics::default()),
     });
@@ -143,19 +153,6 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         .request::<request::Completion, _>(|state, params| {
             let documents = state.documents.clone();
             async move { Ok(completion_request(&documents, params)) }
-        })
-        .request::<VirtualDocument, _>(|state, params| {
-            let virtual_documents = state.virtual_documents.clone();
-            async move {
-                Ok(virtual_document::virtual_document_request(
-                    &virtual_documents,
-                    params,
-                ))
-            }
-        })
-        .request::<GenerateFullSpec, _>(|state, params| {
-            let documents = state.documents.clone();
-            async move { Ok(generate::generate_full_spec_request(&documents, params)) }
         })
         .request::<request::CodeActionRequest, _>(|state, params| {
             let documents = state.documents.clone();
@@ -221,20 +218,6 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
             }
             ControlFlow::Continue(())
         })
-        .notification::<DidFocusTextDocument>(|state, params: DidFocusTextDocumentParams| {
-            // See `crate::focus`'s module doc comment for why this exists at all. Only reanalyzes
-            // when `Document::is_stale` actually finds a changed import — the common case (nothing
-            // changed since this document was last analyzed) does no work beyond that check.
-            let stale = state
-                .documents
-                .get(&params.uri)
-                .filter(|document| document.is_stale())
-                .map(|document| (document.text.clone(), document.version));
-            if let Some((text, version)) = stale {
-                spawn_analyze(state, params.uri, text, version, true);
-            }
-            ControlFlow::Continue(())
-        })
         .notification::<notification::DidChangeWatchedFiles>(|state, params| {
             // The client watches every `.mcrl2`/`.pbes`/`.pres`/`.mcf` file in the workspace (see
             // `vscode-client/src/extension.ts`'s `synchronize.fileEvents`) and forwards every
@@ -265,8 +248,54 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         // Ignore anything we don't handle instead of taking the server down.
         .unhandled_notification(|_, _| ControlFlow::Continue(()));
 
+    register_lsp_extensions(&mut router);
+
     router
 }
+
+/// Registers merc-lsp's non-standard protocol extensions on `router`: `merc/virtualDocument`
+/// ([`crate::virtual_document`]), `merc/generateFullSpec` ([`crate::generate`]), and
+/// `merc/didFocusTextDocument` ([`crate::focus`]). Gated behind the `lsp-extensions` Cargo feature
+/// (on by default, see `Cargo.toml`) — see `README.md`'s "What's specific to the VS Code
+/// extension" section for what each does and why a plain LSP client works fine without any of
+/// them registered at all.
+#[cfg(feature = "lsp-extensions")]
+fn register_lsp_extensions(router: &mut Router<Backend>) {
+    router
+        .request::<VirtualDocument, _>(|state, params| {
+            let virtual_documents = state.virtual_documents.clone();
+            async move {
+                Ok(virtual_document::virtual_document_request(
+                    &virtual_documents,
+                    params,
+                ))
+            }
+        })
+        .request::<GenerateFullSpec, _>(|state, params| {
+            let documents = state.documents.clone();
+            async move { Ok(generate::generate_full_spec_request(&documents, params)) }
+        })
+        .notification::<DidFocusTextDocument>(|state, params: DidFocusTextDocumentParams| {
+            // See `crate::focus`'s module doc comment for why this exists at all. Only reanalyzes
+            // when `Document::is_stale` actually finds a changed import — the common case (nothing
+            // changed since this document was last analyzed) does no work beyond that check.
+            let stale = state
+                .documents
+                .get(&params.uri)
+                .filter(|document| document.is_stale())
+                .map(|document| (document.text.clone(), document.version));
+            if let Some((text, version)) = stale {
+                spawn_analyze(state, params.uri, text, version, true);
+            }
+            ControlFlow::Continue(())
+        });
+}
+
+/// No-op when `lsp-extensions` is disabled: a server built without it registers no handler for any
+/// of these methods, so they fall through to `router`'s own `unhandled_notification`/default
+/// "method not found" handling like any other request/notification it doesn't support.
+#[cfg(not(feature = "lsp-extensions"))]
+fn register_lsp_extensions(_router: &mut Router<Backend>) {}
 
 fn document_symbol(
     documents: &DocumentStore,
@@ -567,7 +596,13 @@ fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refr
 /// We don't type check on every keystroke; only when this function is called,
 /// which happens on save.
 async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh_views: bool) {
-    let Backend { client, documents, virtual_documents, foreign_diagnostics } = backend;
+    let Backend {
+        client,
+        documents,
+        #[cfg(feature = "lsp-extensions")]
+        virtual_documents,
+        foreign_diagnostics,
+    } = backend;
 
     // `path` is `None` for an untitled/unsaved buffer — `parse` falls back to a plain,
     // single-file parse for those.
@@ -600,7 +635,8 @@ async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh
     };
 
     // Registers this analysis's virtual (Appendix-B) content for `merc/virtualDocument` to serve
-    // later.
+    // later. Only when `lsp-extensions` is enabled — see `Backend::virtual_documents`.
+    #[cfg(feature = "lsp-extensions")]
     virtual_document::register(&virtual_documents, &sources);
 
     let mut document = Document::new(text, version, outcome, checked, sources);

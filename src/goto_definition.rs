@@ -278,6 +278,7 @@ mod tests {
         assert_eq!(range.start, expected);
     }
 
+    #[cfg(feature = "lsp-extensions")]
     #[tokio::test]
     async fn jumps_from_a_built_in_sort_reference_to_its_bundled_template() {
         let text = "map f: Bool;\ninit delta;";

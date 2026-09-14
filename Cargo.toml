@@ -9,6 +9,15 @@ rust-version = "1.93.1"
 name = "merc-lsp"
 path = "src/main.rs"
 
+[features]
+default = ["lsp-extensions"]
+# Non-standard LSP protocol extensions on top of plain LSP: `merc/virtualDocument`
+# (`src/virtual_document.rs`), `merc/generateFullSpec` (`src/generate.rs`), and
+# `merc/didFocusTextDocument` (`src/focus.rs`). See README.md's "What's specific to the VS Code
+# extension" section for what each does. On by default; disable (`--no-default-features`) to build
+# a server that only ever speaks plain, spec-compliant LSP.
+lsp-extensions = []
+
 [dependencies]
 merc_syntax = { git = "https://github.com/mlaveaux/merc", rev = "4366291ecca5c4b60a02100cfc456aabacf86ecb" }
 merc_typecheck = { git = "https://github.com/mlaveaux/merc", rev = "4366291ecca5c4b60a02100cfc456aabacf86ecb" }

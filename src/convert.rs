@@ -15,6 +15,7 @@ use merc_syntax::SourceMap;
 use merc_syntax::Span;
 use percent_encoding::AsciiSet;
 use percent_encoding::NON_ALPHANUMERIC;
+#[cfg(feature = "lsp-extensions")]
 use percent_encoding::percent_decode_str;
 use percent_encoding::utf8_percent_encode;
 
@@ -115,7 +116,9 @@ pub(crate) fn virtual_uri(name: &str) -> Url {
 }
 
 /// The inverse of [`virtual_uri`]: recovers the original registered name from a
-/// [`VIRTUAL_DOCUMENT_SCHEME`] URI.
+/// [`VIRTUAL_DOCUMENT_SCHEME`] URI. Only used by `merc/virtualDocument`'s handler
+/// ([`crate::virtual_document`]), gated behind the `lsp-extensions` Cargo feature.
+#[cfg(feature = "lsp-extensions")]
 pub(crate) fn decode_virtual_uri(uri: &Url) -> Option<String> {
     if uri.scheme() != VIRTUAL_DOCUMENT_SCHEME {
         return None;
@@ -306,6 +309,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "lsp-extensions")]
     #[test]
     fn virtual_uri_round_trips_a_name_with_reserved_characters() {
         let name = "<builtin>/struct/c1.mcrl2";
@@ -322,12 +326,14 @@ mod tests {
         assert_eq!(uri.path(), "/a-b_c.d~e%20f");
     }
 
+    #[cfg(feature = "lsp-extensions")]
     #[test]
     fn decode_virtual_uri_rejects_a_non_virtual_scheme() {
         let uri = Url::parse("file:///a/b.mcrl2").unwrap();
         assert_eq!(decode_virtual_uri(&uri), None);
     }
 
+    #[cfg(feature = "lsp-extensions")]
     #[test]
     fn decode_virtual_uri_rejects_malformed_percent_encoding() {
         // `Url::parse` itself doesn't validate that a `%XX` escape decodes to valid UTF-8, so this

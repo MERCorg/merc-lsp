@@ -1,46 +1,30 @@
 # Overview
 
-`merc-lsp` is a Language Server (built on `async-lsp`) for mCRL2 specifications, plus a thin
-VS Code client that spawns it. It understands four document kinds, picked by file extension: plain
-process specifications (`.mcrl2`), PBES (`.pbes`), PRES (`.pres`), and modal (mu-calculus) state
-formulas (`.mcf`).
+`merc-lsp` is a Language Server (built on `async-lsp`) for mCRL2 specifications,
+plus a thin VS Code client that spawns it, using the `merc` toolset. Supports
+plain process specifications (`.mcrl2`), PBES (`.pbes`), PRES (`.pres`), and
+modal (mu-calculus) state formulas (`.mcf`).
 
 ## Current status
 
-- **Diagnostics** — syntax errors for all four document kinds, plus whole-specification type
-  errors for each: data, actions, processes, and `init` for `.mcrl2`; `glob`, propositional-variable
-  equations, and `init` for `.pbes`/`.pres`; and `act` declarations plus the formula itself
-  (actions, fixpoint variables, and every `forall`/`exists`/`inf`/`sup`/`sum` binder) for `.mcf`.
-  Communication sort-compatibility isn't checked yet, so "no diagnostics" isn't a full
-  well-typedness guarantee.
-- **Document outline** (`textDocument/documentSymbol`) — for all four document kinds; a `.mcf`
-  document's outline nests every `mu`/`nu` fixpoint variable under whichever one encloses it, the
-  same structure the formula itself has.
-- **Semantic tokens** — AST-driven highlighting for all four document kinds that resolves mCRL2's
-  structural ambiguities (e.g. `a(f)` as function application vs. action vs. process
-  instantiation); not yet scope-aware (a bound variable reads the same as a free one).
-- **Hover** and **go-to-definition** — for all four document kinds, driven by the checked
-  specification's typing info: mapping/constructor/action/process/propositional-variable/state-variable
-  uses, and bound/global variables, each resolving to their declaration site. Requires the whole
-  document to currently type check.
-- **Inlay hints** (`textDocument/inlayHint`) — for all four document kinds: a `name:` prefix on a
-  call argument when the callee (a process, a struct constructor, or a fixpoint variable) names
-  that position, a `: Sort` suffix otherwise (an action argument, a mapping argument, an equation's
-  `eqn` LHS pattern variable), covering process instantiations/action instances,
-  PBES/PRES/modal-formula propositional- and state-variable instantiations, and `val(...)`
-  expressions alike.
-- **Completion** (`textDocument/completion`) — for all four document kinds: every
-  sort/constructor/mapping/action/process (or propositional-/state-variable)/variable the document
-  declares, plus mCRL2's reserved keywords and built-in sort names. Works off the raw parse, not a
-  checked specification, so it keeps working while a document is transiently ill-typed or mid-edit.
-  Deliberately unscoped — a flat list, not real lexical scoping; an editor's own
-  fuzzy-match/prefix filtering narrows it down.
+Supports syntax and type checking error diagnostics, document outline, semantic
+tokens, hover and go-to-definition, inlay hints, and text completion.
 
 ## Building the server
 
 ```sh
 cargo build --release
 # binary at target/release/merc-lsp (merc-lsp.exe on Windows)
+```
+
+### The `lsp-extensions` Cargo feature
+
+Several non-standard protocol extensions in [VS Code
+extension](#whats-specific-to-the-vs-code-extension) live behind a Cargo
+feature, `lsp-extensions`, enabled by **default**.
+
+```sh
+cargo build --release --no-default-features
 ```
 
 ## VS Code extension
@@ -125,7 +109,8 @@ Everything in [Current status](#current-status) is plain LSP and works with any 
 client (Neovim, Emacs, Helix, …) that speaks it. The items below, by contrast, are either custom
 protocol extensions `src/focus.rs`/`src/generate.rs`/`src/virtual_document.rs` add on top of LSP, or
 behavior this VS Code client (`vscode-client/`) supplies on the client side — another editor would
-need to add its own equivalent to get the same behavior.
+need to add its own equivalent to get the same behavior. The three server-side extensions are all
+gated behind the [`lsp-extensions` Cargo feature](#the-lsp-extensions-cargo-feature), on by default.
 
 - **Update on focus.** Plain LSP has no "the user switched to this already-open editor tab" signal —
   only `didOpen`/`didChange`/`didSave`/`didClose`. So if `a.mcrl2` `%import`s `b.mcrl2`, and

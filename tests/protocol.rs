@@ -908,14 +908,21 @@ async fn goto_definition_on_an_unsaved_import_directive_resolves_against_the_liv
 /// `merc_lsp::focus`'s module doc comment) — a plain client just needs to match the wire method
 /// name and JSON shape, not link against the server crate's own type, so this test defines its
 /// own copy rather than reaching into a private module.
+///
+/// This whole notification is part of the `lsp-extensions` Cargo feature (on by default) — the
+/// test below is gated the same way, since a server built without it never registers a handler
+/// for this method at all.
+#[cfg(feature = "lsp-extensions")]
 enum DidFocusTextDocument {}
 
+#[cfg(feature = "lsp-extensions")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DidFocusTextDocumentParams {
     uri: Url,
 }
 
+#[cfg(feature = "lsp-extensions")]
 impl notification::Notification for DidFocusTextDocument {
     type Params = DidFocusTextDocumentParams;
     const METHOD: &'static str = "merc/didFocusTextDocument";
@@ -925,6 +932,7 @@ impl notification::Notification for DidFocusTextDocument {
 /// `did_save` of its own to trigger a reanalysis of the *importing* document) must refresh that
 /// document's diagnostics — see `merc_lsp::focus`'s module doc comment for why plain
 /// `didOpen`/`didChange`/`didSave` can't catch this on their own.
+#[cfg(feature = "lsp-extensions")]
 #[tokio::test]
 async fn switching_focus_back_to_a_document_reanalyzes_it_if_an_import_changed_on_disk() {
     let (server, _result, mut rx) = start().await;

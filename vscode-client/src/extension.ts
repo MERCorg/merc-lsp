@@ -26,19 +26,14 @@ const virtualDocumentRequest = new RequestType<{ uri: string }, string | null, v
 
 /**
  * `GenerateFullSpec` request `{ uri: string }` in, that process specification's `%import`s
- * resolved and merged, then rendered back to fully-parenthesized (so unambiguous, even against
- * the real mCRL2 parser) mCRL2 source text — or `null` if `uri` isn't an open, successfully
- * parsed process specification. Mirrors `../src/generate.rs`'s `GenerateFullSpec` request.
+ * resolved and merged, then rendered back to fully-parenthesized.
  */
 const generateFullSpecRequest = new RequestType<{ uri: string }, string | null, void>('merc/generateFullSpec');
 
 /**
  * `DidFocusTextDocument` notification `{ uri: string }` out: sent whenever the active editor
  * switches to an already-open document. Plain LSP has no "editor became active" signal of its
- * own — only `didOpen`/`didChange`/`didSave`/`didClose` — so a document that `%import`s another
- * file never learns that import changed (and was saved) while it wasn't the focused editor,
- * since it gets no `didSave` of its own to trigger a reanalysis. Mirrors
- * `../src/focus.rs`'s `DidFocusTextDocument` notification.
+ * own.
  */
 const didFocusTextDocumentNotification = new NotificationType<{ uri: string }>('merc/didFocusTextDocument');
 
@@ -67,10 +62,7 @@ function registerFocusListener(context: ExtensionContext) {
 
 /**
  * `merc-lsp.generateFullSpec`: writes the active `.mcrl2` editor's merged specification to a
- * sibling `<name>.generated.mcrl2` file and opens it. That has to be a real file on disk, not a
- * `merc-builtin:` virtual document like {@link registerVirtualDocumentProvider}'s — the whole
- * point is for the real mCRL2 toolset (`mcrl22lps` and friends), an external process, to consume
- * it, and only the editor's virtual-document providers can read a virtual URI.
+ * sibling `<name>.generated.mcrl2` file and opens it.
  */
 async function generateFullSpec(): Promise<void> {
 	const editor = window.activeTextEditor;
