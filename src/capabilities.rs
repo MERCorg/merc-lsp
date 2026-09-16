@@ -48,8 +48,9 @@ pub fn server_capabilities() -> ServerCapabilities {
             trigger_characters: Some(vec!["\"".to_string(), "/".to_string()]),
             ..CompletionOptions::default()
         }),
-        // Currently just the `crate::code_action`/`crate::ambiguity` quick fix, so scoped to
-        // `quickfix` rather than advertising kinds we don't offer.
+        // Currently just `crate::code_action`'s two quick fixes (the `crate::ambiguity`
+        // parenthesization fix and the undeclared-name rename fix), so scoped to `quickfix`
+        // rather than advertising kinds we don't offer.
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
             code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
             ..CodeActionOptions::default()

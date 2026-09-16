@@ -1,6 +1,9 @@
 //! `textDocument/codeAction`: quick fixes for [`crate::ambiguity`]'s lint, parenthesizing the
 //! flagged expression so it reads the same regardless of which parser's precedence table a reader
-//! (or the real mCRL2 toolset) applies.
+//! (or the real mCRL2 toolset) applies — and a "change to '...'" quick fix for an undeclared-name
+//! type error close enough to a declared name to suggest a typo fix (see
+//! [`crate::edit_distance::closest`]), the same candidate [`crate::diagnostics`] already names in
+//! that error's own "did you mean '...'?" message.
 
 use std::collections::HashMap;
 
@@ -18,48 +21,114 @@ use crate::ambiguity;
 use crate::ambiguity::AmbiguousPrefixConflict;
 use crate::convert;
 use crate::convert::LineIndex;
+use crate::diagnostics;
+use crate::document::CheckedOutcome;
+use crate::document::Document;
 use crate::document::DocumentStore;
 use crate::parse::ParseOutcome;
 use crate::parse::Specification;
+use crate::typecheck::ModalTypecheckOutcome;
+use crate::typecheck::PbesTypecheckOutcome;
+use crate::typecheck::PresTypecheckOutcome;
+use crate::typecheck::TypecheckOutcome;
 
-/// Every quick fix available at `params.range`, currently just [`parenthesize_quick_fix`] for each
-/// [`AmbiguousPrefixConflict`] overlapping it. `None` when there's nothing to fix, the same
-/// convention every other request handler in `backend.rs` uses for "no result".
+/// Every quick fix available at `params.range`: [`parenthesize_quick_fix`] for each
+/// [`AmbiguousPrefixConflict`] overlapping it, plus [`rename_quick_fix`] for the document's own
+/// undeclared-name type error, if any. `None` when there's nothing to fix, the same convention
+/// every other request handler in `backend.rs` uses for "no result".
 pub fn code_actions(
     documents: &DocumentStore,
     params: CodeActionParams,
 ) -> Option<Vec<CodeActionOrCommand>> {
     let uri = params.text_document.uri.clone();
     let document = documents.get(&uri)?;
-    let ParseOutcome::Ok(spec) = &document.parsed else {
-        return None;
-    };
 
-    let hits = match spec {
-        Specification::Process(spec) => {
-            ambiguity::find_in_process_specification(spec, &document.text, &document.sources)
+    let mut actions: Vec<CodeActionOrCommand> = match &document.parsed {
+        ParseOutcome::Ok(spec) => {
+            let hits = match spec {
+                Specification::Process(spec) => {
+                    ambiguity::find_in_process_specification(spec, &document.text, &document.sources)
+                }
+                Specification::Pbes(spec) => ambiguity::find_in_pbes_specification(spec, &document.text, &document.sources),
+                Specification::Pres(spec) => ambiguity::find_in_pres_specification(spec, &document.text, &document.sources),
+                Specification::Modal(spec) => ambiguity::find_in_modal_specification(spec, &document.text, &document.sources),
+            };
+
+            hits.iter()
+                // A hit's spans are global offsets into `document.sources`, so one could in
+                // principle fall inside an `%import`ed file rather than `uri` itself — but the
+                // `WorkspaceEdit` this builds (see `parenthesize_quick_fix`) only ever edits
+                // `uri`, so a foreign hit is dropped rather than mislocated.
+                .filter(|hit| convert::is_local_span(&document.sources, &hit.whole_span()))
+                .filter(|hit| overlaps(&document.line_index, &document.text, hit, params.range))
+                .map(|hit| parenthesize_quick_fix(&uri, &document.text, &document.line_index, hit))
+                .collect()
         }
-        Specification::Pbes(spec) => ambiguity::find_in_pbes_specification(spec, &document.text, &document.sources),
-        Specification::Pres(spec) => ambiguity::find_in_pres_specification(spec, &document.text, &document.sources),
-        Specification::Modal(spec) => ambiguity::find_in_modal_specification(spec, &document.text, &document.sources),
+        _ => Vec::new(),
     };
 
-    let actions: Vec<CodeActionOrCommand> = hits
-        .iter()
-        // A hit's spans are global offsets into `document.sources`, so one could in principle fall
-        // inside an `%import`ed file rather than `uri` itself — but the `WorkspaceEdit` this builds
-        // (see `parenthesize_quick_fix`) only ever edits `uri`, so a foreign hit is dropped rather
-        // than mislocated.
-        .filter(|hit| convert::is_local_span(&document.sources, &hit.whole_span()))
-        .filter(|hit| overlaps(&document.line_index, &document.text, hit, params.range))
-        .map(|hit| parenthesize_quick_fix(&uri, &document.text, &document.line_index, hit))
-        .collect();
+    actions.extend(rename_quick_fix(&document, &uri, params.range));
 
     if actions.is_empty() {
         None
     } else {
         Some(actions)
     }
+}
+
+/// The "change to '...'" quick fix for whichever undeclared-name type error `document`'s last
+/// analysis produced, if [`diagnostics::undeclared_name_candidate_for_process_error`] (or its
+/// PBES/PRES/modal-formula counterpart) finds a close-enough candidate for it *and* its span both
+/// lands locally in `document`'s own text — not inside something it `%import`s, the same
+/// restriction [`code_actions`] applies to an [`AmbiguousPrefixConflict`] hit, and for the same
+/// reason: the `WorkspaceEdit` this builds only ever edits `uri` — and overlaps `range`, the range
+/// the client actually asked for.
+fn rename_quick_fix(document: &Document, uri: &Url, range: Range) -> Option<CodeActionOrCommand> {
+    let (span, candidate) = match &document.checked {
+        Some(CheckedOutcome::Process(TypecheckOutcome::Error(error))) => {
+            diagnostics::undeclared_name_candidate_for_process_error(error, document.parsed_process_specification()?)?
+        }
+        Some(CheckedOutcome::Pbes(PbesTypecheckOutcome::Error(error))) => {
+            diagnostics::undeclared_name_candidate_for_pbes_error(error, document.parsed_pbes_specification()?)?
+        }
+        Some(CheckedOutcome::Pres(PresTypecheckOutcome::Error(error))) => {
+            diagnostics::undeclared_name_candidate_for_pres_error(error, document.parsed_pres_specification()?)?
+        }
+        Some(CheckedOutcome::Modal(ModalTypecheckOutcome::Error(error))) => {
+            diagnostics::undeclared_name_candidate_for_modal_error(error, document.parsed_modal_specification()?)?
+        }
+        _ => return None,
+    };
+
+    if !convert::is_local_span(&document.sources, &span) {
+        return None;
+    }
+    let span_range = document.line_index.range(&document.text, &span);
+    if !(span_range.start <= range.end && range.start <= span_range.end) {
+        return None;
+    }
+
+    Some(rename_quick_fix_for(uri, span_range, candidate))
+}
+
+/// Builds the quick fix that replaces `span_range`'s text outright with `candidate`.
+fn rename_quick_fix_for(uri: &Url, span_range: Range, candidate: &str) -> CodeActionOrCommand {
+    CodeActionOrCommand::CodeAction(CodeAction {
+        title: format!("Change to '{candidate}'"),
+        kind: Some(CodeActionKind::QUICKFIX),
+        is_preferred: Some(true),
+        edit: Some(WorkspaceEdit {
+            changes: Some(HashMap::from([(
+                uri.clone(),
+                vec![TextEdit {
+                    range: span_range,
+                    new_text: candidate.to_string(),
+                }],
+            )])),
+            ..WorkspaceEdit::default()
+        }),
+        ..CodeAction::default()
+    })
 }
 
 /// Whether `hit`'s own range overlaps the range the client asked for.
@@ -128,6 +197,17 @@ mod tests {
     async fn document_for(text: &str) -> Document {
         let outcome = parse(SpecKind::Process, text.to_string()).await;
         Document::new(text.to_string(), 0, outcome, None, SourceMap::new())
+    }
+
+    /// As [`document_for`], but also type checked — needed by a fixture that expects
+    /// [`rename_quick_fix`] to fire, since that reads `document.checked`.
+    async fn checked_document_for(text: &str) -> Document {
+        let outcome = parse(SpecKind::Process, text.to_string()).await;
+        let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
+            panic!("fixture failed to parse");
+        };
+        let checked = CheckedOutcome::Process(crate::typecheck::typecheck_ignoring_sources((**spec).clone()).await);
+        Document::new(text.to_string(), 0, outcome, Some(checked), SourceMap::new())
     }
 
     fn params(uri: &Url, range: Range) -> CodeActionParams {
@@ -209,6 +289,59 @@ mod tests {
         let uri = Url::parse("file:///test.mcrl2").expect("valid URL");
         let documents = DocumentStore::default();
         documents.insert(uri.clone(), document_for(text).await);
+
+        let whole_document = Range {
+            start: Position::default(),
+            end: Position {
+                line: 10,
+                character: 0,
+            },
+        };
+        assert!(code_actions(&documents, params(&uri, whole_document)).is_none());
+    }
+
+    #[tokio::test]
+    async fn offers_a_quick_fix_that_renames_an_undeclared_action_to_the_closest_match() {
+        let text = "act ready: Bool;\ninit redy(true);";
+        let uri = Url::parse("file:///test.mcrl2").expect("valid URL");
+        let documents = DocumentStore::default();
+        documents.insert(uri.clone(), checked_document_for(text).await);
+
+        let whole_document = Range {
+            start: Position::default(),
+            end: Position {
+                line: 10,
+                character: 0,
+            },
+        };
+        let actions = code_actions(&documents, params(&uri, whole_document)).expect("should offer a quick fix");
+        assert_eq!(actions.len(), 1);
+
+        let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+            panic!("expected a CodeAction, not a Command");
+        };
+        assert_eq!(action.title, "Change to 'ready'");
+        let edits = action
+            .edit
+            .as_ref()
+            .and_then(|edit| edit.changes.as_ref())
+            .and_then(|changes| changes.get(&uri))
+            .expect("should carry a WorkspaceEdit for the document");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "ready");
+
+        let start = text.find("redy").expect("fixture contains 'redy'");
+        let index = LineIndex::new(text);
+        assert_eq!(edits[0].range.start, index.position(text, start));
+        assert_eq!(edits[0].range.end, index.position(text, start + "redy".len()));
+    }
+
+    #[tokio::test]
+    async fn offers_nothing_when_nothing_is_close_enough_to_rename_to() {
+        let text = "init xyzzy;";
+        let uri = Url::parse("file:///test.mcrl2").expect("valid URL");
+        let documents = DocumentStore::default();
+        documents.insert(uri.clone(), checked_document_for(text).await);
 
         let whole_document = Range {
             start: Position::default(),

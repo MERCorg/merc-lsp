@@ -1,6 +1,7 @@
-//! A "closest declared name" lookup, built on [`strsim::levenshtein`] — the "did you mean '...'?"
-//! suggestions [`crate::diagnostics`] appends to an undeclared-name error, using the candidate
-//! lists [`crate::names`] extracts from the document's raw parse.
+//! A "closest declared name" lookup, built on [`strsim::levenshtein`] — the fix suggestion behind
+//! both the "did you mean '...'?" suffix [`crate::diagnostics`] appends to an undeclared-name
+//! error and the "change to '...'" quick fix [`crate::code_action`] offers for it, using the
+//! candidate lists [`crate::names`] extracts from the document's raw parse.
 
 /// Finds the candidate closest to `name` by Levenshtein distance, provided it is close enough to
 /// be worth suggesting as a typo fix — within a third of `name`'s own length, rounded up and never
@@ -18,15 +19,6 @@ pub fn closest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) ->
         .filter(|&(_, distance)| distance <= max_distance)
         .min_by_key(|&(_, distance)| distance)
         .map(|(candidate, _)| candidate)
-}
-
-/// Renders a `" — did you mean 'X'?"` suffix for `name` against `candidates` (see [`closest`]), or
-/// an empty string when nothing is close enough to suggest.
-pub fn suggestion<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> String {
-    match closest(name, candidates) {
-        Some(candidate) => format!(" — did you mean '{candidate}'?"),
-        None => String::new(),
-    }
 }
 
 #[cfg(test)]
@@ -58,15 +50,5 @@ mod tests {
         // within the one-edit threshold `closest`'s own length ("cafe".len() == 4) allows.
         let candidates = ["cafe"];
         assert_eq!(closest("café", candidates), Some("cafe"));
-    }
-
-    #[test]
-    fn suggestion_formats_a_found_candidate() {
-        assert_eq!(suggestion("Bol", ["Bool"]), " — did you mean 'Bool'?");
-    }
-
-    #[test]
-    fn suggestion_is_empty_when_nothing_is_close() {
-        assert_eq!(suggestion("xyz", ["Bool"]), "");
     }
 }

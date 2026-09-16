@@ -235,87 +235,160 @@ fn ambiguity_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap,
     )
 }
 
-/// A `" — did you mean '...'?"` suffix for `error`, if it names an undeclared identifier and a
-/// close-enough candidate exists among `spec`'s own declarations — an empty string otherwise
-/// (including for every error variant that isn't "undeclared" shaped at all, like a duplicate
-/// declaration or an arity mismatch, which no typo fix would address).
+/// The identifier's own span for the offending name `name`, starting where `span` starts but
+/// widened or narrowed to `name`'s own byte length — several of the "undeclared" error variants
+/// below carry the span of the *enclosing* expression (e.g. a whole `redy(true)` action
+/// instantiation, arguments included) rather than just the identifier itself, since that's what's
+/// most useful for the caret-annotated snippet [`ProcessError::render`] (and its PBES/PRES/modal-
+/// formula counterparts) prints. A rename quick fix, unlike that snippet, must replace only the
+/// identifier — so every arm below narrows down to it, relying on the fact that whichever span it
+/// is always starts exactly at `name`'s own first byte (`name` is always the expression or
+/// instantiation's leading token) to avoid needing `spec`'s original source text to search in.
+fn identifier_span(span: &Span, name: &str) -> Span {
+    Span {
+        start: span.start,
+        end: span.start + name.len(),
+    }
+}
+
+/// The closest declared name for `error`, together with the [`identifier_span`] to replace with
+/// it, if `error` names an undeclared identifier and a close-enough candidate exists among
+/// `spec`'s own declarations (see [`edit_distance::closest`]) — `None` otherwise (including for
+/// every error variant that isn't "undeclared" shaped at all, like a duplicate declaration or an
+/// arity mismatch, which no typo fix would address).
+///
+/// Shared by [`suggestion_for_process_error`], which turns the candidate into the diagnostic's
+/// "did you mean '...'?" message suffix, and [`crate::code_action`], which turns the pair into a
+/// "change to '...'" quick fix.
 ///
 /// One arm per undeclared-name-shaped variant, matched through the `WellTyped`/`Inference`
 /// wrapper variants a data-specification-level error arrives through as well as the two
 /// [`ProcessError`] raises directly — see `merc_typecheck`'s `ProcessError`/`WellTypedError`/
 /// `InferenceError` doc comments for why the nesting looks like this.
-fn suggestion_for_process_error(error: &ProcessError, spec: &UntypedProcessSpecification) -> String {
+pub(crate) fn undeclared_name_candidate_for_process_error<'a>(error: &ProcessError, spec: &'a UntypedProcessSpecification) -> Option<(Span, &'a str)> {
     match error {
-        ProcessError::WellTyped(WellTypedError::UndefinedSort { sort, .. }) => {
-            edit_distance::suggestion(sort, names::process_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))
+        ProcessError::WellTyped(WellTypedError::UndefinedSort { sort, span }) => {
+            let candidate = edit_distance::closest(sort, names::process_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))?;
+            Some((identifier_span(span, sort), candidate))
         }
-        ProcessError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, .. }))
-        | ProcessError::Inference(InferenceError::UndeclaredName { name, .. }) => {
-            edit_distance::suggestion(name, names::process_data_value_names(spec))
+        ProcessError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, span }))
+        | ProcessError::Inference(InferenceError::UndeclaredName { name, span }) => {
+            let candidate = edit_distance::closest(name, names::process_data_value_names(spec))?;
+            Some((identifier_span(span, name), candidate))
         }
-        ProcessError::UndeclaredActionOrProcess { name, .. } => {
-            edit_distance::suggestion(name, names::process_action_or_process_names(spec))
+        ProcessError::UndeclaredActionOrProcess { name, span, .. } => {
+            let candidate = edit_distance::closest(name, names::process_action_or_process_names(spec))?;
+            Some((identifier_span(span, name), candidate))
         }
-        ProcessError::UndeclaredAction { name, .. } => edit_distance::suggestion(name, names::process_action_names(spec)),
-        ProcessError::UnknownProcessParameter { process, name, .. } => {
-            edit_distance::suggestion(name, names::process_parameter_names(spec, process))
+        ProcessError::UndeclaredAction { name, span, .. } => {
+            let candidate = edit_distance::closest(name, names::process_action_names(spec))?;
+            Some((identifier_span(span, name), candidate))
         }
-        _ => String::new(),
+        ProcessError::UnknownProcessParameter { process, name, span } => {
+            let candidate = edit_distance::closest(name, names::process_parameter_names(spec, process))?;
+            Some((identifier_span(span, name), candidate))
+        }
+        _ => None,
+    }
+}
+
+/// A `" — did you mean '...'?"` suffix built from [`undeclared_name_candidate_for_process_error`],
+/// or an empty string when it finds nothing to suggest.
+fn suggestion_for_process_error(error: &ProcessError, spec: &UntypedProcessSpecification) -> String {
+    did_you_mean(undeclared_name_candidate_for_process_error(error, spec).map(|(_, candidate)| candidate))
+}
+
+/// As [`undeclared_name_candidate_for_process_error`], for a [`PbesError`].
+pub(crate) fn undeclared_name_candidate_for_pbes_error<'a>(error: &PbesError, spec: &'a UntypedPbes) -> Option<(Span, &'a str)> {
+    match error {
+        PbesError::WellTyped(WellTypedError::UndefinedSort { sort, span }) => {
+            let candidate = edit_distance::closest(sort, names::pbes_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))?;
+            Some((identifier_span(span, sort), candidate))
+        }
+        PbesError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, span }))
+        | PbesError::Inference(InferenceError::UndeclaredName { name, span }) => {
+            let candidate = edit_distance::closest(name, names::pbes_data_value_names(spec))?;
+            Some((identifier_span(span, name), candidate))
+        }
+        PbesError::UndeclaredPropositionalVariable { name, span, .. } => {
+            let candidate = edit_distance::closest(name, names::pbes_propositional_variable_names(spec))?;
+            Some((identifier_span(span, name), candidate))
+        }
+        _ => None,
     }
 }
 
 /// As [`suggestion_for_process_error`], for a [`PbesError`].
 fn suggestion_for_pbes_error(error: &PbesError, spec: &UntypedPbes) -> String {
+    did_you_mean(undeclared_name_candidate_for_pbes_error(error, spec).map(|(_, candidate)| candidate))
+}
+
+/// As [`undeclared_name_candidate_for_pbes_error`], for a [`PresError`] — [`PresError`] mirrors
+/// [`PbesError`]'s shape one level down (see `typecheck.rs`'s module docs), so this is the
+/// identical match, just against a [`UntypedPres`] for its candidate names.
+pub(crate) fn undeclared_name_candidate_for_pres_error<'a>(error: &PresError, spec: &'a UntypedPres) -> Option<(Span, &'a str)> {
     match error {
-        PbesError::WellTyped(WellTypedError::UndefinedSort { sort, .. }) => {
-            edit_distance::suggestion(sort, names::pbes_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))
+        PresError::WellTyped(WellTypedError::UndefinedSort { sort, span }) => {
+            let candidate = edit_distance::closest(sort, names::pres_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))?;
+            Some((identifier_span(span, sort), candidate))
         }
-        PbesError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, .. }))
-        | PbesError::Inference(InferenceError::UndeclaredName { name, .. }) => {
-            edit_distance::suggestion(name, names::pbes_data_value_names(spec))
+        PresError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, span }))
+        | PresError::Inference(InferenceError::UndeclaredName { name, span }) => {
+            let candidate = edit_distance::closest(name, names::pres_data_value_names(spec))?;
+            Some((identifier_span(span, name), candidate))
         }
-        PbesError::UndeclaredPropositionalVariable { name, .. } => {
-            edit_distance::suggestion(name, names::pbes_propositional_variable_names(spec))
+        PresError::UndeclaredPropositionalVariable { name, span, .. } => {
+            let candidate = edit_distance::closest(name, names::pres_propositional_variable_names(spec))?;
+            Some((identifier_span(span, name), candidate))
         }
-        _ => String::new(),
+        _ => None,
     }
 }
 
-/// As [`suggestion_for_pbes_error`], for a [`PresError`] — [`PresError`] mirrors [`PbesError`]'s
-/// shape one level down (see `typecheck.rs`'s module docs), so this is the identical match, just
-/// against a [`UntypedPres`] for its candidate names.
+/// As [`suggestion_for_pbes_error`], for a [`PresError`].
 fn suggestion_for_pres_error(error: &PresError, spec: &UntypedPres) -> String {
+    did_you_mean(undeclared_name_candidate_for_pres_error(error, spec).map(|(_, candidate)| candidate))
+}
+
+/// As [`undeclared_name_candidate_for_process_error`], for a [`ModalError`] — a modal formula's
+/// undeclared-name shapes are a sort (as everywhere else), a data value, an action
+/// (`ModalError::UndeclaredAction`, the modal counterpart of [`ProcessError::UndeclaredAction`]),
+/// or a fixpoint variable (`ModalError::UndeclaredStateVariable`).
+pub(crate) fn undeclared_name_candidate_for_modal_error<'a>(error: &ModalError, spec: &'a UntypedStateFrmSpec) -> Option<(Span, &'a str)> {
     match error {
-        PresError::WellTyped(WellTypedError::UndefinedSort { sort, .. }) => {
-            edit_distance::suggestion(sort, names::pres_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))
+        ModalError::WellTyped(WellTypedError::UndefinedSort { sort, span }) => {
+            let candidate = edit_distance::closest(sort, names::modal_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))?;
+            Some((identifier_span(span, sort), candidate))
         }
-        PresError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, .. }))
-        | PresError::Inference(InferenceError::UndeclaredName { name, .. }) => {
-            edit_distance::suggestion(name, names::pres_data_value_names(spec))
+        ModalError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, span }))
+        | ModalError::Inference(InferenceError::UndeclaredName { name, span }) => {
+            let candidate = edit_distance::closest(name, names::modal_data_value_names(spec))?;
+            Some((identifier_span(span, name), candidate))
         }
-        PresError::UndeclaredPropositionalVariable { name, .. } => {
-            edit_distance::suggestion(name, names::pres_propositional_variable_names(spec))
+        ModalError::UndeclaredAction { name, span, .. } => {
+            let candidate = edit_distance::closest(name, names::modal_action_names(spec))?;
+            Some((identifier_span(span, name), candidate))
         }
-        _ => String::new(),
+        ModalError::UndeclaredStateVariable { name, span, .. } => {
+            let candidate = edit_distance::closest(name, names::modal_state_variable_names(spec))?;
+            Some((identifier_span(span, name), candidate))
+        }
+        _ => None,
     }
 }
 
-/// As [`suggestion_for_process_error`], for a [`ModalError`] — a modal formula's undeclared-name
-/// shapes are a sort (as everywhere else), a data value, an action (`ModalError::UndeclaredAction`,
-/// the modal counterpart of [`ProcessError::UndeclaredAction`]), or a fixpoint variable
-/// (`ModalError::UndeclaredStateVariable`).
+/// As [`suggestion_for_process_error`], for a [`ModalError`].
 fn suggestion_for_modal_error(error: &ModalError, spec: &UntypedStateFrmSpec) -> String {
-    match error {
-        ModalError::WellTyped(WellTypedError::UndefinedSort { sort, .. }) => {
-            edit_distance::suggestion(sort, names::modal_sort_names(spec).chain(names::SYSTEM_SORTS.iter().copied()))
-        }
-        ModalError::WellTyped(WellTypedError::Inference(InferenceError::UndeclaredName { name, .. }))
-        | ModalError::Inference(InferenceError::UndeclaredName { name, .. }) => {
-            edit_distance::suggestion(name, names::modal_data_value_names(spec))
-        }
-        ModalError::UndeclaredAction { name, .. } => edit_distance::suggestion(name, names::modal_action_names(spec)),
-        ModalError::UndeclaredStateVariable { name, .. } => edit_distance::suggestion(name, names::modal_state_variable_names(spec)),
-        _ => String::new(),
+    did_you_mean(undeclared_name_candidate_for_modal_error(error, spec).map(|(_, candidate)| candidate))
+}
+
+/// Renders a `" — did you mean 'X'?"` suffix for `candidate` (see
+/// [`undeclared_name_candidate_for_process_error`] and its PBES/PRES/modal-formula counterparts),
+/// or an empty string when there was nothing close enough to suggest.
+fn did_you_mean(candidate: Option<&str>) -> String {
+    match candidate {
+        Some(candidate) => format!(" — did you mean '{candidate}'?"),
+        None => String::new(),
     }
 }
 
