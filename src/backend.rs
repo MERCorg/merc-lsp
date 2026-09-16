@@ -1,12 +1,3 @@
-//! Builds the [`Router`] that dispatches requests and notifications to parsing, diagnostics, and
-//! document symbols: `async-lsp`'s equivalent of a `tower-lsp` `impl LanguageServer`.
-//!
-//! Notification handlers run synchronously (they return `ControlFlow`, not a `Future`), so any
-//! actual work — parsing/type checking is CPU-bound and diagnostics publishing is fire-and-forget
-//! — happens on a `tokio::spawn`ed task instead; see [`spawn_analyze`]/[`analyze`]. That work only
-//! ever runs for a `did_open`, a `did_save`, or a stale `merc/didFocusTextDocument` (see
-//! [`crate::focus`]), deliberately never for a `did_change` — see `analyze`'s own doc comment.
-
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -52,10 +43,6 @@ use crate::document::CheckedOutcome;
 use crate::document::Document;
 use crate::document::DocumentStore;
 #[cfg(feature = "lsp-extensions")]
-use crate::focus::DidFocusTextDocument;
-#[cfg(feature = "lsp-extensions")]
-use crate::focus::DidFocusTextDocumentParams;
-#[cfg(feature = "lsp-extensions")]
 use crate::generate;
 #[cfg(feature = "lsp-extensions")]
 use crate::generate::GenerateFullSpec;
@@ -75,13 +62,11 @@ use crate::virtual_document::VirtualDocument;
 #[cfg(feature = "lsp-extensions")]
 use crate::virtual_document::VirtualDocumentStore;
 
-/// Diagnostics published against a URI on some document's behalf because a span in its analysis
-/// actually landed there (see [`Document::diagnostics`]'s doc comment) — e.g. a type error inside
-/// an `%import`ed file — keyed first by that target URI, then by which importing document
-/// currently contributes to it. More than one open document can `%import` the same file, so a
-/// target's published diagnostics are the union across every owner still contributing to it;
-/// tracking owners separately is what lets [`analyze`] and `did_close` each update or clear just
-/// their own contribution without clobbering another importer's still-valid one for the same file.
+/// Diagnostics published against a URI on some document's behalf because a span
+/// in its analysis actually landed there keyed first by that target URI, then
+/// by which importing document currently contributes to it. The same file can
+/// be imported by multiple documents, and each importing document maintains its
+/// own set of diagnostics for that file.
 type ForeignDiagnostics = DashMap<Url, HashMap<Url, Vec<Diagnostic>>>;
 
 /// Per-connection server state backing the [`Router`] built by [`router`].
@@ -221,28 +206,12 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         .notification::<notification::DidChangeWatchedFiles>(|state, params| {
             // The client watches every `.mcrl2`/`.pbes`/`.pres`/`.mcf` file in the workspace (see
             // `vscode-client/src/extension.ts`'s `synchronize.fileEvents`) and forwards every
-            // create/change/delete here. Deciding which open documents that actually affects means
-            // a `fs::metadata` call per file each document's own last analysis pulled in (see
-            // `Document::is_stale`) plus, for `has_newly_available_import`, a directory join per
-            // `%import` directive in every open document — real I/O and (with many open documents)
-            // real work, so it's done on a spawned task rather than blocking this notification
-            // handler, which can't `.await` anyway.
+            // create/change/delete here. See `reanalyze_stale_documents` for what happens with it —
+            // done on a spawned task rather than blocking this notification handler, which can't
+            // `.await` anyway.
             let backend = state.clone();
-            tokio::spawn(async move {
-                let changed_paths: Vec<std::path::PathBuf> = params.changes.iter().filter_map(|change| change.uri.to_file_path().ok()).collect();
-                let stale: Vec<(Url, String, i32)> = backend
-                    .documents
-                    .iter()
-                    .filter(|entry| {
-                        let document = entry.value();
-                        document.is_stale() || document.has_newly_available_import(parse::path_of(entry.key()).as_deref(), &changed_paths)
-                    })
-                    .map(|entry| (entry.key().clone(), entry.value().text.clone(), entry.value().version))
-                    .collect();
-                for (uri, text, version) in stale {
-                    tokio::spawn(analyze(backend.clone(), uri, text, version, true));
-                }
-            });
+            let changed_paths: Vec<std::path::PathBuf> = params.changes.iter().filter_map(|change| change.uri.to_file_path().ok()).collect();
+            tokio::spawn(reanalyze_stale_documents(backend, changed_paths));
             ControlFlow::Continue(())
         })
         // Ignore anything we don't handle instead of taking the server down.
@@ -254,11 +223,10 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
 }
 
 /// Registers merc-lsp's non-standard protocol extensions on `router`: `merc/virtualDocument`
-/// ([`crate::virtual_document`]), `merc/generateFullSpec` ([`crate::generate`]), and
-/// `merc/didFocusTextDocument` ([`crate::focus`]). Gated behind the `lsp-extensions` Cargo feature
-/// (on by default, see `Cargo.toml`) — see `README.md`'s "What's specific to the VS Code
-/// extension" section for what each does and why a plain LSP client works fine without any of
-/// them registered at all.
+/// ([`crate::virtual_document`]) and `merc/generateFullSpec` ([`crate::generate`]). Gated behind
+/// the `lsp-extensions` Cargo feature (on by default, see `Cargo.toml`) — see `README.md`'s
+/// "What's specific to the VS Code extension" section for what each does and why a plain LSP
+/// client works fine without either registered at all.
 #[cfg(feature = "lsp-extensions")]
 fn register_lsp_extensions(router: &mut Router<Backend>) {
     router
@@ -274,20 +242,6 @@ fn register_lsp_extensions(router: &mut Router<Backend>) {
         .request::<GenerateFullSpec, _>(|state, params| {
             let documents = state.documents.clone();
             async move { Ok(generate::generate_full_spec_request(&documents, params)) }
-        })
-        .notification::<DidFocusTextDocument>(|state, params: DidFocusTextDocumentParams| {
-            // See `crate::focus`'s module doc comment for why this exists at all. Only reanalyzes
-            // when `Document::is_stale` actually finds a changed import — the common case (nothing
-            // changed since this document was last analyzed) does no work beyond that check.
-            let stale = state
-                .documents
-                .get(&params.uri)
-                .filter(|document| document.is_stale())
-                .map(|document| (document.text.clone(), document.version));
-            if let Some((text, version)) = stale {
-                spawn_analyze(state, params.uri, text, version, true);
-            }
-            ControlFlow::Continue(())
         });
 }
 
@@ -569,6 +523,32 @@ fn inlay_hint_request(
     ))
 }
 
+/// Reanalyzes every open document that `changed_paths` (from a `did_change_watched_files`
+/// notification) leaves stale — either because it's among the files that document's own last
+/// analysis actually pulled in ([`Document::is_stale`]), or because it's a freshly created
+/// `%import` target that last analysis couldn't resolve at all
+/// ([`Document::has_newly_available_import`]).
+///
+/// Deciding which open documents `changed_paths` actually affects means a `fs::metadata` call per
+/// file each document's own last analysis pulled in, plus, for `has_newly_available_import`, a
+/// directory join per `%import` directive in every open document — real I/O and (with many open
+/// documents) real work, so this is always run on a spawned task rather than inline on the
+/// notification handler that noticed the change (which can't `.await` anyway).
+async fn reanalyze_stale_documents(backend: Backend, changed_paths: Vec<std::path::PathBuf>) {
+    let stale: Vec<(Url, String, i32)> = backend
+        .documents
+        .iter()
+        .filter(|entry| {
+            let document = entry.value();
+            document.is_stale() || document.has_newly_available_import(parse::path_of(entry.key()).as_deref(), &changed_paths)
+        })
+        .map(|entry| (entry.key().clone(), entry.value().text.clone(), entry.value().version))
+        .collect();
+    for (uri, text, version) in stale {
+        tokio::spawn(analyze(backend.clone(), uri, text, version, true));
+    }
+}
+
 /// Clones out of `state` whatever [`analyze`] needs and spawns it, so parsing/type checking can
 /// `.await` past this (synchronous) notification handler's borrow of `state`. `refresh_views` is
 /// threaded straight through to [`analyze`] — see there for what it controls.
@@ -714,10 +694,10 @@ async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh
         // Both are standalone `workspace/*/refresh` requests, not tied to `uri`: the client
         // decides which of its own open editors to re-pull them for. Needed because this
         // reanalysis has no accompanying `did_change` of its own to make the client re-request
-        // either on its own — most obviously for the stale-import case (see `crate::focus`'s
-        // module doc comment), where the document text hasn't changed at all from the client's
-        // point of view, so nothing else would ever tell it the old inlay hints (still anchored
-        // to spans/names from before the `%import`ed file's edit) are now stale too.
+        // either on its own — most obviously for the stale-import case (see
+        // `reanalyze_stale_documents`), where the document text hasn't changed at all from the
+        // client's point of view, so nothing else would ever tell it the old inlay hints (still
+        // anchored to spans/names from before the `%import`ed file's edit) are now stale too.
         request_semantic_tokens_refresh(&client);
         request_inlay_hint_refresh(&client);
     }

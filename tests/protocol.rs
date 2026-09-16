@@ -904,76 +904,10 @@ async fn goto_definition_on_an_unsaved_import_directive_resolves_against_the_liv
     assert_eq!(links[0].target_uri, common_uri);
 }
 
-/// A minimal stand-in for `vscode-client`'s own `merc/didFocusTextDocument` notification (see
-/// `merc_lsp::focus`'s module doc comment) — a plain client just needs to match the wire method
-/// name and JSON shape, not link against the server crate's own type, so this test defines its
-/// own copy rather than reaching into a private module.
-///
-/// This whole notification is part of the `lsp-extensions` Cargo feature (on by default) — the
-/// test below is gated the same way, since a server built without it never registers a handler
-/// for this method at all.
-#[cfg(feature = "lsp-extensions")]
-enum DidFocusTextDocument {}
-
-#[cfg(feature = "lsp-extensions")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DidFocusTextDocumentParams {
-    uri: Url,
-}
-
-#[cfg(feature = "lsp-extensions")]
-impl notification::Notification for DidFocusTextDocument {
-    type Params = DidFocusTextDocumentParams;
-    const METHOD: &'static str = "merc/didFocusTextDocument";
-}
-
-/// Switching focus back to a document whose `%import`ed file changed on disk (and so never got a
-/// `did_save` of its own to trigger a reanalysis of the *importing* document) must refresh that
-/// document's diagnostics — see `merc_lsp::focus`'s module doc comment for why plain
-/// `didOpen`/`didChange`/`didSave` can't catch this on their own.
-#[cfg(feature = "lsp-extensions")]
-#[tokio::test]
-async fn switching_focus_back_to_a_document_reanalyzes_it_if_an_import_changed_on_disk() {
-    let (server, _result, mut rx) = start().await;
-
-    let dir = tempfile::tempdir().expect("should create a temp directory");
-    let main_path = dir.path().join("main.mcrl2");
-    let common_path = dir.path().join("common.mcrl2");
-    std::fs::write(&main_path, "%import \"common.mcrl2\"\ninit b;\n").expect("should write main.mcrl2");
-    std::fs::write(&common_path, "act b;\n").expect("should write common.mcrl2");
-    let main_text = std::fs::read_to_string(&main_path).unwrap();
-    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
-
-    server
-        .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), &main_text))
-        .expect("didOpen should be queued");
-    let first = next_diagnostics(&mut rx).await;
-    assert!(first.diagnostics.is_empty(), "main.mcrl2 should type check via its import: {first:?}");
-
-    // `common.mcrl2` is never opened in the editor at all here — it's edited (and, being real
-    // disk content rather than an LSP buffer, implicitly "saved") the way a file changed by
-    // another tool, another editor tab, or version control would be. Removing the only
-    // declaration `main.mcrl2` actually uses should turn `b` into an undeclared action once
-    // `main.mcrl2` is reanalyzed against it.
-    std::fs::write(&common_path, "act c;\n").expect("should rewrite common.mcrl2");
-
-    server
-        .notify::<DidFocusTextDocument>(DidFocusTextDocumentParams { uri: main_uri })
-        .expect("merc/didFocusTextDocument should be queued");
-
-    let second = next_diagnostics(&mut rx).await;
-    assert_eq!(second.diagnostics.len(), 1, "expected 'b' to be reported as undeclared: {second:?}");
-    assert_eq!(second.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
-}
-
-/// As `switching_focus_back_to_a_document_reanalyzes_it_if_an_import_changed_on_disk`, but for
-/// the case `merc/didFocusTextDocument` can't catch on its own: `main.mcrl2` never stops being the
-/// active editor (so `window.onDidChangeActiveTextEditor` never fires), yet `common.mcrl2` still
-/// changes on disk — e.g. edited by an external tool or another VS Code window. The client's file
-/// watcher (`vscode-client/src/extension.ts`'s `synchronize.fileEvents`) forwards that as a plain
-/// `workspace/didChangeWatchedFiles` notification, which must reanalyze every open document
-/// `Document::is_stale` flags rather than relying on focus changing at all.
+/// `common.mcrl2` changes on disk while `main.mcrl2` `%import`s it and is open in the editor. The
+/// client's file watcher (`vscode-client/src/extension.ts`'s `synchronize.fileEvents`) forwards
+/// that as a plain `workspace/didChangeWatchedFiles` notification, which must reanalyze every open
+/// document `Document::is_stale` flags.
 #[tokio::test]
 async fn a_watched_file_change_reanalyzes_documents_that_import_it_even_without_a_focus_change() {
     let (server, _result, mut rx) = start().await;

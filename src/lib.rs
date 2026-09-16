@@ -21,8 +21,6 @@ mod diagnostics;
 mod document;
 mod edit_distance;
 #[cfg(feature = "lsp-extensions")]
-mod focus;
-#[cfg(feature = "lsp-extensions")]
 mod generate;
 mod goto_definition;
 mod hover;

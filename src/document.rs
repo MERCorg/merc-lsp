@@ -630,10 +630,10 @@ mod tests {
 
     #[tokio::test]
     async fn is_stale_becomes_true_once_an_imported_file_changes_on_disk() {
-        // Mirrors what `merc/didFocusTextDocument`'s handler (`backend::router`) checks: a
-        // document imports `common.mcrl2`, which changes (and is saved) after this document's own
-        // last analysis — `is_stale` must notice, even though nothing about the document's own
-        // text changed.
+        // Mirrors what `backend::reanalyze_stale_documents` (fed by `did_change_watched_files`)
+        // checks: a document imports `common.mcrl2`, which changes (and is saved) after this
+        // document's own last analysis — `is_stale` must notice, even though nothing about the
+        // document's own text changed.
         let dir = temp_project(&[
             ("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"),
             ("common.mcrl2", "act a: Nat;\n"),
