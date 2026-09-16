@@ -456,18 +456,6 @@ pub fn import_error_diagnostics(text: &str, line_index: &LineIndex, sources: &So
         .collect()
 }
 
-/// The path of the file whose own parse actually failed, for an [`ImportError`] ultimately caused
-/// by a parse failure — the same file [`ImportError::pest_error`] recovers the structured pest
-/// error from, however many [`ImportError::Unresolved`] layers deep it is. `None` for
-/// [`ImportError::Cycle`], which isn't anchored to one file's parse.
-fn import_parse_error_path(error: &ImportError) -> Option<&Path> {
-    match error {
-        ImportError::Parse { path, .. } => Some(path.as_path()),
-        ImportError::Unresolved { cause, .. } => cause.downcast_ref::<ImportError>().and_then(import_parse_error_path),
-        ImportError::Cycle { .. } => None,
-    }
-}
-
 /// Builds a located type-error [`Diagnostic`] for `span`, shared by [`type_diagnostics`] and its
 /// PBES/PRES/modal-formula counterparts.
 fn error_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], span: Option<&Span>, message: String, root_uri: &Url) -> (Url, Diagnostic) {
@@ -499,56 +487,66 @@ fn error_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap, lin
 fn parse_error_diagnostic(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], error: &MercError, root_uri: &Url) -> (Url, Diagnostic) {
     // A document parsed via `merc_syntax::imports` (any `%import`-capable document backed by a
     // real path — see `parse.rs`'s module docs) never carries a directly downcastable
-    // `PestError<Rule>` at the top level.
+    // `PestError<Rule>` at the top level; its parse failures surface as an `ImportError` instead.
     let import_error = error.downcast_ref::<ImportError>();
-    let pest_error = error.downcast_ref::<PestError<Rule>>().or_else(|| import_error.and_then(ImportError::pest_error));
-    match pest_error {
-        Some(pest_error) => {
-            let message = pest_error.variant.message().into_owned();
-            // The file whose own parse actually failed, known directly from `ImportError::Parse`'s
-            // own `path` — not re-derived from a global offset. An offset exactly on a file
-            // boundary (e.g. a syntax error at the end of a file immediately followed by an
-            // imported one) can't be resolved back to the right file by value alone, since it's
-            // simultaneously "end of this file" and "start of the next" in the shared offset space.
-            let id = import_error.and_then(import_parse_error_path).and_then(|path| resolve_source(sources, path));
-            let (local_text, id) = match id {
-                Some(id) => (sources.text(id), id),
-                None => (text, SourceId::new(0)),
-            };
-            let local_span = pest_location_to_local_span(&pest_error.location, local_text);
-            let (uri, range) = locate_local(text, line_index, sources, line_indexes, id, &local_span, root_uri);
-            (
-                uri,
-                Diagnostic {
-                    range,
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    source: Some(SOURCE.to_string()),
-                    message,
-                    ..Diagnostic::default()
-                },
-            )
-        }
-        None => {
-            // Neither a bare pest error nor an `ImportError` wrapping one with a recoverable pest
-            // error.
-            let message = error.to_string();
-            let span = import_error.and_then(ImportError::span);
-            let (uri, range) = match span {
-                Some(span) => locate(text, line_index, sources, line_indexes, span, root_uri),
-                None => (root_uri.clone(), Range::default()),
-            };
-            (
-                uri,
-                Diagnostic {
-                    range,
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    source: Some(SOURCE.to_string()),
-                    message,
-                    ..Diagnostic::default()
-                },
-            )
-        }
+
+    // `ImportError::syntax_error` already recovers the structured location/message from a parse
+    // failure however many `ImportError::Unresolved` layers deep it is, pre-shifted into the
+    // shared, global `SourceMap` offset space (`SourceMap::lookup`'s one-byte gap between files
+    // makes that offset resolve to the right file unambiguously, even at a file's own end) — so
+    // this can go straight through the same `locate` every other global span uses instead of
+    // separately resolving the failing file's `SourceId` from its path and rebasing.
+    if let Some(syntax_error) = import_error.and_then(ImportError::syntax_error) {
+        let (uri, range) = locate(text, line_index, sources, line_indexes, &syntax_error.span, root_uri);
+        return (
+            uri,
+            Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some(SOURCE.to_string()),
+                message: syntax_error.message.clone(),
+                ..Diagnostic::default()
+            },
+        );
     }
+
+    // Not import-wrapped at all: a plain, import-free parse (PBES/PRES, or a Process/Modal
+    // document with no backing path) still fails with a bare `PestError<Rule>`, local to `text`
+    // itself.
+    if let Some(pest_error) = error.downcast_ref::<PestError<Rule>>() {
+        let message = pest_error.variant.message().into_owned();
+        let local_span = pest_location_to_local_span(&pest_error.location, text);
+        let (uri, range) = locate(text, line_index, sources, line_indexes, &local_span, root_uri);
+        return (
+            uri,
+            Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some(SOURCE.to_string()),
+                message,
+                ..Diagnostic::default()
+            },
+        );
+    }
+
+    // Neither a bare pest error nor an `ImportError` wrapping a recoverable one (a cycle, or an
+    // unresolved/missing import).
+    let message = error.to_string();
+    let span = import_error.and_then(ImportError::span);
+    let (uri, range) = match span {
+        Some(span) => locate(text, line_index, sources, line_indexes, span, root_uri),
+        None => (root_uri.clone(), Range::default()),
+    };
+    (
+        uri,
+        Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some(SOURCE.to_string()),
+            message,
+            ..Diagnostic::default()
+        },
+    )
 }
 
 fn internal_diagnostic(message: &str, source: &str, root_uri: &Url) -> (Url, Diagnostic) {
@@ -572,19 +570,6 @@ fn pest_location_to_local_span(location: &InputLocation, local_text: &str) -> Sp
         // A zero-width range renders poorly in most editors; widen it to cover the token starting
         // at `offset`, or at minimum one character.
         InputLocation::Pos(offset) => Span { start: *offset, end: widen_to_token_end(local_text, *offset) },
-    }
-}
-
-/// As [`locate`], but for a span already resolved to a known file `id` (and local to it) rather
-/// than a global offset — see [`convert::location_for`] for why that distinction matters at a file
-/// boundary.
-fn locate_local(text: &str, line_index: &LineIndex, sources: &SourceMap, line_indexes: &[LineIndex], id: SourceId, local_span: &Span, root_uri: &Url) -> (Url, Range) {
-    if id.value() == 0 {
-        return (root_uri.clone(), line_index.range(text, local_span));
-    }
-    match convert::location_for(sources, line_indexes, id, local_span) {
-        Some(location) => (location.uri, location.range),
-        None => (root_uri.clone(), Range::default()),
     }
 }
 

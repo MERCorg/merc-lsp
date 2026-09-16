@@ -22,7 +22,8 @@ use std::ops::ControlFlow;
 use merc_syntax::ActFrm;
 use merc_syntax::ActFrmKind;
 use merc_syntax::DataExpr;
-use merc_syntax::DataExprKind;
+use merc_syntax::Fixity;
+use merc_syntax::Operator;
 use merc_syntax::PbesExpr;
 use merc_syntax::PbesExprKind;
 use merc_syntax::PresExpr;
@@ -73,9 +74,11 @@ impl AmbiguousPrefixConflict {
 /// in disguise; those are handled by [`IsInfix`] instead — see [`statefrm_is_infix`] and
 /// [`presexpr_is_infix`].
 ///
-/// One implementation per node kind. Precedence numbers only need to be *consistent within one
-/// kind's own implementation* — lower means looser (binds less tightly) — they are not compared
-/// across different node kinds.
+/// Reads `merc_syntax`'s own [`Operator::fixity`]/[`Operator::operand`] directly — the same table
+/// the parser itself climbs — rather than duplicating a hand-picked level per node kind, so this
+/// stays correct by construction if the upstream table's levels or shape ever change. The absolute
+/// level numbers it returns are only ever compared *within one kind's own implementation* — lower
+/// means looser (binds less tightly) — never across different node kinds.
 type PrefixShape<K> = fn(&K) -> Option<(u8, &Spanned<K>)>;
 
 /// Returns whether `node`'s own outermost connective is a genuine infix operator — a competitor for
@@ -86,85 +89,37 @@ type PrefixShape<K> = fn(&K) -> Option<(u8, &Spanned<K>)>;
 /// [`PrefixShape`]'s doc comment.
 type IsInfix<K> = fn(&K) -> bool;
 
-fn dataexpr_prefix_shape(kind: &DataExprKind) -> Option<(u8, &DataExpr)> {
-    match kind {
-        // `Forall`/`Exists`/`Lambda` share the loosest prefix level.
-        DataExprKind::Quantifier { body, .. } | DataExprKind::Lambda { body, .. } => {
-            Some((0, body))
-        }
-        // `Minus`/`Negation`/`Size` share the tightest prefix level.
-        DataExprKind::Unary { expr, .. } => Some((1, expr)),
+/// Generic [`PrefixShape`] for any [`Operator`]-implementing kind: `node` is prefix-shaped exactly
+/// when [`Operator::fixity`] says so, at whatever level and operand [`Operator::operand`] reports.
+fn prefix_shape<K: Operator>(kind: &K) -> Option<(u8, &Spanned<K>)> {
+    match kind.fixity() {
+        Fixity::Prefix(level) => kind.operand().map(|operand| (level, operand)),
         _ => None,
     }
 }
 
-fn dataexpr_is_infix(kind: &DataExprKind) -> bool {
-    matches!(kind, DataExprKind::Binary { .. })
-}
-
-fn statefrm_prefix_shape(kind: &StateFrmKind) -> Option<(u8, &StateFrm)> {
-    match kind {
-        StateFrmKind::FixedPoint { body, .. } => Some((0, body)),
-        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => Some((1, body)),
-        StateFrmKind::DataValExprLeftMult(_, expr) => Some((2, expr)),
-        StateFrmKind::Modality { expr, .. } => Some((3, expr)),
-        StateFrmKind::Unary { expr, .. } => Some((4, expr)),
-        _ => None,
-    }
+/// Generic [`IsInfix`] for any [`Operator`]-implementing kind — see [`IsInfix`]'s doc comment for
+/// the two node kinds ([`StateFrmKind`], [`PresExprKind`]) that need an extra case on top of this.
+fn is_infix<K: Operator>(kind: &K) -> bool {
+    matches!(kind.fixity(), Fixity::Infix(..))
 }
 
 fn statefrm_is_infix(kind: &StateFrmKind) -> bool {
     // `DataValExprRightMult` (`StateFrm * DataValExpr`) isn't just a suffix on an already-parsed
     // primary the way `DataExpr`'s `Update`/`Application` are (see `PrefixShape`'s doc comment) — it
-    // is a genuine infix competitor for the root position, the same as `&&`/`=>`. Missing it here
-    // would silently under-detect: a strictly looser prefix (`mu`/`nu`) whose body reaches a
-    // `* val(...)` still competes for the root position exactly the way it would against `&&`.
-    matches!(
-        kind,
-        StateFrmKind::Binary { .. } | StateFrmKind::DataValExprRightMult(..)
-    )
-}
-
-fn pbesexpr_prefix_shape(kind: &PbesExprKind) -> Option<(u8, &PbesExpr)> {
-    match kind {
-        PbesExprKind::Quantifier { body, .. } => Some((0, body)),
-        PbesExprKind::Negation(expr) => Some((1, expr)),
-        _ => None,
-    }
-}
-
-fn pbesexpr_is_infix(kind: &PbesExprKind) -> bool {
-    matches!(kind, PbesExprKind::Binary { .. })
-}
-
-fn presexpr_prefix_shape(kind: &PresExprKind) -> Option<(u8, &PresExpr)> {
-    match kind {
-        PresExprKind::Bound { expr, .. } => Some((0, expr)),
-        PresExprKind::LeftConstantMultiply { expr, .. } => Some((1, expr)),
-        PresExprKind::Negation(expr) => Some((2, expr)),
-        _ => None,
-    }
+    // is a genuine infix competitor for the root position, the same as `&&`/`=>`, even though
+    // `merc_syntax` itself classifies it as `Fixity::Postfix` (it does sit in the middle of
+    // `StateFrmKind`'s own precedence table, not at the absolute tightest level the way a fixed
+    // suffix would). Missing it here would silently under-detect: a strictly looser prefix
+    // (`mu`/`nu`) whose body reaches a `* val(...)` still competes for the root position exactly
+    // the way it would against `&&`.
+    is_infix(kind) || matches!(kind, StateFrmKind::DataValExprRightMult(..))
 }
 
 fn presexpr_is_infix(kind: &PresExprKind) -> bool {
     // As `statefrm_is_infix`: `RightConstantMultiply` (`PresExpr * DataValExpr`) is a genuine infix
     // competitor for the root position, not a fixed-tightest suffix.
-    matches!(
-        kind,
-        PresExprKind::Binary { .. } | PresExprKind::RightConstantMultiply { .. }
-    )
-}
-
-fn actfrm_prefix_shape(kind: &ActFrmKind) -> Option<(u8, &ActFrm)> {
-    match kind {
-        ActFrmKind::Quantifier { body, .. } => Some((0, body)),
-        ActFrmKind::Negation(expr) => Some((1, expr)),
-        _ => None,
-    }
-}
-
-fn actfrm_is_infix(kind: &ActFrmKind) -> bool {
-    matches!(kind, ActFrmKind::Binary { .. })
+    is_infix(kind) || matches!(kind, PresExprKind::RightConstantMultiply { .. })
 }
 
 /// Whether `node`'s own subtree eventually reaches a genuine infix application without first
@@ -231,7 +186,7 @@ fn is_already_parenthesized(text: &str, sources: &SourceMap, span: &Span) -> boo
 /// Finds every occurrence of the shape in one [`DataExpr`] subtree, appending to `hits`.
 fn find_in_dataexpr(expr: &DataExpr, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     expr.visit::<(), _>(|node| {
-        check_prefix_shape(node, dataexpr_prefix_shape, dataexpr_is_infix, text, sources, hits);
+        check_prefix_shape(node, prefix_shape, is_infix, text, sources, hits);
         ControlFlow::Continue(())
     });
 }
@@ -320,7 +275,7 @@ fn walk_process_expr(expr: &ProcessExpr, text: &str, sources: &SourceMap, hits: 
 /// nested inside it.
 fn walk_pbes_expr(expr: &PbesExpr, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     expr.visit::<(), _>(|node| {
-        check_prefix_shape(node, pbesexpr_prefix_shape, pbesexpr_is_infix, text, sources, hits);
+        check_prefix_shape(node, prefix_shape, is_infix, text, sources, hits);
         match &node.node {
             PbesExprKind::DataValExpr(value) => find_in_dataexpr(value, text, sources, hits),
             PbesExprKind::PropVarInst(inst) => {
@@ -337,7 +292,7 @@ fn walk_pbes_expr(expr: &PbesExpr, text: &str, sources: &SourceMap, hits: &mut V
 /// As [`walk_pbes_expr`], for a [`PresExpr`] tree.
 fn walk_pres_expr(expr: &PresExpr, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     expr.visit::<(), _>(|node| {
-        check_prefix_shape(node, presexpr_prefix_shape, presexpr_is_infix, text, sources, hits);
+        check_prefix_shape(node, prefix_shape, presexpr_is_infix, text, sources, hits);
         match &node.node {
             PresExprKind::DataValExpr(value) => find_in_dataexpr(value, text, sources, hits),
             PresExprKind::PropVarInst(inst) => {
@@ -363,7 +318,7 @@ fn walk_pres_expr(expr: &PresExpr, text: &str, sources: &SourceMap, hits: &mut V
 /// `FixedPoint` variable's initial values) or a `RegFrm` (a `Modality`'s own formula).
 fn walk_state_frm(formula: &StateFrm, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     formula.visit::<(), _>(|node| {
-        check_prefix_shape(node, statefrm_prefix_shape, statefrm_is_infix, text, sources, hits);
+        check_prefix_shape(node, prefix_shape, statefrm_is_infix, text, sources, hits);
         match &node.node {
             StateFrmKind::Delay(time) | StateFrmKind::Yaled(time) => {
                 if let Some(time) = time {
@@ -415,7 +370,7 @@ fn walk_reg_frm(formula: &RegFrm, text: &str, sources: &SourceMap, hits: &mut Ve
 /// As [`walk_pbes_expr`], for an action formula (`a(1) && !b`).
 fn walk_act_frm(formula: &ActFrm, text: &str, sources: &SourceMap, hits: &mut Vec<AmbiguousPrefixConflict>) {
     formula.visit::<(), _>(|node| {
-        check_prefix_shape(node, actfrm_prefix_shape, actfrm_is_infix, text, sources, hits);
+        check_prefix_shape(node, prefix_shape, is_infix, text, sources, hits);
         match &node.node {
             ActFrmKind::MultAct(multi_action) => {
                 for action in &multi_action.actions {

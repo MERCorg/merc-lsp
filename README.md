@@ -27,6 +27,21 @@ feature, `lsp-extensions`, enabled by **default**.
 cargo build --release --no-default-features
 ```
 
+## Keeping diagnostics up to date across files
+
+Plain LSP only reanalyzes a document on `didOpen`/`didSave`. So if `a.mcrl2` `%import`s `b.mcrl2`,
+and `b.mcrl2` changes on disk — edited in another tab, by an external tool, or by `git checkout` —
+while `a.mcrl2` is open, nothing tells the server to recheck `a.mcrl2`: it never gets a `didSave`
+of its own. This is what `workspace/didChangeWatchedFiles` (standard LSP) is for: the client
+watches project files itself and forwards create/change/delete events, and `backend::router`'s
+handler for it (`reanalyze_stale_documents`, via `Document::is_stale`/
+`has_newly_available_import`) reanalyzes every open document that leaves stale. The VS Code client
+registers one over `**/*.{mcrl2,pbes,pres,mcf}` (`vscode-client/src/extension.ts`'s
+`synchronize.fileEvents`) — `vscode-languageclient` forwards its events as this notification
+automatically. Relies on the client both supporting dynamic file-watcher registration and watching
+broadly enough to cover every `%import` target; deliberately left to the client/IDE to provide
+rather than duplicated with a server-side watcher of its own.
+
 ## VS Code extension
 
 The client (`vscode-client/`) is a standard `vscode-languageclient` wrapper: it resolves a path
@@ -93,40 +108,20 @@ steps above) is the natural way to automate this; not set up yet in this repo.
 
 ### Commands
 
-- **mCRL2: Restart Language Server** (`merc-lsp.restartServer`) — stops and relaunches the server
+- **mCRL2: Restart Language Server** (`merc-lsp.restartServer`). Stops and relaunches the server
   process without reloading the whole VS Code window. Useful after swapping in a rebuilt server
-  binary, or as manual recovery if the server ever stops responding (a genuine, reproducible bug
-  at that point, not a transient fault it retries around).
-- **mCRL2: Generate Full Specification** (`merc-lsp.generateFullSpec`) — on the active `.mcrl2`
-  editor (from the editor context menu or Command Palette), resolves every `%import` and writes the
-  merged, fully-parenthesized (so unambiguous even to the real mCRL2 toolset) result to a sibling
-  `<name>.generated.mcrl2` file, then opens it. Meant for feeding `mcrl22lps` and friends, which
-  don't understand `%import` themselves.
+  binary, or as manual recovery if the server ever stops responding.
+- **mCRL2: Generate Full Specification** (`merc-lsp.generateFullSpec`). On the
+  active `.mcrl2` editor, resolves every `%import` and writes the merged,
+  fully-parenthesized result to a sibling `<name>.generated.mcrl2` file, then
+  opens it. Meant for feeding to `mcrl22lps` and other spec tools, which don't
+  understand `%import` themselves.
 
-## What's specific to the VS Code extension
+## VS Code LSP Extensions
 
-Everything in [Current status](#current-status) is plain LSP and works with any spec-compliant
-client (Neovim, Emacs, Helix, …) that speaks it. The items below, by contrast, are either custom
-protocol extensions `src/focus.rs`/`src/generate.rs`/`src/virtual_document.rs` add on top of LSP, or
-behavior this VS Code client (`vscode-client/`) supplies on the client side — another editor would
-need to add its own equivalent to get the same behavior. The three server-side extensions are all
-gated behind the [`lsp-extensions` Cargo feature](#the-lsp-extensions-cargo-feature), on by default.
+The two server-side extensions below are gated behind the [`lsp-extensions`
+Cargo feature](#the-lsp-extensions-cargo-feature), on by default.
 
-- **Update on focus.** Plain LSP has no "the user switched to this already-open editor tab" signal —
-  only `didOpen`/`didChange`/`didSave`/`didClose`. So if `a.mcrl2` `%import`s `b.mcrl2`, and
-  `b.mcrl2` is edited and saved in another tab (or by an external tool, or `git checkout`) while
-  `a.mcrl2` isn't the active editor, `a.mcrl2`'s diagnostics silently go stale — nothing tells the
-  server to recheck it, since it never got a `didSave` of its own. The client works around this with
-  a custom `merc/didFocusTextDocument` notification: `vscode-client/src/extension.ts` listens for
-  `window.onDidChangeActiveTextEditor` and tells the server every time focus lands on a document it
-  handles, and the server reanalyzes it if anything it (transitively) imports has changed since its
-  last analysis (see `src/focus.rs`). A client without an "active editor changed" hook of its own —
-  or that doesn't wire one up to this notification — will only pick up such a change on the next
-  edit-and-save of `a.mcrl2` itself, or a workspace-wide file-watcher event
-  (`workspace/didChangeWatchedFiles`, which plain LSP does have, and which this server also handles
-  on its own for exactly this reason — focus-tracking closes the gap for the case a
-  filesystem watcher doesn't reliably catch on its own, e.g. an editor that doesn't watch open files'
-  own `%import` targets at all).
 - **Built-in declarations as virtual, read-only documents.** Hovering or jumping to the definition of
   a built-in name (`Bool`, `List`, …) resolves into system-defined content that has no real file on
   disk. The server exposes it over a custom `merc/virtualDocument` request (`src/virtual_document.rs`)
@@ -140,16 +135,3 @@ gated behind the [`lsp-extensions` Cargo feature](#the-lsp-extensions-cargo-feat
   client-side glue around a custom `merc/generateFullSpec` request (`src/generate.rs`): a plain LSP
   client gets no menu entry, no command, and no automatic way to invoke it — it would need to send
   the request itself and do something with the returned text.
-- **Server binary resolution and packaging.** `merc-lsp.serverPath`'s `${workspaceFolder}`
-  expansion (VS Code only does this automatically for a handful of built-in contribution points, not
-  arbitrary settings — see `expandWorkspaceFolder` in `extension.ts`), the bundled-binary-per-platform
-  layout (`server/<platform>-<arch>/merc-lsp[.exe]`) VS Code's target-specific VSIX mechanism expects,
-  and the **Restart Language Server** command's process-lifecycle management are all specific to how
-  this client launches and manages the server executable. A generic LSP client has its own,
-  unrelated way of locating and starting a server binary.
-- **Editor presentation config.** The `editor.quickSuggestions` default this extension sets for all
-  four languages (so completion triggers inside string-like contexts without an explicit keystroke)
-  and the `semanticTokenScopes`-to-TextMate-scope mapping in `package.json` (which decides *how* a
-  semantic token's kind is colored) are both VS Code presentation settings layered on top of the
-  plain-LSP semantic tokens the server itself sends — the token *kinds* are standard
-  `textDocument/semanticTokens`; a theme mapping to render them meaningfully is this client's own.

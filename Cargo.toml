@@ -15,9 +15,9 @@ default = ["lsp-extensions"]
 lsp-extensions = []
 
 [dependencies]
-merc_syntax = { git = "https://github.com/mlaveaux/merc", rev = "ecfe063ed144cf43d45c11f52e865ce9176c9a1c" }
-merc_typecheck = { git = "https://github.com/mlaveaux/merc", rev = "ecfe063ed144cf43d45c11f52e865ce9176c9a1c" }
-merc_utilities = { git = "https://github.com/mlaveaux/merc", rev = "ecfe063ed144cf43d45c11f52e865ce9176c9a1c" }
+merc_syntax = { git = "https://github.com/MERCorg/merc", rev = "5cc6e603863346981765d403e50386a41ea1124b" }
+merc_typecheck = { git = "https://github.com/MERCorg/merc", rev = "5cc6e603863346981765d403e50386a41ea1124b" }
+merc_utilities = { git = "https://github.com/MERCorg/merc", rev = "5cc6e603863346981765d403e50386a41ea1124b" }
 pest = "2.9"
 async-lsp = { version = "0.2", features = ["tokio"] }
 lsp-types = "0.95"
@@ -32,8 +32,6 @@ serde = { version = "1.0", features = ["derive"] }
 strsim = "0.11"
 percent-encoding = "2.3"
 line-index = "0.1"
-notify = "8.2.0"
-notify-debouncer-full = "0.7.0"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["io-util", "time"] }

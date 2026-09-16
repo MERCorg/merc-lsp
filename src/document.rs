@@ -471,6 +471,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parse_error_in_an_imported_file_is_located_against_that_file() {
+        // `merc_syntax::ImportError::syntax_error` recovers a nested parse failure's location and
+        // message directly, already shifted into the shared `SourceMap` offset space — this
+        // checks that `diagnostics::parse_error_diagnostic` publishes it against `broken.mcrl2`
+        // itself (where the missing `;` actually is), not against `main.mcrl2`.
+        let dir = temp_project(&[
+            ("main.mcrl2", "%import \"broken.mcrl2\"\ninit delta;\n"),
+            ("broken.mcrl2", "sort D\n"), // missing ';'
+        ]);
+        let main_path = dir.path().join("main.mcrl2");
+        let main_uri = Url::from_file_path(&main_path).expect("valid file path");
+        let text = std::fs::read_to_string(&main_path).unwrap();
+        let (outcome, sources) = crate::parse::parse(crate::parse::SpecKind::Process, text.clone(), Some(main_path)).await;
+        assert!(matches!(outcome, ParseOutcome::ParseError(_)), "expected a parse error");
+        let document = Document::new(text.clone(), 0, outcome, None, sources);
+
+        // One diagnostic on broken.mcrl2 itself (the real syntax error) plus a companion
+        // diagnostic on main.mcrl2's own `%import` line (see `diagnostics::import_error_diagnostics`
+        // — it scans every ERROR-severity diagnostic located outside the root document regardless
+        // of what produced it, so a parse error gets the same companion a type error would).
+        let diags = document.diagnostics(&main_uri);
+        assert_eq!(diags.len(), 2, "{diags:#?}");
+        let (broken_uri, broken_diag) = diags
+            .iter()
+            .find(|(uri, _)| uri != &main_uri)
+            .expect("expected a diagnostic located outside main.mcrl2");
+        assert!(
+            broken_uri.as_str().ends_with("broken.mcrl2"),
+            "expected broken.mcrl2, got {broken_uri}"
+        );
+        assert_eq!(broken_diag.severity, Some(lsp_types::DiagnosticSeverity::ERROR));
+
+        let (import_uri, import_diag) = diags
+            .iter()
+            .find(|(uri, _)| uri == &main_uri)
+            .expect("expected a companion diagnostic on main.mcrl2's own %import line");
+        assert_eq!(import_uri, &main_uri);
+        let index = LineIndex::new(&text);
+        assert_eq!(import_diag.range.start, index.position(&text, text.find("%import").unwrap()));
+        assert_eq!(import_diag.range.end, index.position(&text, text.find("\ninit").unwrap()));
+        let related = import_diag.related_information.as_ref().expect("expected related_information linking to broken.mcrl2");
+        assert_eq!(related.len(), 1);
+        assert_eq!(&related[0].location.uri, broken_uri);
+        assert_eq!(related[0].location.range, broken_diag.range);
+    }
+
+    #[tokio::test]
     async fn ambiguity_warning_in_an_import_is_shown_at_its_real_location() {
         // `ambiguity::find_in_process_specification` walks the *merged* data specification, so a
         // flagged expression can come from something the root document `%import`s rather than
