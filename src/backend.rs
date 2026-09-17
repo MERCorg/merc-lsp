@@ -62,11 +62,10 @@ use crate::virtual_document::VirtualDocument;
 #[cfg(feature = "lsp-extensions")]
 use crate::virtual_document::VirtualDocumentStore;
 
-/// Diagnostics published against a URI on some document's behalf because a span
-/// in its analysis actually landed there keyed first by that target URI, then
-/// by which importing document currently contributes to it. The same file can
-/// be imported by multiple documents, and each importing document maintains its
-/// own set of diagnostics for that file.
+/// Diagnostics published against a URI on some document's behalf because a span in its analysis
+/// actually landed there, keyed first by that target URI, then by which importing document
+/// currently contributes to it. The same file can be imported by multiple documents, and each
+/// importing document maintains its own set of diagnostics for that file.
 type ForeignDiagnostics = DashMap<Url, HashMap<Url, Vec<Diagnostic>>>;
 
 /// Per-connection server state backing the [`Router`] built by [`router`].
@@ -225,8 +224,8 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
 /// Registers merc-lsp's non-standard protocol extensions on `router`: `merc/virtualDocument`
 /// ([`crate::virtual_document`]) and `merc/generateFullSpec` ([`crate::generate`]). Gated behind
 /// the `lsp-extensions` Cargo feature (on by default, see `Cargo.toml`) — see `README.md`'s
-/// "What's specific to the VS Code extension" section for what each does and why a plain LSP
-/// client works fine without either registered at all.
+/// "VS Code LSP Extensions" section for what each does and why a plain LSP client works fine
+/// without either registered at all.
 #[cfg(feature = "lsp-extensions")]
 fn register_lsp_extensions(router: &mut Router<Backend>) {
     router
@@ -573,8 +572,9 @@ fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refr
 /// parse, type check, and semantic tokens alike — as the document's new
 /// analyzed snapshot, then publishes its diagnostics.
 ///
-/// We don't type check on every keystroke; only when this function is called,
-/// which happens on save.
+/// We don't type check on every keystroke — `did_change` only records the pending buffer (see
+/// that notification handler above). This runs on open, on save, and on a watched-file-triggered
+/// reanalysis (see [`reanalyze_stale_documents`]).
 async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh_views: bool) {
     let Backend {
         client,

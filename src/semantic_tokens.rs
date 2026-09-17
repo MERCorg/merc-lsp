@@ -342,11 +342,12 @@ impl<'a> SymbolTable<'a> {
     /// Also harvests every `sort D = struct c1(a: S)?is_c1 | c2;` alternative's own constructor
     /// name (`c1`/`c2`, into `constructors`) and accessor functions (`a`/`is_c1`, into
     /// `struct_accessors`) — `merc_typecheck` desugars a struct into real `cons`/`map`
-    /// declarations (see `merc_syntax::ConstructorDecl`'s doc comment), but that desugaring runs
-    /// on the *checked* specification, not the raw [`UntypedDataSpecification`] this table is
-    /// built from, so a *use* of `c1`/`a`/`is_c1` elsewhere in the document would otherwise fall
-    /// through [`Self::classify_data_id`]'s free/bound-variable fallback instead of resolving to
-    /// the same kind its declaration gets (see [`walk_sort_expression`]'s `Struct` arm).
+    /// declarations (see `merc_typecheck::ir::desugar::desugar_structured_sorts`, private to that
+    /// crate), but that desugaring runs on the *checked* specification, not the raw
+    /// [`UntypedDataSpecification`] this table is built from, so a *use* of `c1`/`a`/`is_c1`
+    /// elsewhere in the document would otherwise fall through [`Self::classify_data_id`]'s
+    /// free/bound-variable fallback instead of resolving to the same kind its declaration gets
+    /// (see [`walk_sort_expression`]'s `Struct` arm).
     fn collect_data(data: &'a UntypedDataSpecification) -> Self {
         let mut constructors: HashSet<&str> = data.constructor_declarations.iter().map(|decl| decl.identifier.as_str()).collect();
         let maps: HashSet<&str> = data.map_declarations.iter().map(|decl| decl.identifier.as_str()).collect();
@@ -530,10 +531,11 @@ fn walk_sort_expression(expr: &SortExpression, builder: &mut Builder) {
                 // constructor (`c1`) plus, per named argument or `?`-recogniser, an accessor
                 // function (`a`, `is_c1`) — real declarations `merc_typecheck` desugars into the
                 // same `cons`/`map` signature a top-level block would (see
-                // `merc_syntax::ConstructorDecl`'s doc comment), so they're tagged the same base
-                // kinds a `cons`/`map` declaration gets ([`TokenKind::EnumMember`]/
-                // [`TokenKind::Method`]) — plus [`MODIFIER_STRUCT_VARIANT`], so a theme can still
-                // tell a struct-declared constructor/accessor apart from an explicit block's.
+                // `SymbolTable::collect_data`'s own doc comment for where that desugaring lives),
+                // so they're tagged the same base kinds a `cons`/`map` declaration gets
+                // ([`TokenKind::EnumMember`]/[`TokenKind::Method`]) — plus
+                // [`MODIFIER_STRUCT_VARIANT`], so a theme can still tell a struct-declared
+                // constructor/accessor apart from an explicit block's.
                 // Each argument's own sort (`S` above) is a child `SortExpression` node the
                 // recursion below reaches on its own, same as `Complex`'s subsort above.
                 for constructor in inner {

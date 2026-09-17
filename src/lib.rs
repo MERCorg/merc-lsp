@@ -45,7 +45,7 @@ use tower::ServiceBuilder;
 /// transport error occurs.
 ///
 /// Generic over the transport (rather than hardcoding stdio) so `tests/protocol.rs` can drive
-/// this exact service construction — [`backend::router`] plus the full middleware stack — over
+/// this exact service construction — `backend::router` plus the full middleware stack — over
 /// an in-memory duplex pipe instead of real stdio. [`run_stdio`] is the only other caller.
 pub async fn serve(input: impl AsyncRead, output: impl AsyncWrite) {
     let (mainloop, _client) = async_lsp::MainLoop::new_server(|client| {

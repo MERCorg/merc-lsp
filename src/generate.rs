@@ -19,7 +19,13 @@
 //!
 //! Writing the result to disk (so `mcrl22lps`/`lpsxsim`/... can actually consume it) is the
 //! client's job, same as every other filesystem concern in this server — see
-//! `vscode-client/src/extension.ts`'s `merc-lsp.generateFullSpec` command.
+//! `vscode-client/src/extension.ts`'s `merc-lsp.generateFullSpec` command, the client-side half of
+//! the VS Code **"Generate Full Specification"** command described in `README.md`.
+//!
+//! This whole module is gated behind the `lsp-extensions` Cargo feature (on by default, see
+//! `Cargo.toml`): a plain LSP client has no way to invoke `merc/generateFullSpec` on its own, so
+//! there is nothing for a server built without the feature to lose by not registering it — see
+//! [`crate::backend::router`]'s own `#[cfg(feature = "lsp-extensions")]` registration.
 
 use lsp_types::Url;
 use lsp_types::request::Request;

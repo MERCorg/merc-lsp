@@ -10,8 +10,9 @@
 //! kind document-wide, the same unscoped way [`crate::completion`] already did before this module
 //! existed — just no longer *every* kind at once.
 //!
-//! Written as plain recursive functions rather than `merc_syntax::Traverse` (which every other
-//! AST-walking module in this crate uses): `Traverse::visit`'s callback runs behind a closure
+//! Written as plain recursive functions rather than `merc_syntax::Traverse` (used elsewhere in
+//! this crate — `ambiguity.rs`, `inlay_hints.rs`, `semantic_tokens.rs` — for passes that tag every
+//! node instead of hunting for one): `Traverse::visit`'s callback runs behind a closure
 //! whose node reference cannot outlive a single call (it descends by re-invoking the callback
 //! itself, not by handing back a value the caller can keep), so it cannot report back *which*
 //! node was innermost — only whether one was found. This module needs the innermost node's own

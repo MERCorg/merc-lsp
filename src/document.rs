@@ -306,14 +306,14 @@ impl Document {
     /// `ProcessSpecification::typing_info` and its PBES/PRES/modal-formula counterparts), if a
     /// checked specification of any kind is available.
     ///
-    /// Computed lazily, on demand — not cached eagerly at typecheck time. `ProcessSpecification`/
-    /// `DataSpecification` already memoize the expensive half internally (an `Arc`-cached
-    /// singleton in each's own context — the other three kinds' own `typing_info` isn't memoized
-    /// the same way upstream yet, but is still cheap: just an already-computed clone), so a first
-    /// call per edit does the real work and every later call in the same request burst (hover,
-    /// then goto-def, then inlay hints, all against the same unedited document) is cheap. Takes
-    /// `&mut self` because `ProcessSpecification`'s memoization requires it; callers reach this
-    /// through `documents.get_mut`, not `get`.
+    /// Computed lazily, on demand — not cached eagerly at typecheck time. All four kinds share the
+    /// same shape upstream: the `eqn`-half is `Arc`-memoized one level down, in `DataSpecification`
+    /// itself, while each kind's own additional half (process bodies, PBES/PRES/modal expressions)
+    /// is never memoized separately — it's just cloned out of a value already computed during the
+    /// construction walk. So a first call per edit does the real work and every later call in the
+    /// same request burst (hover, then goto-def, then inlay hints, all against the same unedited
+    /// document) is cheap either way. Takes `&mut self` because the `eqn`-half memoization requires
+    /// it; callers reach this through `documents.get_mut`, not `get`.
     pub fn typing_info(&mut self) -> Option<TypingInfo> {
         match &mut self.checked {
             Some(CheckedOutcome::Process(TypecheckOutcome::Ok(spec))) => Some(spec.typing_info()),

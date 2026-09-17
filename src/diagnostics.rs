@@ -61,8 +61,8 @@ const TYPE_SOURCE: &str = "merc-lsp:types";
 /// never depends on type checking having succeeded.
 const AMBIGUITY_SOURCE: &str = "merc-lsp:ambiguity";
 
-/// `Diagnostic::code` for the [`AmbiguousPrefixConflict`] lint, shared with [`crate::code_action`],
-/// which matches on it to offer the parenthesize quick fix.
+/// `Diagnostic::code` for the [`AmbiguousPrefixConflict`] lint — a stable, machine-readable
+/// identifier a client can filter or act on for this specific warning.
 pub const AMBIGUOUS_PREFIX_CONFLICT_CODE: &str = "ambiguous-prefix-conflict";
 
 /// Builds the full diagnostics list for a document from its latest parse

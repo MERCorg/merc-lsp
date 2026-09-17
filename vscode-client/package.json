@@ -2,7 +2,7 @@
 	"name": "merc-lsp-client",
 	"displayName": "Merc Language Support",
 	"description": "Language support for merc specifications, backed by the merc-lsp language server",
-	"author": "Maurice Laveauxn",
+	"author": "Maurice Laveaux",
 	"license": "BSL-1.0",
 	"version": "1.0.0",
 	"publisher": "MERCorg",

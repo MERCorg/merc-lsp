@@ -82,8 +82,8 @@ const SERVER_BIN_NAME = 'merc-lsp';
 
 /**
  * `os.platform()`-`os.arch()` folder name used for a bundled binary, e.g. `linux-x64`,
- * `win32-x64`, `darwin-arm64`. Matches the layout produced by the packaging step in
- * `vscode-client/README.md` / CI: `server/<platform>-<arch>/merc-lsp[.exe]`.
+ * `win32-x64`, `darwin-arm64`. Matches the layout produced by the packaging step in the
+ * root `README.md` ("Packaging (VSIX)") / CI: `server/<platform>-<arch>/merc-lsp[.exe]`.
  */
 function platformDir(): string {
 	return `${process.platform}-${process.arch}`;
@@ -113,7 +113,7 @@ function expandWorkspaceFolder(value: string): string {
  * 1. The `merc-lsp.serverPath` user/workspace setting, if set — always trusted as-is, even if
  *    the file doesn't (yet) exist, so users can point at a binary they're about to build.
  * 2. A binary bundled with the extension under `server/<platform>-<arch>/`, for the packaged
- *    (VSIX) distribution — see the "Packaging" section of `vscode-client/README.md`.
+ *    (VSIX) distribution — see the "Packaging (VSIX)" section of the root `README.md`.
  * 3. Plain `merc-lsp`, resolved via the user's `PATH` (e.g. `cargo install --path .` during
  *    development) — handed to `child_process.spawn` unresolved and let the OS find it.
  */

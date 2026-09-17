@@ -1,44 +1,34 @@
-//! `textDocument/inlayHint`: shows the name or sort of every call-argument expression (action
-//! instance, process instantiation, PBES/PRES propositional-variable instantiation, structured-sort
-//! constructor application).
+//! `textDocument/inlayHint`: shows the name or sort of every call-argument
+//! expression (action instance, process instantiation, PBES/PRES
+//! propositional-variable instantiation, structured-sort constructor
+//! application).
 //!
 //! Two kinds of hint, each restricted to where it's actually informative:
 //!
-//! - A `name:` hint *before* an argument, whenever the callee names that position (a process
-//!   parameter's name, a propositional-variable equation's parameter name, a struct field's name).
-//!   This one recurses arbitrarily deep — a struct constructor nested three calls down inside an
-//!   argument still gets its fields named — but is skipped when the argument is itself a bare
-//!   variable already spelled the same as the name being shown (`P(n)` where `n` is also the
-//!   parameter's name would just be noise).
-//! - A `: Sort` hint *after* an argument, whenever no name is available. Unlike the name hint,
-//!   this one is *not* shown for every unnamed position — only for a top-level call argument
-//!   (a process/PBES instantiation that doesn't resolve to a matching declared name). Action
-//!   arguments get no sort hint at all: an action never names its arguments, and showing a sort
-//!   suffix there would be noise that the declaration already conveys. Nor does an equation's own
-//!   left-hand-side pattern variable (`x` in `eqn f(x) = ...;`) get one — its sort is already a
-//!   click away on hover, and repeating it on every equation would just be clutter. A plain
-//!   function/equation application or an infix/prefix operator found *inside* an argument — `a`
-//!   and `l` inside `a |> l`, or `x` inside `g(x)` used as an argument — never gets one either:
-//!   showing it there would just repeat what the argument's own hint (or its declaration) already
-//!   says. Nor does an infix/prefix operator expression get one when it *is* the whole argument —
-//!   `x |> l` used as a top-level action argument shows no `: List(...)` after it either, since
-//!   the operator's own operands already make its shape visible; see [`push_hint`].
+//! - A `name:` hint *before* an argument, whenever the callee names that
+//!   position. Is skipped when the argument is itself a bare variable already
+//!   spelled the same as the name being shown.//! 
+//! - A `: Sort` hint *after* an argument, whenever no name is available. Only
+//!   for top-level call arguments. Doesn't appear for infix operators.
 //!
-//! An equation's condition (`eqn ... = ... when b;`) is never hinted at all — `b` is a boolean
-//! guard, not a value worth annotating.
+//! An equation's condition (`eqn ... = ... when b;`) is never hinted at all —
+//! `b` is a boolean guard, not a value worth annotating.
 //!
-//! `merc_syntax::Traverse` doesn't cross between node types (a `ProcessExpr`/`PbesExpr` traversal
-//! doesn't descend into the `DataExpr`s inside its actions/conditions/`dist` weights/`val(...)`
-//! expressions), so [`inlay_hints`]/[`pbes_inlay_hints`]
-//! each walk their own tree by hand for its `DataExpr`-bearing fields, then hand each one to
-//! [`walk_struct_applications`], which *does* use `Traverse` (`DataExpr` recurses fully into
-//! itself) to find every nested struct-constructor application within it, including the field's
-//! own top level — an equation's LHS pattern is walked the same way as everywhere else. Its
-//! arguments are never sort-suffixed; see the module doc comment above and [`push_hint`].
-//! [`emit_call_hints`] is the part shared by both trees: a process's `Action`/`Id` and a PBES's
-//! `PropVarInst` are the same "named callee, positional `DataExpr` arguments" shape one level
-//! down, so both feed it the same way, just with a different (spec-specific) parameter-name
-//! lookup — see [`resolved_process_param_names`]/[`propvarinst_param_names`].
+//! `merc_syntax::Traverse` doesn't cross between node types (a
+//! `ProcessExpr`/`PbesExpr` traversal doesn't descend into the `DataExpr`s
+//! inside its actions/conditions/`dist` weights/`val(...)` expressions), so
+//! [`inlay_hints`]/[`pbes_inlay_hints`] each walk their own tree by hand for
+//! its `DataExpr`-bearing fields, then hand each one to
+//! [`walk_struct_applications`], which *does* use `Traverse` (`DataExpr`
+//! recurses fully into itself) to find every nested struct-constructor
+//! application within it, including the field's own top level — an equation's
+//! LHS pattern is walked the same way as everywhere else. Its arguments are
+//! never sort-suffixed; see the module doc comment above and [`push_hint`].
+//! [`emit_call_hints`] is the part shared by both trees: a process's
+//! `Action`/`Id` and a PBES's `PropVarInst` are the same "named callee,
+//! positional `DataExpr` arguments" shape one level down, so both feed it the
+//! same way, just with a different (spec-specific) parameter-name lookup — see
+//! [`resolved_process_param_names`]/[`propvarinst_param_names`].
 
 use std::ops::ControlFlow;
 
