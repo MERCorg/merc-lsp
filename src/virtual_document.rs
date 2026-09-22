@@ -10,16 +10,15 @@ use serde::Serialize;
 
 use crate::convert;
 
-/// The server-wide registry [`register`] populates and [`VirtualDocument`]'s handler reads —
-/// registered name (e.g. `<builtin>/nat.mcrl2`) -> its text.
+/// The server-wide registry [`register`] populates and [`VirtualDocument`]'s handler reads.
 pub type VirtualDocumentStore = DashMap<String, String>;
 
-/// Registers every virtual (see [`merc_syntax::SourceMap::is_virtual`]) file in `sources` into
-/// `store`, keyed by its own registered name. Called once per [`crate::backend::analyze`] run,
-/// against the fresh `SourceMap` that run just produced.
+/// Registers every virtual file in `sources` into `store`, keyed by its own
+/// registered name.
 pub fn register(store: &VirtualDocumentStore, sources: &SourceMap) {
     for index in 0..sources.file_count() {
         let id = SourceId::new(index);
+
         if sources.is_virtual(id) {
             store.insert(sources.path(id).to_string(), sources.text(id).to_string());
         }
@@ -40,12 +39,16 @@ pub enum VirtualDocument {}
 impl Request for VirtualDocument {
     type Params = VirtualDocumentParams;
     type Result = Option<String>;
+
     const METHOD: &'static str = "merc/virtualDocument";
 }
 
-/// The actual request handler: decodes `params.uri` back to its registered name (see
-/// [`convert::decode_virtual_uri`]) and looks it up in `store`.
-pub fn virtual_document_request(store: &VirtualDocumentStore, params: VirtualDocumentParams) -> Option<String> {
+/// The actual request handler: decodes `params.uri` back to its registered name
+/// and looks it up in `store`.
+pub fn virtual_document_request(
+    store: &VirtualDocumentStore,
+    params: VirtualDocumentParams,
+) -> Option<String> {
     let name = convert::decode_virtual_uri(&params.uri)?;
     store.get(&name).map(|entry| entry.clone())
 }
@@ -64,7 +67,10 @@ mod tests {
         register(&store, &sources);
 
         assert_eq!(store.len(), 1);
-        assert_eq!(store.get("<builtin>/nat.mcrl2").map(|entry| entry.clone()), Some("sort Nat;".to_string()));
+        assert_eq!(
+            store.get("<builtin>/nat.mcrl2").map(|entry| entry.clone()),
+            Some("sort Nat;".to_string())
+        );
         assert!(store.get("real.mcrl2").is_none());
     }
 
@@ -84,6 +90,9 @@ mod tests {
     fn virtual_document_request_is_none_for_an_unregistered_name() {
         let store = VirtualDocumentStore::new();
         let uri = convert::virtual_uri("<builtin>/nowhere.mcrl2");
-        assert_eq!(virtual_document_request(&store, VirtualDocumentParams { uri }), None);
+        assert_eq!(
+            virtual_document_request(&store, VirtualDocumentParams { uri }),
+            None
+        );
     }
 }

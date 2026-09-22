@@ -1,25 +1,15 @@
-//! An off-executor wrapper around `merc_typecheck`'s whole-process-specification entry point.
+//! An off-executor wrapper around `merc_typecheck`'s
+//! whole-process-specification entry point.
 //!
-//! Mirrors [`crate::parse`] in shape and reasoning: type checking is synchronous and CPU-bound,
-//! so it's dispatched onto a blocking thread rather than run inline. See `parse.rs`'s module doc
-//! comment for why this no longer wraps the check itself in a panic guard.
-//!
-//! Checks the data specification *and* the `act`/`proc`/`glob`/`init` declarations built on top
-//! of it (`ProcessSpecification`, not just `DataSpecification`) — so a diagnostic can come from an
-//! action argument, a process instantiation, or `init` itself, not only from an equation.
-//! Diagnostics from this module are still tagged with a distinct `source` (see
-//! [`crate::diagnostics`]): communication sort-compatibility isn't checked yet (see the
-//! `merc_typecheck` crate README), so "no errors" here is not a full guarantee.
-//!
-//! [`typecheck_pbes`]/[`typecheck_pres`]/[`typecheck_modal`] are the PBES/PRES/modal-formula
-//! counterparts, each checking their own whole specification (`glob`/equations/`init` for PBES and
-//! PRES; `act` declarations and the formula itself for a modal specification) the same way.
+//! Type checking is synchronous and CPU-bound, so it's dispatched onto a
+//! blocking thread rather than run inline.
 
 use merc_syntax::SourceMap;
 use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
+use merc_typecheck::FormulaType;
 use merc_typecheck::ModalError;
 use merc_typecheck::ModalSpecification;
 use merc_typecheck::NumberEncoding;
@@ -32,16 +22,10 @@ use merc_typecheck::ProcessSpecification;
 
 /// The result of attempting to type check a document's whole process specification.
 ///
-/// `Ok` is boxed since `ProcessSpecification` is far larger than the other variants (it carries
-/// the whole checked data specification); without it every `TypecheckOutcome` would pay for its
-/// worst-case size — mirrors [`crate::parse::ParseOutcome`]'s own `Ok(Box<..>)`.
+/// `Ok` is boxed since `ProcessSpecification` is far larger than the other variants.
 pub enum TypecheckOutcome {
-    /// The checked specification — kept around (rather than discarded) since [`crate::hover`],
-    /// [`crate::goto_definition`], and [`crate::inlay_hints`] all need its span-keyed typing info.
     Ok(Box<ProcessSpecification>),
     Error(ProcessError),
-    /// The blocking task doing the check didn't complete — see
-    /// [`crate::parse::ParseOutcome::Internal`]'s doc comment; the same reasoning applies here.
     Internal(String),
 }
 
@@ -69,14 +53,16 @@ pub enum ModalTypecheckOutcome {
 /// Type checks `spec`, off the async executor.
 ///
 /// Takes `spec` by value because the work is moved onto a blocking thread via
-/// [`tokio::task::spawn_blocking`], which requires a `'static` closure. The
-/// caller clones it out of the document's parsed AST, kept separately so
-/// `symbols`/`semantic_tokens` — which only need the parse, not the type check — keep working even
-/// when this fails.
-pub async fn typecheck(spec: UntypedProcessSpecification, sources: SourceMap) -> (TypecheckOutcome, SourceMap) {
+/// [`tokio::task::spawn_blocking`], which requires a `'static` closure.
+pub async fn typecheck(
+    spec: UntypedProcessSpecification,
+    sources: SourceMap,
+) -> (TypecheckOutcome, SourceMap) {
     match tokio::task::spawn_blocking(move || {
         let mut sources = sources;
-        let outcome = ProcessSpecification::from_untyped_with(spec, NumberEncoding::default(), &mut sources);
+        let outcome =
+            ProcessSpecification::from_untyped_with(spec, NumberEncoding::default(), &mut sources);
+
         (outcome, sources)
     })
     .await
@@ -86,7 +72,9 @@ pub async fn typecheck(spec: UntypedProcessSpecification, sources: SourceMap) ->
         Err(join_error) => {
             log::error!("typecheck task failed to join: {join_error}");
             (
-                TypecheckOutcome::Internal(format!("internal error: typecheck task did not complete ({join_error})")),
+                TypecheckOutcome::Internal(format!(
+                    "internal error: typecheck task did not complete ({join_error})"
+                )),
                 SourceMap::new(),
             )
         }
@@ -95,39 +83,45 @@ pub async fn typecheck(spec: UntypedProcessSpecification, sources: SourceMap) ->
 
 /// Type checks `spec`, off the async executor.
 ///
-/// Takes the already-parsed `UntypedPbes` by value, same as [`typecheck`] — `UntypedPbes` now
-/// derives `Clone` upstream, so the caller can hand this a cheap clone of the copy
-/// `document.parsed` holds (for `symbols`/`semantic_tokens`) instead of re-parsing `text` here.
+/// Takes the already-parsed `UntypedPbes` by value, same as [`typecheck`].
 pub async fn typecheck_pbes(spec: UntypedPbes) -> PbesTypecheckOutcome {
     match tokio::task::spawn_blocking(move || PbesSpecification::from_untyped(spec)).await {
         Ok(Ok(checked)) => PbesTypecheckOutcome::Ok(Box::new(checked)),
         Ok(Err(error)) => PbesTypecheckOutcome::Error(error),
         Err(join_error) => {
             log::error!("pbes typecheck task failed to join: {join_error}");
-            PbesTypecheckOutcome::Internal(format!("internal error: typecheck task did not complete ({join_error})"))
+            PbesTypecheckOutcome::Internal(format!(
+                "internal error: typecheck task did not complete ({join_error})"
+            ))
         }
     }
 }
 
-/// As [`typecheck_pbes`], for a PRES — same reasoning throughout, just against
-/// [`PresSpecification::from_untyped`].
+/// As [`typecheck_pbes`], for a PRES — same reasoning throughout.
 pub async fn typecheck_pres(spec: UntypedPres) -> PresTypecheckOutcome {
     match tokio::task::spawn_blocking(move || PresSpecification::from_untyped(spec)).await {
         Ok(Ok(checked)) => PresTypecheckOutcome::Ok(Box::new(checked)),
         Ok(Err(error)) => PresTypecheckOutcome::Error(error),
         Err(join_error) => {
             log::error!("pres typecheck task failed to join: {join_error}");
-            PresTypecheckOutcome::Internal(format!("internal error: typecheck task did not complete ({join_error})"))
+            PresTypecheckOutcome::Internal(format!(
+                "internal error: typecheck task did not complete ({join_error})"
+            ))
         }
     }
 }
 
-/// As [`typecheck`], for a modal (mu-calculus) formula — same reasoning throughout, including the
-/// `sources`-threading (against [`ModalSpecification::from_untyped_with`] here).
-pub async fn typecheck_modal(spec: UntypedStateFrmSpec, sources: SourceMap) -> (ModalTypecheckOutcome, SourceMap) {
+/// As [`typecheck`], for a modal (mu-calculus) formula.
+pub async fn typecheck_modal(
+    spec: UntypedStateFrmSpec,
+    sources: SourceMap,
+    formula_type: FormulaType
+) -> (ModalTypecheckOutcome, SourceMap) {
     match tokio::task::spawn_blocking(move || {
         let mut sources = sources;
-        let outcome = ModalSpecification::from_untyped_with(spec, NumberEncoding::default(), &mut sources);
+        let outcome =
+            ModalSpecification::from_untyped_with(spec, formula_type, NumberEncoding::default(), &mut sources);
+
         (outcome, sources)
     })
     .await
@@ -137,7 +131,9 @@ pub async fn typecheck_modal(spec: UntypedStateFrmSpec, sources: SourceMap) -> (
         Err(join_error) => {
             log::error!("modal typecheck task failed to join: {join_error}");
             (
-                ModalTypecheckOutcome::Internal(format!("internal error: typecheck task did not complete ({join_error})")),
+                ModalTypecheckOutcome::Internal(format!(
+                    "internal error: typecheck task did not complete ({join_error})"
+                )),
                 SourceMap::new(),
             )
         }
@@ -147,14 +143,18 @@ pub async fn typecheck_modal(spec: UntypedStateFrmSpec, sources: SourceMap) -> (
 /// Test convenience: [`typecheck`] against a fresh `SourceMap`, discarding the one that comes
 /// back — mirrors [`crate::parse::parse_ignoring_sources`]'s own reasoning.
 #[cfg(test)]
-pub(crate) async fn typecheck_ignoring_sources(spec: UntypedProcessSpecification) -> TypecheckOutcome {
+pub(crate) async fn typecheck_ignoring_sources(
+    spec: UntypedProcessSpecification,
+) -> TypecheckOutcome {
     typecheck(spec, SourceMap::new()).await.0
 }
 
 /// As [`typecheck_ignoring_sources`], for [`typecheck_modal`].
 #[cfg(test)]
-pub(crate) async fn typecheck_modal_ignoring_sources(spec: UntypedStateFrmSpec) -> ModalTypecheckOutcome {
-    typecheck_modal(spec, SourceMap::new()).await.0
+pub(crate) async fn typecheck_modal_ignoring_sources(
+    spec: UntypedStateFrmSpec,
+) -> ModalTypecheckOutcome {
+    typecheck_modal(spec, SourceMap::new(), FormulaType::Real).await.0
 }
 
 #[cfg(test)]
@@ -208,7 +208,8 @@ mod tests {
     #[tokio::test]
     async fn reports_type_error_for_ill_typed_data_specification() {
         // `undeclared` is not bound by any `var`, `map`, or `cons` declaration.
-        let spec = process_specification_for("map f: Bool;\neqn f = undeclared;\ninit delta;").await;
+        let spec =
+            process_specification_for("map f: Bool;\neqn f = undeclared;\ninit delta;").await;
         match typecheck(spec).await {
             TypecheckOutcome::Ok(_) => panic!("expected a type error"),
             TypecheckOutcome::Error(_) => {}
@@ -233,7 +234,9 @@ mod tests {
         match typecheck_pbes(spec).await {
             PbesTypecheckOutcome::Ok(_) => {}
             PbesTypecheckOutcome::Error(error) => panic!("unexpected type error: {error}"),
-            PbesTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
+            PbesTypecheckOutcome::Internal(message) => {
+                panic!("unexpected internal error: {message}")
+            }
         }
     }
 
@@ -244,7 +247,9 @@ mod tests {
         match typecheck_pbes(spec).await {
             PbesTypecheckOutcome::Ok(_) => panic!("expected a type error"),
             PbesTypecheckOutcome::Error(_) => {}
-            PbesTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
+            PbesTypecheckOutcome::Internal(message) => {
+                panic!("unexpected internal error: {message}")
+            }
         }
     }
 
@@ -254,7 +259,9 @@ mod tests {
         match typecheck_pres(spec).await {
             PresTypecheckOutcome::Ok(_) => {}
             PresTypecheckOutcome::Error(error) => panic!("unexpected type error: {error}"),
-            PresTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
+            PresTypecheckOutcome::Internal(message) => {
+                panic!("unexpected internal error: {message}")
+            }
         }
     }
 
@@ -265,7 +272,9 @@ mod tests {
         match typecheck_pres(spec).await {
             PresTypecheckOutcome::Ok(_) => panic!("expected a type error"),
             PresTypecheckOutcome::Error(_) => {}
-            PresTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
+            PresTypecheckOutcome::Internal(message) => {
+                panic!("unexpected internal error: {message}")
+            }
         }
     }
 
@@ -275,7 +284,9 @@ mod tests {
         match typecheck_modal(spec).await {
             ModalTypecheckOutcome::Ok(_) => {}
             ModalTypecheckOutcome::Error(error) => panic!("unexpected type error: {error}"),
-            ModalTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
+            ModalTypecheckOutcome::Internal(message) => {
+                panic!("unexpected internal error: {message}")
+            }
         }
     }
 
@@ -286,7 +297,9 @@ mod tests {
         match typecheck_modal(spec).await {
             ModalTypecheckOutcome::Ok(_) => panic!("expected a type error"),
             ModalTypecheckOutcome::Error(_) => {}
-            ModalTypecheckOutcome::Internal(message) => panic!("unexpected internal error: {message}"),
+            ModalTypecheckOutcome::Internal(message) => {
+                panic!("unexpected internal error: {message}")
+            }
         }
     }
 }
