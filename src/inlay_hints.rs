@@ -393,7 +393,7 @@ fn walk_act_frm(formula: &ActFrm, ctx: &mut Ctx) {
         ActFrmKind::Binary { lhs, rhs, .. } => {
             walk_act_frm(lhs, ctx);
             walk_act_frm(rhs, ctx);
-        },
+        }
         ActFrmKind::At { expr, operand } => {
             walk_act_frm(expr, ctx);
             walk_struct_applications(operand, ctx);
@@ -628,7 +628,7 @@ fn sort_of<'a>(typing_info: &'a TypingInfo, span: &Span) -> Option<&'a SortExpre
 /// Emits one hint for `argument`: a `name: ` prefix at its start when
 /// `field_name` is known, otherwise a `: Sort` suffix at its end when `sort` is
 /// known. Emits nothing when neither is available.
-/// 
+///
 /// Skipped when the name is the same as the expression, of for infix/prefix
 /// operators the sort suffix is skipped.
 fn push_hint(

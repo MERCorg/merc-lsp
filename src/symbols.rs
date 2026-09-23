@@ -256,7 +256,7 @@ pub fn pres_symbols(
             },
         );
     }
-    
+
     symbols.push(pbes_init_symbol(text, line_index, &spec.init));
 
     symbols.extend(groups.finish());
@@ -693,7 +693,7 @@ impl ImportGroups {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use crate::parse::ParseOutcome;
     use crate::parse::SpecKind;
     use crate::parse::Specification;

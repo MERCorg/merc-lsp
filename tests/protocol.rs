@@ -23,10 +23,10 @@ use lsp_types::DidChangeWatchedFilesParams;
 use lsp_types::DidCloseTextDocumentParams;
 use lsp_types::DidOpenTextDocumentParams;
 use lsp_types::DidSaveTextDocumentParams;
-use lsp_types::FileChangeType;
-use lsp_types::FileEvent;
 use lsp_types::DocumentSymbolParams;
 use lsp_types::DocumentSymbolResponse;
+use lsp_types::FileChangeType;
+use lsp_types::FileEvent;
 use lsp_types::GotoDefinitionParams;
 use lsp_types::GotoDefinitionResponse;
 use lsp_types::Hover;
@@ -88,12 +88,19 @@ fn uri(name: &str) -> Url {
 /// duplex pipe, performs the `initialize`/`initialized` handshake, and returns a handle for
 /// driving the rest of the session, the `initialize` response (for capability assertions), and
 /// the channel `textDocument/publishDiagnostics` notifications arrive on.
-async fn start() -> (ServerSocket, InitializeResult, UnboundedReceiver<PublishDiagnosticsParams>) {
+async fn start() -> (
+    ServerSocket,
+    InitializeResult,
+    UnboundedReceiver<PublishDiagnosticsParams>,
+) {
     let (client_end, server_end) = tokio::io::duplex(1 << 16);
     let (client_read, client_write) = tokio::io::split(client_end);
     let (server_read, server_write) = tokio::io::split(server_end);
 
-    tokio::spawn(merc_lsp::serve(server_read.compat(), server_write.compat_write()));
+    tokio::spawn(merc_lsp::serve(
+        server_read.compat(),
+        server_write.compat_write(),
+    ));
 
     let (diagnostics_tx, diagnostics_rx) = tokio::sync::mpsc::unbounded_channel();
     let (client_mainloop, server) = MainLoop::new_client(|_server| client_router(diagnostics_tx));
@@ -112,7 +119,9 @@ async fn start() -> (ServerSocket, InitializeResult, UnboundedReceiver<PublishDi
 
 /// Waits (with a timeout, so a regression here fails in seconds rather than hanging CI) for the
 /// next `textDocument/publishDiagnostics` notification.
-async fn next_diagnostics(rx: &mut UnboundedReceiver<PublishDiagnosticsParams>) -> PublishDiagnosticsParams {
+async fn next_diagnostics(
+    rx: &mut UnboundedReceiver<PublishDiagnosticsParams>,
+) -> PublishDiagnosticsParams {
     tokio::time::timeout(Duration::from_secs(5), rx.recv())
         .await
         .expect("timed out waiting for a publishDiagnostics notification")
@@ -151,7 +160,10 @@ fn did_open(uri: Url, text: &str) -> DidOpenTextDocumentParams {
 #[tokio::test]
 async fn initialize_advertises_document_symbol_support() {
     let (_server, result, _rx) = start().await;
-    assert_eq!(result.capabilities.document_symbol_provider, Some(OneOf::Left(true)));
+    assert_eq!(
+        result.capabilities.document_symbol_provider,
+        Some(OneOf::Left(true))
+    );
 }
 
 /// The bare-`TextDocumentSyncKind` shorthand this used to advertise implicitly means *no*
@@ -159,18 +171,31 @@ async fn initialize_advertises_document_symbol_support() {
 #[tokio::test]
 async fn initialize_advertises_save_notification_support() {
     let (_server, result, _rx) = start().await;
-    let Some(TextDocumentSyncCapability::Options(options)) = result.capabilities.text_document_sync else {
-        panic!("expected full TextDocumentSyncOptions, got {:?}", result.capabilities.text_document_sync);
+    let Some(TextDocumentSyncCapability::Options(options)) = result.capabilities.text_document_sync
+    else {
+        panic!(
+            "expected full TextDocumentSyncOptions, got {:?}",
+            result.capabilities.text_document_sync
+        );
     };
     assert_eq!(options.change, Some(TextDocumentSyncKind::FULL));
-    assert!(options.save.is_some(), "didSave notifications must be requested");
+    assert!(
+        options.save.is_some(),
+        "didSave notifications must be requested"
+    );
 }
 
 #[tokio::test]
 async fn initialize_advertises_hover_and_goto_definition_support() {
     let (_server, result, _rx) = start().await;
-    assert_eq!(result.capabilities.hover_provider, Some(HoverProviderCapability::Simple(true)));
-    assert_eq!(result.capabilities.definition_provider, Some(OneOf::Left(true)));
+    assert_eq!(
+        result.capabilities.hover_provider,
+        Some(HoverProviderCapability::Simple(true))
+    );
+    assert_eq!(
+        result.capabilities.definition_provider,
+        Some(OneOf::Left(true))
+    );
 }
 
 #[tokio::test]
@@ -179,7 +204,10 @@ async fn initialize_advertises_semantic_tokens_support() {
     let Some(SemanticTokensServerCapabilities::SemanticTokensOptions(options)) =
         result.capabilities.semantic_tokens_provider
     else {
-        panic!("expected plain semanticTokens options, got {:?}", result.capabilities.semantic_tokens_provider);
+        panic!(
+            "expected plain semanticTokens options, got {:?}",
+            result.capabilities.semantic_tokens_provider
+        );
     };
     assert!(!options.legend.token_types.is_empty());
 }
@@ -195,7 +223,10 @@ async fn did_open_with_well_formed_document_publishes_no_diagnostics() {
     let (server, _result, mut rx) = start().await;
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(uri("well-formed.mcrl2"), WELL_FORMED))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            uri("well-formed.mcrl2"),
+            WELL_FORMED,
+        ))
         .expect("didOpen should be queued");
 
     let diagnostics = next_diagnostics(&mut rx).await;
@@ -212,7 +243,10 @@ async fn did_open_with_malformed_document_publishes_a_located_diagnostic() {
 
     let diagnostics = next_diagnostics(&mut rx).await;
     assert_eq!(diagnostics.diagnostics.len(), 1);
-    assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp"));
+    assert_eq!(
+        diagnostics.diagnostics[0].source.as_deref(),
+        Some("merc-lsp")
+    );
 }
 
 /// A document that parses cleanly but whose data specification doesn't type check should still
@@ -231,7 +265,10 @@ async fn did_open_with_ill_typed_document_publishes_a_type_diagnostic() {
 
     let diagnostics = next_diagnostics(&mut rx).await;
     assert_eq!(diagnostics.diagnostics.len(), 1);
-    assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
+    assert_eq!(
+        diagnostics.diagnostics[0].source.as_deref(),
+        Some("merc-lsp:types")
+    );
 }
 
 /// Regression test for the single most common LSP bug: forgetting to publish the *empty*
@@ -252,7 +289,10 @@ async fn fixing_a_malformed_document_clears_its_diagnostics() {
 
     server
         .notify::<notification::DidChangeTextDocument>(DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier { uri: document_uri.clone(), version: 2 },
+            text_document: VersionedTextDocumentIdentifier {
+                uri: document_uri.clone(),
+                version: 2,
+            },
             content_changes: vec![TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
@@ -269,7 +309,10 @@ async fn fixing_a_malformed_document_clears_its_diagnostics() {
         })
         .expect("didSave should be queued");
     let second = next_diagnostics(&mut rx).await;
-    assert!(second.diagnostics.is_empty(), "diagnostics must be cleared once the document is fixed");
+    assert!(
+        second.diagnostics.is_empty(),
+        "diagnostics must be cleared once the document is fixed"
+    );
     assert_eq!(second.version, Some(2));
 }
 
@@ -288,7 +331,10 @@ async fn editing_without_saving_does_not_publish_diagnostics() {
 
     server
         .notify::<notification::DidChangeTextDocument>(DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier { uri: document_uri.clone(), version: 2 },
+            text_document: VersionedTextDocumentIdentifier {
+                uri: document_uri.clone(),
+                version: 2,
+            },
             content_changes: vec![TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
@@ -300,7 +346,9 @@ async fn editing_without_saving_does_not_publish_diagnostics() {
     // The change above introduced a parse error, but with no `didSave` yet, no notification
     // should follow it.
     assert!(
-        tokio::time::timeout(Duration::from_millis(200), next_diagnostics(&mut rx)).await.is_err(),
+        tokio::time::timeout(Duration::from_millis(200), next_diagnostics(&mut rx))
+            .await
+            .is_err(),
         "didChange must not publish diagnostics on its own"
     );
 
@@ -311,7 +359,11 @@ async fn editing_without_saving_does_not_publish_diagnostics() {
         })
         .expect("didSave should be queued");
     let saved = next_diagnostics(&mut rx).await;
-    assert_eq!(saved.diagnostics.len(), 1, "didSave should publish the diagnostics for the unsaved edit");
+    assert_eq!(
+        saved.diagnostics.len(),
+        1,
+        "didSave should publish the diagnostics for the unsaved edit"
+    );
 }
 
 #[tokio::test]
@@ -320,7 +372,10 @@ async fn document_symbol_returns_the_outline() {
     let document_uri = uri("outline.mcrl2");
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), "sort D;\nact a;\ninit a;"))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            document_uri.clone(),
+            "sort D;\nact a;\ninit a;",
+        ))
         .expect("didOpen should be queued");
     let _ = next_diagnostics(&mut rx).await;
 
@@ -337,9 +392,18 @@ async fn document_symbol_returns_the_outline() {
         panic!("expected a nested documentSymbol response, got {response:?}");
     };
     let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
-    assert!(names.contains(&"D"), "expected the 'D' sort in the outline, got {names:?}");
-    assert!(names.contains(&"a"), "expected the 'a' action in the outline, got {names:?}");
-    assert!(names.contains(&"init"), "expected the 'init' entry in the outline, got {names:?}");
+    assert!(
+        names.contains(&"D"),
+        "expected the 'D' sort in the outline, got {names:?}"
+    );
+    assert!(
+        names.contains(&"a"),
+        "expected the 'a' action in the outline, got {names:?}"
+    );
+    assert!(
+        names.contains(&"init"),
+        "expected the 'init' entry in the outline, got {names:?}"
+    );
 }
 
 #[tokio::test]
@@ -348,7 +412,10 @@ async fn semantic_tokens_full_returns_tokens_for_a_parsed_document() {
     let document_uri = uri("tokens.mcrl2");
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), "sort D;\nact a;\ninit a;"))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            document_uri.clone(),
+            "sort D;\nact a;\ninit a;",
+        ))
         .expect("didOpen should be queued");
     let _ = next_diagnostics(&mut rx).await;
 
@@ -366,7 +433,11 @@ async fn semantic_tokens_full_returns_tokens_for_a_parsed_document() {
     };
     // `D` (a sort declaration) and `a` (an action instantiation in `init a;`) should each yield a
     // token; the exact classification is `semantic_tokens.rs`'s own unit tests' job.
-    assert!(tokens.data.len() >= 2, "expected at least a sort and an action token, got {:?}", tokens.data);
+    assert!(
+        tokens.data.len() >= 2,
+        "expected at least a sort and an action token, got {:?}",
+        tokens.data
+    );
 }
 
 /// The semantic-tokens counterpart of `editing_without_saving_does_not_publish_diagnostics`: an
@@ -378,12 +449,18 @@ async fn semantic_tokens_do_not_blank_out_on_an_unsaved_edit_and_only_refresh_on
     let document_uri = uri("tokens-stable.mcrl2");
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), "sort D;\nact a;\ninit a;"))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            document_uri.clone(),
+            "sort D;\nact a;\ninit a;",
+        ))
         .expect("didOpen should be queued");
     let _ = next_diagnostics(&mut rx).await;
 
     let initial = request_tokens(&server, &document_uri).await;
-    assert!(!initial.is_empty(), "expected tokens for the initial well-formed document");
+    assert!(
+        !initial.is_empty(),
+        "expected tokens for the initial well-formed document"
+    );
 
     // An unsaved edit that breaks parsing outright: `didChange` only ever records it as pending
     // text (see `Document::pending_text`), never reparses, so this must not blank out the tokens
@@ -391,8 +468,15 @@ async fn semantic_tokens_do_not_blank_out_on_an_unsaved_edit_and_only_refresh_on
     // at all any more.
     server
         .notify::<notification::DidChangeTextDocument>(DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier { uri: document_uri.clone(), version: 2 },
-            content_changes: vec![TextDocumentContentChangeEvent { range: None, range_length: None, text: MALFORMED.to_string() }],
+            text_document: VersionedTextDocumentIdentifier {
+                uri: document_uri.clone(),
+                version: 2,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: MALFORMED.to_string(),
+            }],
         })
         .expect("didChange should be queued");
     assert_eq!(
@@ -406,8 +490,15 @@ async fn semantic_tokens_do_not_blank_out_on_an_unsaved_edit_and_only_refresh_on
     let grown = "sort D;\nact a;\nact b;\ninit a;";
     server
         .notify::<notification::DidChangeTextDocument>(DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier { uri: document_uri.clone(), version: 3 },
-            content_changes: vec![TextDocumentContentChangeEvent { range: None, range_length: None, text: grown.to_string() }],
+            text_document: VersionedTextDocumentIdentifier {
+                uri: document_uri.clone(),
+                version: 3,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: grown.to_string(),
+            }],
         })
         .expect("didChange should be queued");
     assert_eq!(
@@ -419,7 +510,9 @@ async fn semantic_tokens_do_not_blank_out_on_an_unsaved_edit_and_only_refresh_on
     // Only now, on `didSave`, should the new declaration's tokens show up.
     server
         .notify::<notification::DidSaveTextDocument>(DidSaveTextDocumentParams {
-            text_document: TextDocumentIdentifier { uri: document_uri.clone() },
+            text_document: TextDocumentIdentifier {
+                uri: document_uri.clone(),
+            },
             text: None,
         })
         .expect("didSave should be queued");
@@ -434,13 +527,20 @@ async fn semantic_tokens_do_not_blank_out_on_an_unsaved_edit_and_only_refresh_on
 /// mCRL2 text used by the hover/goto-definition tests below: a mapping `f` used once in its own
 /// defining equation, so a position inside `f(x)` on the `eqn` line resolves through
 /// `DataSpecification::typing_info` to `f`'s declaration on the `map` line.
-const WITH_A_MAPPING: &str = "sort D;\ncons c: D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = x;\ninit delta;";
+const WITH_A_MAPPING: &str =
+    "sort D;\ncons c: D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = x;\ninit delta;";
 
 fn position_of(text: &str, needle: &str) -> Position {
-    let offset = text.find(needle).expect("needle should occur in the fixture text");
+    let offset = text
+        .find(needle)
+        .expect("needle should occur in the fixture text");
     let prefix = &text[..offset];
     let line = prefix.matches('\n').count() as u32;
-    let character = prefix.rsplit('\n').next().expect("split always yields at least one piece").len() as u32;
+    let character = prefix
+        .rsplit('\n')
+        .next()
+        .expect("split always yields at least one piece")
+        .len() as u32;
     Position { line, character }
 }
 
@@ -465,10 +565,18 @@ async fn hover_reports_a_mapping_uses_sort() {
         .await
         .expect("hover should succeed");
 
-    let Some(Hover { contents: HoverContents::Markup(content), .. }) = response else {
+    let Some(Hover {
+        contents: HoverContents::Markup(content),
+        ..
+    }) = response
+    else {
         panic!("expected markup hover content, got {response:?}");
     };
-    assert!(content.value.contains('f'), "expected hover text to mention 'f', got {}", content.value);
+    assert!(
+        content.value.contains('f'),
+        "expected hover text to mention 'f', got {}",
+        content.value
+    );
 }
 
 #[tokio::test]
@@ -494,13 +602,25 @@ async fn hover_reports_a_sort_references_declaration() {
         .await
         .expect("hover should succeed");
 
-    let Some(Hover { contents: HoverContents::Markup(content), .. }) = response else {
+    let Some(Hover {
+        contents: HoverContents::Markup(content),
+        ..
+    }) = response
+    else {
         panic!("expected markup hover content, got {response:?}");
     };
-    assert!(content.value.contains("sort D;"), "expected hover text to show the sort declaration, got {}", content.value);
+    assert!(
+        content.value.contains("sort D;"),
+        "expected hover text to show the sort declaration, got {}",
+        content.value
+    );
 }
 
-async fn completion_at(server: &ServerSocket, document_uri: Url, position: Position) -> Vec<lsp_types::CompletionItem> {
+async fn completion_at(
+    server: &ServerSocket,
+    document_uri: Url,
+    position: Position,
+) -> Vec<lsp_types::CompletionItem> {
     let response = server
         .request::<request::Completion>(CompletionParams {
             text_document_position: TextDocumentPositionParams {
@@ -534,13 +654,30 @@ async fn completion_in_a_data_expression_is_scoped_to_data_values() {
         .expect("didOpen should be queued");
     let _ = next_diagnostics(&mut rx).await;
 
-    let items = completion_at(&server, document_uri, position_of(WITH_A_MAPPING, "f(x) = x")).await;
+    let items = completion_at(
+        &server,
+        document_uri,
+        position_of(WITH_A_MAPPING, "f(x) = x"),
+    )
+    .await;
 
-    let mapping = items.iter().find(|item| item.label == "f").expect("expected 'f' among the completions");
+    let mapping = items
+        .iter()
+        .find(|item| item.label == "f")
+        .expect("expected 'f' among the completions");
     assert_eq!(mapping.kind, Some(CompletionItemKind::FUNCTION));
-    assert!(items.iter().any(|item| item.label == "true"), "expected a data keyword like 'true'");
-    assert!(!items.iter().any(|item| item.label == "proc"), "a section keyword does not belong in a data expression");
-    assert!(!items.iter().any(|item| item.label == "D"), "a sort name is not a valid data value");
+    assert!(
+        items.iter().any(|item| item.label == "true"),
+        "expected a data keyword like 'true'"
+    );
+    assert!(
+        !items.iter().any(|item| item.label == "proc"),
+        "a section keyword does not belong in a data expression"
+    );
+    assert!(
+        !items.iter().any(|item| item.label == "D"),
+        "a sort name is not a valid data value"
+    );
 }
 
 /// The cursor sits in the sort position of a `map` signature — completion should offer the
@@ -557,9 +694,18 @@ async fn completion_in_a_sort_expression_is_scoped_to_sorts() {
 
     let items = completion_at(&server, document_uri, position_of(WITH_A_MAPPING, "-> D;")).await;
 
-    assert!(items.iter().any(|item| item.label == "D"), "expected the declared sort 'D'");
-    assert!(items.iter().any(|item| item.label == "Nat"), "expected a built-in sort");
-    assert!(!items.iter().any(|item| item.label == "f"), "a mapping is not a valid sort");
+    assert!(
+        items.iter().any(|item| item.label == "D"),
+        "expected the declared sort 'D'"
+    );
+    assert!(
+        items.iter().any(|item| item.label == "Nat"),
+        "expected a built-in sort"
+    );
+    assert!(
+        !items.iter().any(|item| item.label == "f"),
+        "a mapping is not a valid sort"
+    );
 }
 
 /// The cursor sits mid-way through an `%import` directive's path, *before* its closing quote has
@@ -575,18 +721,28 @@ async fn completion_mid_import_directive_offers_matching_files_not_data_expressi
     let main_path = dir.path().join("main.mcrl2");
     let text = "%import \"co";
     std::fs::write(&main_path, text).expect("should write main.mcrl2");
-    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let main_uri =
+        Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), text))
         .expect("didOpen should be queued");
     let _ = next_diagnostics(&mut rx).await;
 
-    let position = Position { line: 0, character: text.len() as u32 };
+    let position = Position {
+        line: 0,
+        character: text.len() as u32,
+    };
     let items = completion_at(&server, main_uri, position).await;
 
-    assert!(items.iter().any(|item| item.label == "common.mcrl2"), "expected common.mcrl2 among {items:?}");
-    assert!(!items.iter().any(|item| item.label == "true"), "should not fall back to data-expression completions, got {items:?}");
+    assert!(
+        items.iter().any(|item| item.label == "common.mcrl2"),
+        "expected common.mcrl2 among {items:?}"
+    );
+    assert!(
+        !items.iter().any(|item| item.label == "true"),
+        "should not fall back to data-expression completions, got {items:?}"
+    );
 }
 
 /// A `.pbes` document is routed to `UntypedPbes::parse` (via `SpecKind::from_uri`), not the plain
@@ -597,7 +753,10 @@ async fn did_open_with_well_formed_pbes_document_publishes_no_diagnostics() {
     let (server, _result, mut rx) = start().await;
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(uri("well-formed.pbes"), "pbes mu X = true;\ninit X;"))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            uri("well-formed.pbes"),
+            "pbes mu X = true;\ninit X;",
+        ))
         .expect("didOpen should be queued");
 
     let diagnostics = next_diagnostics(&mut rx).await;
@@ -611,12 +770,18 @@ async fn did_open_with_malformed_pres_document_publishes_a_located_diagnostic() 
     let (server, _result, mut rx) = start().await;
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(uri("malformed.pres"), "pres mu X = 0\ninit X;")) // missing ';'
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            uri("malformed.pres"),
+            "pres mu X = 0\ninit X;",
+        )) // missing ';'
         .expect("didOpen should be queued");
 
     let diagnostics = next_diagnostics(&mut rx).await;
     assert_eq!(diagnostics.diagnostics.len(), 1);
-    assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp"));
+    assert_eq!(
+        diagnostics.diagnostics[0].source.as_deref(),
+        Some("merc-lsp")
+    );
 }
 
 /// A `.pbes` document that parses cleanly but doesn't type check (an undeclared propositional
@@ -628,12 +793,18 @@ async fn did_open_with_ill_typed_pbes_document_publishes_a_type_diagnostic() {
     let (server, _result, mut rx) = start().await;
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(uri("ill-typed.pbes"), "pbes mu X = Y;\ninit X;"))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            uri("ill-typed.pbes"),
+            "pbes mu X = Y;\ninit X;",
+        ))
         .expect("didOpen should be queued");
 
     let diagnostics = next_diagnostics(&mut rx).await;
     assert_eq!(diagnostics.diagnostics.len(), 1);
-    assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
+    assert_eq!(
+        diagnostics.diagnostics[0].source.as_deref(),
+        Some("merc-lsp:types")
+    );
 }
 
 /// A well-formed `.pres` document should publish no diagnostics — `PresSpecification::from_untyped`
@@ -644,7 +815,10 @@ async fn did_open_with_well_formed_pres_document_publishes_no_diagnostics() {
     let (server, _result, mut rx) = start().await;
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(uri("well-formed.pres"), "pres mu X = true;\ninit X;"))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            uri("well-formed.pres"),
+            "pres mu X = true;\ninit X;",
+        ))
         .expect("didOpen should be queued");
 
     let diagnostics = next_diagnostics(&mut rx).await;
@@ -659,12 +833,18 @@ async fn did_open_with_ill_typed_pres_document_publishes_a_type_diagnostic() {
     let (server, _result, mut rx) = start().await;
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(uri("ill-typed.pres"), "pres mu X = Y;\ninit X;"))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            uri("ill-typed.pres"),
+            "pres mu X = Y;\ninit X;",
+        ))
         .expect("didOpen should be queued");
 
     let diagnostics = next_diagnostics(&mut rx).await;
     assert_eq!(diagnostics.diagnostics.len(), 1);
-    assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
+    assert_eq!(
+        diagnostics.diagnostics[0].source.as_deref(),
+        Some("merc-lsp:types")
+    );
 }
 
 /// A `.mcf` document is routed to `UntypedStateFrmSpec::parse` (via `SpecKind::from_uri`) — a
@@ -674,7 +854,10 @@ async fn did_open_with_well_formed_modal_document_publishes_no_diagnostics() {
     let (server, _result, mut rx) = start().await;
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(uri("well-formed.mcf"), "act a: Nat;\nform nu X . [a(0)]X;"))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            uri("well-formed.mcf"),
+            "act a: Nat;\nform nu X . [a(0)]X;",
+        ))
         .expect("didOpen should be queued");
 
     let diagnostics = next_diagnostics(&mut rx).await;
@@ -689,12 +872,18 @@ async fn did_open_with_ill_typed_modal_document_publishes_a_type_diagnostic() {
     let (server, _result, mut rx) = start().await;
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(uri("ill-typed.mcf"), "act a: Nat;\nform nu X . [b(0)]X;"))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            uri("ill-typed.mcf"),
+            "act a: Nat;\nform nu X . [b(0)]X;",
+        ))
         .expect("didOpen should be queued");
 
     let diagnostics = next_diagnostics(&mut rx).await;
     assert_eq!(diagnostics.diagnostics.len(), 1);
-    assert_eq!(diagnostics.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
+    assert_eq!(
+        diagnostics.diagnostics[0].source.as_deref(),
+        Some("merc-lsp:types")
+    );
 }
 
 /// mCRL2 PBES text used by the hover/goto-definition tests below: an equation `X` with a parameter
@@ -712,7 +901,10 @@ async fn hover_reports_a_propositional_variable_arguments_sort() {
     let document_uri = uri("hover.pbes");
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), PBES_WITH_A_PARAMETER))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            document_uri.clone(),
+            PBES_WITH_A_PARAMETER,
+        ))
         .expect("didOpen should be queued");
     let _ = next_diagnostics(&mut rx).await;
 
@@ -727,10 +919,18 @@ async fn hover_reports_a_propositional_variable_arguments_sort() {
         .await
         .expect("hover should succeed");
 
-    let Some(Hover { contents: HoverContents::Markup(content), .. }) = response else {
+    let Some(Hover {
+        contents: HoverContents::Markup(content),
+        ..
+    }) = response
+    else {
         panic!("expected markup hover content, got {response:?}");
     };
-    assert!(content.value.contains("Bool"), "expected hover text to mention 'Bool', got {}", content.value);
+    assert!(
+        content.value.contains("Bool"),
+        "expected hover text to mention 'Bool', got {}",
+        content.value
+    );
 }
 
 #[tokio::test]
@@ -739,14 +939,19 @@ async fn goto_definition_jumps_from_a_propositional_variable_argument_to_its_par
     let document_uri = uri("goto-definition.pbes");
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), PBES_WITH_A_PARAMETER))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            document_uri.clone(),
+            PBES_WITH_A_PARAMETER,
+        ))
         .expect("didOpen should be queued");
     let _ = next_diagnostics(&mut rx).await;
 
     let response = server
         .request::<request::GotoDefinition>(GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: document_uri.clone() },
+                text_document: TextDocumentIdentifier {
+                    uri: document_uri.clone(),
+                },
                 position: position_of(PBES_WITH_A_PARAMETER, "n);"),
             },
             work_done_progress_params: Default::default(),
@@ -759,7 +964,10 @@ async fn goto_definition_jumps_from_a_propositional_variable_argument_to_its_par
         panic!("expected a scalar goto-definition response, got {response:?}");
     };
     assert_eq!(location.uri, document_uri);
-    assert_eq!(location.range.start, position_of(PBES_WITH_A_PARAMETER, "n: Bool)"));
+    assert_eq!(
+        location.range.start,
+        position_of(PBES_WITH_A_PARAMETER, "n: Bool)")
+    );
 }
 
 /// `textDocument/documentSymbol` also works for a `.pbes` document — its outline is built by
@@ -770,7 +978,10 @@ async fn document_symbol_returns_the_pbes_outline() {
     let document_uri = uri("pbes-outline.pbes");
 
     server
-        .notify::<notification::DidOpenTextDocument>(did_open(document_uri.clone(), "pbes mu X(n: Bool) = true;\ninit X(true);"))
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            document_uri.clone(),
+            "pbes mu X(n: Bool) = true;\ninit X(true);",
+        ))
         .expect("didOpen should be queued");
     let _ = next_diagnostics(&mut rx).await;
 
@@ -787,8 +998,14 @@ async fn document_symbol_returns_the_pbes_outline() {
         panic!("expected a nested documentSymbol response, got {response:?}");
     };
     let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
-    assert!(names.contains(&"X"), "expected the 'X' equation in the outline, got {names:?}");
-    assert!(names.contains(&"init"), "expected the 'init' entry in the outline, got {names:?}");
+    assert!(
+        names.contains(&"X"),
+        "expected the 'X' equation in the outline, got {names:?}"
+    );
+    assert!(
+        names.contains(&"init"),
+        "expected the 'init' entry in the outline, got {names:?}"
+    );
 }
 
 #[tokio::test]
@@ -804,7 +1021,9 @@ async fn goto_definition_jumps_from_a_mapping_use_to_its_declaration() {
     let response = server
         .request::<request::GotoDefinition>(GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: document_uri.clone() },
+                text_document: TextDocumentIdentifier {
+                    uri: document_uri.clone(),
+                },
                 position: position_of(WITH_A_MAPPING, "f(x) = x"),
             },
             work_done_progress_params: Default::default(),
@@ -817,7 +1036,10 @@ async fn goto_definition_jumps_from_a_mapping_use_to_its_declaration() {
         panic!("expected a scalar goto-definition response, got {response:?}");
     };
     assert_eq!(location.uri, document_uri);
-    assert_eq!(location.range.start, position_of(WITH_A_MAPPING, "f: D -> D"));
+    assert_eq!(
+        location.range.start,
+        position_of(WITH_A_MAPPING, "f: D -> D")
+    );
 }
 
 #[tokio::test]
@@ -833,7 +1055,9 @@ async fn goto_definition_jumps_from_a_sort_reference_to_its_declaration() {
     let response = server
         .request::<request::GotoDefinition>(GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: document_uri.clone() },
+                text_document: TextDocumentIdentifier {
+                    uri: document_uri.clone(),
+                },
                 position: position_of(WITH_A_MAPPING, "D -> D"),
             },
             work_done_progress_params: Default::default(),
@@ -862,8 +1086,10 @@ async fn goto_definition_on_an_unsaved_import_directive_resolves_against_the_liv
     let main_path = dir.path().join("main.mcrl2");
     let original_text = "init delta;\n";
     std::fs::write(&main_path, original_text).expect("should write main.mcrl2");
-    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
-    let common_uri = Url::from_file_path(dir.path().join("common.mcrl2")).expect("common.mcrl2 should have a valid file:// URI");
+    let main_uri =
+        Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri = Url::from_file_path(dir.path().join("common.mcrl2"))
+        .expect("common.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), original_text))
@@ -876,7 +1102,10 @@ async fn goto_definition_on_an_unsaved_import_directive_resolves_against_the_liv
     let edited_text = "%import \"common.mcrl2\"\ninit delta;\n";
     server
         .notify::<notification::DidChangeTextDocument>(DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier { uri: main_uri.clone(), version: 2 },
+            text_document: VersionedTextDocumentIdentifier {
+                uri: main_uri.clone(),
+                version: 2,
+            },
             content_changes: vec![TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
@@ -888,7 +1117,9 @@ async fn goto_definition_on_an_unsaved_import_directive_resolves_against_the_liv
     let response = server
         .request::<request::GotoDefinition>(GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: main_uri.clone() },
+                text_document: TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
                 position: position_of(edited_text, "common.mcrl2"),
             },
             work_done_progress_params: Default::default(),
@@ -898,7 +1129,9 @@ async fn goto_definition_on_an_unsaved_import_directive_resolves_against_the_liv
         .expect("goto-definition should succeed");
 
     let Some(GotoDefinitionResponse::Link(links)) = response else {
-        panic!("expected a link goto-definition response for the %import directive, got {response:?}");
+        panic!(
+            "expected a link goto-definition response for the %import directive, got {response:?}"
+        );
     };
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].target_uri, common_uri);
@@ -915,17 +1148,23 @@ async fn a_watched_file_change_reanalyzes_documents_that_import_it_even_without_
     let dir = tempfile::tempdir().expect("should create a temp directory");
     let main_path = dir.path().join("main.mcrl2");
     let common_path = dir.path().join("common.mcrl2");
-    std::fs::write(&main_path, "%import \"common.mcrl2\"\ninit b;\n").expect("should write main.mcrl2");
+    std::fs::write(&main_path, "%import \"common.mcrl2\"\ninit b;\n")
+        .expect("should write main.mcrl2");
     std::fs::write(&common_path, "act b;\n").expect("should write common.mcrl2");
     let main_text = std::fs::read_to_string(&main_path).unwrap();
-    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
-    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+    let main_uri =
+        Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri =
+        Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), &main_text))
         .expect("didOpen should be queued");
     let first = next_diagnostics(&mut rx).await;
-    assert!(first.diagnostics.is_empty(), "main.mcrl2 should type check via its import: {first:?}");
+    assert!(
+        first.diagnostics.is_empty(),
+        "main.mcrl2 should type check via its import: {first:?}"
+    );
 
     std::fs::write(&common_path, "act c;\n").expect("should rewrite common.mcrl2");
 
@@ -939,8 +1178,15 @@ async fn a_watched_file_change_reanalyzes_documents_that_import_it_even_without_
         .expect("workspace/didChangeWatchedFiles should be queued");
 
     let second = next_diagnostics(&mut rx).await;
-    assert_eq!(second.diagnostics.len(), 1, "expected 'b' to be reported as undeclared: {second:?}");
-    assert_eq!(second.diagnostics[0].source.as_deref(), Some("merc-lsp:types"));
+    assert_eq!(
+        second.diagnostics.len(),
+        1,
+        "expected 'b' to be reported as undeclared: {second:?}"
+    );
+    assert_eq!(
+        second.diagnostics[0].source.as_deref(),
+        Some("merc-lsp:types")
+    );
 }
 
 /// Creating a file that a still-open document `%import`s, but that didn't exist (and so was never
@@ -957,14 +1203,20 @@ async fn creating_a_previously_missing_import_target_reanalyzes_the_importing_do
     let common_path = dir.path().join("common.mcrl2");
     let main_text = "%import \"common.mcrl2\"\ninit delta;\n";
     std::fs::write(&main_path, main_text).expect("should write main.mcrl2");
-    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
-    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+    let main_uri =
+        Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri =
+        Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), main_text))
         .expect("didOpen should be queued");
     let first = next_diagnostics(&mut rx).await;
-    assert_eq!(first.diagnostics.len(), 1, "expected the unresolved import to be reported: {first:?}");
+    assert_eq!(
+        first.diagnostics.len(),
+        1,
+        "expected the unresolved import to be reported: {first:?}"
+    );
 
     // common.mcrl2 now comes into existence — e.g. created by another tool, another editor tab, or
     // checked out via version control.
@@ -972,13 +1224,19 @@ async fn creating_a_previously_missing_import_target_reanalyzes_the_importing_do
 
     server
         .notify::<notification::DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
-            changes: vec![FileEvent { uri: common_uri, typ: FileChangeType::CREATED }],
+            changes: vec![FileEvent {
+                uri: common_uri,
+                typ: FileChangeType::CREATED,
+            }],
         })
         .expect("workspace/didChangeWatchedFiles should be queued");
 
     let second = next_diagnostics(&mut rx).await;
     assert_eq!(second.uri, main_uri);
-    assert!(second.diagnostics.is_empty(), "expected the now-resolved import's error to be cleared: {second:?}");
+    assert!(
+        second.diagnostics.is_empty(),
+        "expected the now-resolved import's error to be cleared: {second:?}"
+    );
 }
 
 /// A type error whose real span lands in an `%import`ed file, not the document that was actually
@@ -991,12 +1249,15 @@ async fn a_type_error_in_an_imported_file_is_shown_at_its_real_location() {
     let dir = tempfile::tempdir().expect("should create a temp directory");
     let main_path = dir.path().join("main.mcrl2");
     let common_path = dir.path().join("common.mcrl2");
-    std::fs::write(&main_path, "%import \"common.mcrl2\"\ninit delta;\n").expect("should write main.mcrl2");
+    std::fs::write(&main_path, "%import \"common.mcrl2\"\ninit delta;\n")
+        .expect("should write main.mcrl2");
     let common_text = "map f: Bool;\neqn f = undeclared;\n";
     std::fs::write(&common_path, common_text).expect("should write common.mcrl2");
     let main_text = std::fs::read_to_string(&main_path).unwrap();
-    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
-    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+    let main_uri =
+        Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri =
+        Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), &main_text))
@@ -1006,10 +1267,18 @@ async fn a_type_error_in_an_imported_file_is_shown_at_its_real_location() {
     // `main.mcrl2` itself (clearing any stale diagnostics) and the real one for `common.mcrl2`.
     let first = next_diagnostics(&mut rx).await;
     let second = next_diagnostics(&mut rx).await;
-    let common_params = if first.uri == common_uri { first } else { second };
+    let common_params = if first.uri == common_uri {
+        first
+    } else {
+        second
+    };
 
     assert_eq!(common_params.uri, common_uri);
-    assert_eq!(common_params.diagnostics.len(), 1, "expected the undeclared name to be reported: {common_params:?}");
+    assert_eq!(
+        common_params.diagnostics.len(),
+        1,
+        "expected the undeclared name to be reported: {common_params:?}"
+    );
     let diag = &common_params.diagnostics[0];
     assert_eq!(diag.source.as_deref(), Some("merc-lsp:types"));
     assert_eq!(
@@ -1034,8 +1303,10 @@ async fn an_error_in_an_imported_file_also_gets_a_companion_diagnostic_on_the_im
     std::fs::write(&main_path, main_text).expect("should write main.mcrl2");
     let common_text = "map f: Bool;\neqn f = undeclared;\n";
     std::fs::write(&common_path, common_text).expect("should write common.mcrl2");
-    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
-    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+    let main_uri =
+        Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri =
+        Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), main_text))
@@ -1054,16 +1325,30 @@ async fn an_error_in_an_imported_file_also_gets_a_companion_diagnostic_on_the_im
     let diag = &main_params.diagnostics[0];
     assert_eq!(diag.range.start, position_of(main_text, "%import"));
     assert_eq!(diag.range.end, position_of(main_text, "\ninit"));
-    assert!(diag.message.contains("error"), "message was: {}", diag.message);
+    assert!(
+        diag.message.contains("error"),
+        "message was: {}",
+        diag.message
+    );
 
     // The companion diagnostic must carry the real error as `related_information`, so an editor
     // can jump straight from the `%import` line to `undeclared` inside common.mcrl2, without
     // requiring the user to separately open it first.
-    let related = diag.related_information.as_ref().expect("expected related_information for goto navigation");
+    let related = diag
+        .related_information
+        .as_ref()
+        .expect("expected related_information for goto navigation");
     assert_eq!(related.len(), 1);
     assert_eq!(related[0].location.uri, common_uri);
-    assert_eq!(related[0].location.range.start, position_of(common_text, "undeclared"));
-    assert!(related[0].message.contains("undeclared"), "related message was: {}", related[0].message);
+    assert_eq!(
+        related[0].location.range.start,
+        position_of(common_text, "undeclared")
+    );
+    assert!(
+        related[0].message.contains("undeclared"),
+        "related message was: {}",
+        related[0].message
+    );
 }
 
 /// Closing the only document that `%import`s a broken file must clear the diagnostic it published
@@ -1078,26 +1363,40 @@ async fn closing_the_only_importer_clears_the_diagnostic_it_published_on_the_imp
     let common_path = dir.path().join("common.mcrl2");
     let main_text = "%import \"common.mcrl2\"\ninit delta;\n";
     std::fs::write(&main_path, main_text).expect("should write main.mcrl2");
-    std::fs::write(&common_path, "map f: Bool;\neqn f = undeclared;\n").expect("should write common.mcrl2");
-    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
-    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+    std::fs::write(&common_path, "map f: Bool;\neqn f = undeclared;\n")
+        .expect("should write common.mcrl2");
+    let main_uri =
+        Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri =
+        Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), main_text))
         .expect("didOpen should be queued");
     let first = next_diagnostics(&mut rx).await;
     let second = next_diagnostics(&mut rx).await;
-    assert!(!first.diagnostics.is_empty() && !second.diagnostics.is_empty(), "expected both main.mcrl2 and common.mcrl2 to get a diagnostic: {first:?}, {second:?}");
+    assert!(
+        !first.diagnostics.is_empty() && !second.diagnostics.is_empty(),
+        "expected both main.mcrl2 and common.mcrl2 to get a diagnostic: {first:?}, {second:?}"
+    );
 
     server
         .notify::<notification::DidCloseTextDocument>(DidCloseTextDocumentParams {
-            text_document: TextDocumentIdentifier { uri: main_uri.clone() },
+            text_document: TextDocumentIdentifier {
+                uri: main_uri.clone(),
+            },
         })
         .expect("didClose should be queued");
 
     let cleared = next_diagnostics(&mut rx).await;
-    assert_eq!(cleared.uri, common_uri, "expected common.mcrl2's diagnostic to be cleared on close: {cleared:?}");
-    assert!(cleared.diagnostics.is_empty(), "expected common.mcrl2's diagnostic to be cleared: {cleared:?}");
+    assert_eq!(
+        cleared.uri, common_uri,
+        "expected common.mcrl2's diagnostic to be cleared on close: {cleared:?}"
+    );
+    assert!(
+        cleared.diagnostics.is_empty(),
+        "expected common.mcrl2's diagnostic to be cleared: {cleared:?}"
+    );
 }
 
 /// Two open documents `%import`ing the same broken file must not clobber each other's diagnostics
@@ -1115,10 +1414,12 @@ async fn two_importers_of_the_same_broken_file_do_not_clobber_each_others_diagno
     let b_text = "%import \"common.mcrl2\"\ninit delta;\n";
     std::fs::write(&a_path, a_text).expect("should write a.mcrl2");
     std::fs::write(&b_path, b_text).expect("should write b.mcrl2");
-    std::fs::write(&common_path, "map f: Bool;\neqn f = undeclared;\n").expect("should write common.mcrl2");
+    std::fs::write(&common_path, "map f: Bool;\neqn f = undeclared;\n")
+        .expect("should write common.mcrl2");
     let a_uri = Url::from_file_path(&a_path).expect("a.mcrl2 should have a valid file:// URI");
     let b_uri = Url::from_file_path(&b_path).expect("b.mcrl2 should have a valid file:// URI");
-    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+    let common_uri =
+        Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(a_uri.clone(), a_text))
@@ -1134,9 +1435,17 @@ async fn two_importers_of_the_same_broken_file_do_not_clobber_each_others_diagno
     // just the one underlying error) diagnostic.
     let first = next_diagnostics(&mut rx).await;
     let second = next_diagnostics(&mut rx).await;
-    let common_params = if first.uri == common_uri { first } else { second };
+    let common_params = if first.uri == common_uri {
+        first
+    } else {
+        second
+    };
     assert_eq!(common_params.uri, common_uri);
-    assert_eq!(common_params.diagnostics.len(), 1, "expected exactly one (not duplicated) diagnostic on common.mcrl2: {common_params:?}");
+    assert_eq!(
+        common_params.diagnostics.len(),
+        1,
+        "expected exactly one (not duplicated) diagnostic on common.mcrl2: {common_params:?}"
+    );
 
     server
         .notify::<notification::DidCloseTextDocument>(DidCloseTextDocumentParams {
@@ -1145,7 +1454,10 @@ async fn two_importers_of_the_same_broken_file_do_not_clobber_each_others_diagno
         .expect("didClose should be queued");
 
     let still_owned = next_diagnostics(&mut rx).await;
-    assert_eq!(still_owned.uri, common_uri, "expected a republish for common.mcrl2 after closing a.mcrl2: {still_owned:?}");
+    assert_eq!(
+        still_owned.uri, common_uri,
+        "expected a republish for common.mcrl2 after closing a.mcrl2: {still_owned:?}"
+    );
     assert_eq!(
         still_owned.diagnostics.len(),
         1,
@@ -1160,7 +1472,10 @@ async fn two_importers_of_the_same_broken_file_do_not_clobber_each_others_diagno
 
     let cleared = next_diagnostics(&mut rx).await;
     assert_eq!(cleared.uri, common_uri);
-    assert!(cleared.diagnostics.is_empty(), "expected common.mcrl2's diagnostic to be cleared once both importers are closed: {cleared:?}");
+    assert!(
+        cleared.diagnostics.is_empty(),
+        "expected common.mcrl2's diagnostic to be cleared once both importers are closed: {cleared:?}"
+    );
 }
 
 /// Opening a `merc-builtin:` virtual document (the read-only scheme goto-definition into a
@@ -1178,13 +1493,16 @@ async fn opening_a_virtual_builtin_document_publishes_no_diagnostics() {
     let text = "map f: Nat;\n";
     server
         .notify::<notification::DidOpenTextDocument>(did_open(
-            Url::parse("merc-builtin:///%3Cbuiltin%3E%2Fbool.mcrl2").expect("valid merc-builtin URI"),
+            Url::parse("merc-builtin:///%3Cbuiltin%3E%2Fbool.mcrl2")
+                .expect("valid merc-builtin URI"),
             text,
         ))
         .expect("didOpen should be queued");
 
     assert!(
-        tokio::time::timeout(Duration::from_millis(200), next_diagnostics(&mut rx)).await.is_err(),
+        tokio::time::timeout(Duration::from_millis(200), next_diagnostics(&mut rx))
+            .await
+            .is_err(),
         "opening a merc-builtin: document must not trigger analysis or publish diagnostics"
     );
 }
@@ -1205,12 +1523,15 @@ async fn a_parse_error_in_an_imported_file_is_shown_at_its_real_location() {
     let dir = tempfile::tempdir().expect("should create a temp directory");
     let main_path = dir.path().join("main.mcrl2");
     let common_path = dir.path().join("common.mcrl2");
-    std::fs::write(&main_path, "%import \"common.mcrl2\"\ninit delta;\n").expect("should write main.mcrl2");
+    std::fs::write(&main_path, "%import \"common.mcrl2\"\ninit delta;\n")
+        .expect("should write main.mcrl2");
     let common_text = "sort D\ninit delta;\n"; // missing ';' after 'sort D'
     std::fs::write(&common_path, common_text).expect("should write common.mcrl2");
     let main_text = std::fs::read_to_string(&main_path).unwrap();
-    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
-    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+    let main_uri =
+        Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri =
+        Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), &main_text))
@@ -1218,10 +1539,18 @@ async fn a_parse_error_in_an_imported_file_is_shown_at_its_real_location() {
 
     let first = next_diagnostics(&mut rx).await;
     let second = next_diagnostics(&mut rx).await;
-    let common_params = if first.uri == common_uri { first } else { second };
+    let common_params = if first.uri == common_uri {
+        first
+    } else {
+        second
+    };
 
     assert_eq!(common_params.uri, common_uri);
-    assert_eq!(common_params.diagnostics.len(), 1, "expected the parse error to be reported: {common_params:?}");
+    assert_eq!(
+        common_params.diagnostics.len(),
+        1,
+        "expected the parse error to be reported: {common_params:?}"
+    );
     let diag = &common_params.diagnostics[0];
     assert_eq!(
         diag.range.start,
@@ -1240,7 +1569,8 @@ async fn a_missing_import_is_located_on_its_own_directive() {
     let main_path = dir.path().join("main.mcrl2");
     let main_text = "%import \"doesnotexist.mcrl2\"\ninit delta;\n";
     std::fs::write(&main_path, main_text).expect("should write main.mcrl2");
-    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let main_uri =
+        Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), main_text))
@@ -1249,9 +1579,17 @@ async fn a_missing_import_is_located_on_its_own_directive() {
     let main_params = next_diagnostics(&mut rx).await;
 
     assert_eq!(main_params.uri, main_uri);
-    assert_eq!(main_params.diagnostics.len(), 1, "expected the unresolved import to be reported: {main_params:?}");
+    assert_eq!(
+        main_params.diagnostics.len(),
+        1,
+        "expected the unresolved import to be reported: {main_params:?}"
+    );
     let diag = &main_params.diagnostics[0];
-    assert!(diag.message.contains("doesnotexist.mcrl2"), "message was: {}", diag.message);
+    assert!(
+        diag.message.contains("doesnotexist.mcrl2"),
+        "message was: {}",
+        diag.message
+    );
     assert_eq!(diag.range.start, position_of(main_text, "%import"));
     assert_eq!(diag.range.end, position_of(main_text, "\ninit"));
 }
@@ -1271,8 +1609,10 @@ async fn a_syntax_error_at_the_end_of_the_importing_file_is_shown_on_the_importi
     let main_text = "%import \"common.mcrl2\"\ninit delta";
     std::fs::write(&main_path, main_text).expect("should write main.mcrl2");
     std::fs::write(&common_path, "act a;\n").expect("should write common.mcrl2");
-    let main_uri = Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
-    let common_uri = Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
+    let main_uri =
+        Url::from_file_path(&main_path).expect("main.mcrl2 should have a valid file:// URI");
+    let common_uri =
+        Url::from_file_path(&common_path).expect("common.mcrl2 should have a valid file:// URI");
 
     server
         .notify::<notification::DidOpenTextDocument>(did_open(main_uri.clone(), main_text))
@@ -1281,12 +1621,21 @@ async fn a_syntax_error_at_the_end_of_the_importing_file_is_shown_on_the_importi
     // common.mcrl2 is well-formed, so (unlike the "error in an imported file" tests) it never
     // gets a diagnostics publish of its own — only main.mcrl2's does.
     let main_params = next_diagnostics(&mut rx).await;
-    assert_eq!(main_params.uri, main_uri, "unexpected diagnostics on {}: {main_params:?}", common_uri);
-    assert_eq!(main_params.diagnostics.len(), 1, "expected the syntax error to be reported on main.mcrl2 itself: {main_params:?}");
+    assert_eq!(
+        main_params.uri, main_uri,
+        "unexpected diagnostics on {}: {main_params:?}",
+        common_uri
+    );
+    assert_eq!(
+        main_params.diagnostics.len(),
+        1,
+        "expected the syntax error to be reported on main.mcrl2 itself: {main_params:?}"
+    );
     let diag = &main_params.diagnostics[0];
     let end_of_main = position_of(main_text, "delta");
     assert!(
-        diag.range.start.line == end_of_main.line && diag.range.start.character >= end_of_main.character,
+        diag.range.start.line == end_of_main.line
+            && diag.range.start.character >= end_of_main.character,
         "diagnostic should be located inside main.mcrl2, at or after 'delta': {diag:?}"
     );
 }

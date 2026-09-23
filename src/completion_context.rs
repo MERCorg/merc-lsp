@@ -1,22 +1,7 @@
 //! Classifies a completion request's cursor offset against the raw parsed AST, so
 //! [`crate::completion`] can offer only the kind of name actually expected there — a declared
 //! sort while completing a sort expression, an action or process name in a process body, and so
-//! on — instead of every name the document declares regardless of where the cursor sits.
-//!
-//! Deliberately *not* full lexical scoping (see `completion.rs`'s module docs on why that stays
-//! out of scope): this only asks "what **kind** of name is expected here", by hand-walking down
-//! whichever child span contains the cursor offset until none does, never "which binders are in
-//! scope at this exact point". A [`CompletionCategory`] still names every declaration of that
-//! kind document-wide, the same unscoped way [`crate::completion`] already did before this module
-//! existed — just no longer *every* kind at once.
-//!
-//! Written as plain recursive functions rather than `merc_syntax::Traverse` (used elsewhere in
-//! this crate — `ambiguity.rs`, `inlay_hints.rs`, `semantic_tokens.rs` — for passes that tag every
-//! node instead of hunting for one): `Traverse::visit`'s callback runs behind a closure
-//! whose node reference cannot outlive a single call (it descends by re-invoking the callback
-//! itself, not by handing back a value the caller can keep), so it cannot report back *which*
-//! node was innermost — only whether one was found. This module needs the innermost node's own
-//! shape (which variant, which fields) to decide the category, so it descends by hand instead.
+//! on.
 
 use merc_syntax::ActFrm;
 use merc_syntax::ActFrmKind;
@@ -46,35 +31,19 @@ use merc_syntax::UntypedStateFrmSpec;
 /// What kind of declared name, if any, a completion request's cursor sits where one is expected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionCategory {
-    /// A sort expression: the right-hand side of `sort D = ...`, a `cons`/`map`/`glob`/`var`
-    /// declaration's sort, an action's argument-sort list, or a process/equation parameter's sort.
     Sort,
-    /// A data value: an equation's left- or right-hand side, an action or process-instantiation
-    /// argument, a `val(...)`/quantifier condition, and so on.
     Data,
-    /// An action or process name: the callee of a process-instantiation term (`a(1)`, `P(g)`) in
-    /// a process body or `init`.
     ActionOrProcess,
-    /// A propositional-variable name: the callee of a `PropVarInst` in a PBES/PRES formula or
-    /// `init`.
     PropositionalVariable,
-    /// An action name: inside a modal formula's `[...]`/`<...>` modality (its action-formula
-    /// position) or one of its own `act` declarations' argument sorts — a modal specification
-    /// has no processes to disambiguate against the way [`Self::ActionOrProcess`] does for a
-    /// process specification, so this is its own category rather than reusing that one.
     Action,
-    /// A fixpoint (`mu`/`nu`) variable name: the callee of an `Id`/`Resolved` occurrence in a
-    /// modal (mu-calculus) state formula — the state-formula counterpart of
-    /// [`Self::PropositionalVariable`].
     StateVariable,
-    /// No more specific context was found — offer everything the document declares, as
-    /// [`crate::completion`] always did before cursor context existed.
+    /// No more specific context was found.
     Unscoped,
 }
 
-/// Whether `offset` falls within `span`, inclusive of both ends — inclusive so a cursor sitting
-/// right at the start or end of a token (the common case: completion fires right after the
-/// partial identifier just typed) still counts as inside it.
+/// Whether `offset` falls within `span`, inclusive of both ends — inclusive so
+/// a cursor sitting right at the start or end of a token still counts as inside
+/// it.
 fn contains(span: &Span, offset: usize) -> bool {
     span.start <= offset && offset <= span.end
 }
@@ -85,13 +54,17 @@ fn contains(span: &Span, offset: usize) -> bool {
 /// recognizes a line once it already has its *closing* quote.
 pub fn import_path_prefix(text: &str, offset: usize) -> Option<&str> {
     let line_start = text[..offset].rfind('\n').map_or(0, |index| index + 1);
-    let line_end = text[offset..].find('\n').map_or(text.len(), |index| offset + index);
+    let line_end = text[offset..]
+        .find('\n')
+        .map_or(text.len(), |index| offset + index);
     let line = &text[line_start..line_end];
 
     let after_keyword = line.trim_start().strip_prefix("%import")?;
     // Require at least one whitespace character between the keyword and the opening quote, so
     // `%importance` is not misparsed as a directive — same rule as `parse_import_line`.
-    let after_whitespace = after_keyword.strip_prefix(char::is_whitespace)?.trim_start();
+    let after_whitespace = after_keyword
+        .strip_prefix(char::is_whitespace)?
+        .trim_start();
     let after_quote = after_whitespace.strip_prefix('"')?;
 
     let path_start = line_start + (line.len() - after_whitespace.len()) + 1;
@@ -112,8 +85,15 @@ fn data_contains(expr: &DataExpr, offset: usize) -> bool {
 
 /// [`CompletionCategory::Sort`] if `offset` sits in one of `variables`' own sort expressions
 /// (a `sum`/`dist`/quantifier/bound binder list), otherwise `fallback`.
-fn binder_or(variables: &[IdDecl], offset: usize, fallback: CompletionCategory) -> CompletionCategory {
-    if variables.iter().any(|variable| contains(&variable.sort.span, offset)) {
+fn binder_or(
+    variables: &[IdDecl],
+    offset: usize,
+    fallback: CompletionCategory,
+) -> CompletionCategory {
+    if variables
+        .iter()
+        .any(|variable| contains(&variable.sort.span, offset))
+    {
         CompletionCategory::Sort
     } else {
         fallback
@@ -123,7 +103,11 @@ fn binder_or(variables: &[IdDecl], offset: usize, fallback: CompletionCategory) 
 /// [`CompletionCategory::ActionOrProcess`] if `offset` sits on `name` itself, [`CompletionCategory::Data`]
 /// if it sits in one of `arguments`, and [`CompletionCategory::Data`] as the default otherwise (an
 /// empty or not-yet-typed argument list, which lexically only ever precedes more arguments).
-fn callee_or_argument<'a>(name: &ActionName, arguments: impl IntoIterator<Item = &'a DataExpr>, offset: usize) -> CompletionCategory {
+fn callee_or_argument<'a>(
+    name: &ActionName,
+    arguments: impl IntoIterator<Item = &'a DataExpr>,
+    offset: usize,
+) -> CompletionCategory {
     if contains(&name.span, offset) {
         return CompletionCategory::ActionOrProcess;
     }
@@ -138,8 +122,11 @@ fn callee_or_argument<'a>(name: &ActionName, arguments: impl IntoIterator<Item =
 /// The category expected at `offset` within `data`, if any of `data`'s own declarations account
 /// for it — shared by [`process_category`], [`pbes_category`], and [`pres_category`], since a
 /// process specification, a PBES, and a PRES all share the identical `UntypedDataSpecification`
-/// subtree (see `names.rs`'s module docs).
-fn data_specification_category(data: &UntypedDataSpecification, offset: usize) -> Option<CompletionCategory> {
+/// subtree.
+fn data_specification_category(
+    data: &UntypedDataSpecification,
+    offset: usize,
+) -> Option<CompletionCategory> {
     for decl in &data.sort_declarations {
         if let Some(expr) = &decl.expr
             && contains(&expr.span, offset)
@@ -147,28 +134,31 @@ fn data_specification_category(data: &UntypedDataSpecification, offset: usize) -
             return Some(CompletionCategory::Sort);
         }
     }
+
     for decl in &data.constructor_declarations {
         if contains(&decl.sort.span, offset) {
             return Some(CompletionCategory::Sort);
         }
     }
+
     for decl in &data.map_declarations {
         if contains(&decl.sort.span, offset) {
             return Some(CompletionCategory::Sort);
         }
     }
+
     for eqn_spec in &data.equation_declarations {
         if !contains(&eqn_spec.span, offset) {
             continue;
         }
+
         for variable in &eqn_spec.variables {
             if contains(&variable.sort.span, offset) {
                 return Some(CompletionCategory::Sort);
             }
         }
-        // Anywhere else inside a `var ... eqn ...` block is a data-value position: on the
-        // left-/right-hand side or condition of one of its equations, or simply not attached to
-        // any specific sub-expression yet (an equation still being typed).
+
+        // Anywhere else inside a `var ... eqn ...` block is a data-expression position.
         return Some(CompletionCategory::Data);
     }
     None
@@ -181,17 +171,26 @@ fn data_specification_category(data: &UntypedDataSpecification, offset: usize) -
 fn process_expr_category(expr: &ProcessExpr, offset: usize) -> CompletionCategory {
     match &expr.node {
         ProcessExprKind::Action(name, arguments) => callee_or_argument(name, arguments, offset),
-        ProcessExprKind::Id(name, assignments) => callee_or_argument(name, assignments.iter().map(|a| &a.expr), offset),
+        ProcessExprKind::Id(name, assignments) => {
+            callee_or_argument(name, assignments.iter().map(|a| &a.expr), offset)
+        }
         ProcessExprKind::Delta | ProcessExprKind::Tau => CompletionCategory::ActionOrProcess,
         ProcessExprKind::Sum { variables, operand } => {
-            recurse_or(operand, offset, process_expr_category).unwrap_or_else(|| binder_or(variables, offset, CompletionCategory::ActionOrProcess))
+            recurse_or(operand, offset, process_expr_category).unwrap_or_else(|| {
+                binder_or(variables, offset, CompletionCategory::ActionOrProcess)
+            })
         }
-        ProcessExprKind::Dist { variables, expr: distribution, operand } => {
+        ProcessExprKind::Dist {
+            variables,
+            expr: distribution,
+            operand,
+        } => {
             if data_contains(distribution, offset) {
                 CompletionCategory::Data
             } else {
-                recurse_or(operand, offset, process_expr_category)
-                    .unwrap_or_else(|| binder_or(variables, offset, CompletionCategory::ActionOrProcess))
+                recurse_or(operand, offset, process_expr_category).unwrap_or_else(|| {
+                    binder_or(variables, offset, CompletionCategory::ActionOrProcess)
+                })
             }
         }
         ProcessExprKind::Binary { lhs, rhs, .. } => recurse_or(lhs, offset, process_expr_category)
@@ -202,18 +201,30 @@ fn process_expr_category(expr: &ProcessExpr, offset: usize) -> CompletionCategor
         | ProcessExprKind::Allow { operand, .. }
         | ProcessExprKind::Block { operand, .. }
         | ProcessExprKind::Comm { operand, .. } => {
-            recurse_or(operand, offset, process_expr_category).unwrap_or(CompletionCategory::ActionOrProcess)
+            recurse_or(operand, offset, process_expr_category)
+                .unwrap_or(CompletionCategory::ActionOrProcess)
         }
-        ProcessExprKind::Condition { condition, then, else_ } => {
+        ProcessExprKind::Condition {
+            condition,
+            then,
+            else_,
+        } => {
             if data_contains(condition, offset) {
                 CompletionCategory::Data
             } else {
                 recurse_or(then, offset, process_expr_category)
-                    .or_else(|| else_.as_deref().and_then(|else_| recurse_or(else_, offset, process_expr_category)))
+                    .or_else(|| {
+                        else_
+                            .as_deref()
+                            .and_then(|else_| recurse_or(else_, offset, process_expr_category))
+                    })
                     .unwrap_or(CompletionCategory::ActionOrProcess)
             }
         }
-        ProcessExprKind::At { expr: inner, operand } => recurse_or(inner, offset, process_expr_category)
+        ProcessExprKind::At {
+            expr: inner,
+            operand,
+        } => recurse_or(inner, offset, process_expr_category)
             .or_else(|| data_contains(operand, offset).then_some(CompletionCategory::Data))
             .unwrap_or(CompletionCategory::ActionOrProcess),
     }
@@ -222,7 +233,11 @@ fn process_expr_category(expr: &ProcessExpr, offset: usize) -> CompletionCategor
 /// Descends into `child` (calling `recurse`) if `offset` sits within its span, otherwise `None` —
 /// the shared "is this even the right child to descend into" guard every process/PBES/PRES
 /// recursive step needs before recursing.
-fn recurse_or<K>(child: &merc_syntax::Spanned<K>, offset: usize, recurse: impl Fn(&merc_syntax::Spanned<K>, usize) -> CompletionCategory) -> Option<CompletionCategory> {
+fn recurse_or<K>(
+    child: &merc_syntax::Spanned<K>,
+    offset: usize,
+    recurse: impl Fn(&merc_syntax::Spanned<K>, usize) -> CompletionCategory,
+) -> Option<CompletionCategory> {
     contains(&child.span, offset).then(|| recurse(child, offset))
 }
 
@@ -245,10 +260,13 @@ fn pbes_formula_category(formula: &PbesExpr, offset: usize) -> CompletionCategor
     match &formula.node {
         PbesExprKind::DataValExpr(_) => CompletionCategory::Data,
         PbesExprKind::PropVarInst(inst) => prop_var_inst_category(inst, offset),
-        PbesExprKind::Quantifier { variables, body, .. } => {
-            recurse_or(body, offset, pbes_formula_category).unwrap_or_else(|| binder_or(variables, offset, CompletionCategory::PropositionalVariable))
-        }
-        PbesExprKind::Negation(inner) => recurse_or(inner, offset, pbes_formula_category).unwrap_or(CompletionCategory::PropositionalVariable),
+        PbesExprKind::Quantifier {
+            variables, body, ..
+        } => recurse_or(body, offset, pbes_formula_category).unwrap_or_else(|| {
+            binder_or(variables, offset, CompletionCategory::PropositionalVariable)
+        }),
+        PbesExprKind::Negation(inner) => recurse_or(inner, offset, pbes_formula_category)
+            .unwrap_or(CompletionCategory::PropositionalVariable),
         PbesExprKind::Binary { lhs, rhs, .. } => recurse_or(lhs, offset, pbes_formula_category)
             .or_else(|| recurse_or(rhs, offset, pbes_formula_category))
             .unwrap_or(CompletionCategory::PropositionalVariable),
@@ -260,22 +278,30 @@ fn pres_formula_category(formula: &PresExpr, offset: usize) -> CompletionCategor
     match &formula.node {
         PresExprKind::DataValExpr(_) => CompletionCategory::Data,
         PresExprKind::PropVarInst(inst) => prop_var_inst_category(inst, offset),
-        PresExprKind::RightConstantMultiply { expr, constant } | PresExprKind::LeftConstantMultiply { constant, expr } => {
+        PresExprKind::RightConstantMultiply { expr, constant }
+        | PresExprKind::LeftConstantMultiply { constant, expr } => {
             if data_contains(constant, offset) {
                 CompletionCategory::Data
             } else {
-                recurse_or(expr, offset, pres_formula_category).unwrap_or(CompletionCategory::PropositionalVariable)
+                recurse_or(expr, offset, pres_formula_category)
+                    .unwrap_or(CompletionCategory::PropositionalVariable)
             }
         }
-        PresExprKind::Bound { variables, expr, .. } => {
-            recurse_or(expr, offset, pres_formula_category).unwrap_or_else(|| binder_or(variables, offset, CompletionCategory::PropositionalVariable))
-        }
-        PresExprKind::Equal { body, .. } => recurse_or(body, offset, pres_formula_category).unwrap_or(CompletionCategory::PropositionalVariable),
-        PresExprKind::Condition { lhs, then, else_, .. } => recurse_or(lhs, offset, pres_formula_category)
+        PresExprKind::Bound {
+            variables, expr, ..
+        } => recurse_or(expr, offset, pres_formula_category).unwrap_or_else(|| {
+            binder_or(variables, offset, CompletionCategory::PropositionalVariable)
+        }),
+        PresExprKind::Equal { body, .. } => recurse_or(body, offset, pres_formula_category)
+            .unwrap_or(CompletionCategory::PropositionalVariable),
+        PresExprKind::Condition {
+            lhs, then, else_, ..
+        } => recurse_or(lhs, offset, pres_formula_category)
             .or_else(|| recurse_or(then, offset, pres_formula_category))
             .or_else(|| recurse_or(else_, offset, pres_formula_category))
             .unwrap_or(CompletionCategory::PropositionalVariable),
-        PresExprKind::Negation(inner) => recurse_or(inner, offset, pres_formula_category).unwrap_or(CompletionCategory::PropositionalVariable),
+        PresExprKind::Negation(inner) => recurse_or(inner, offset, pres_formula_category)
+            .unwrap_or(CompletionCategory::PropositionalVariable),
         PresExprKind::Binary { lhs, rhs, .. } => recurse_or(lhs, offset, pres_formula_category)
             .or_else(|| recurse_or(rhs, offset, pres_formula_category))
             .unwrap_or(CompletionCategory::PropositionalVariable),
@@ -289,11 +315,13 @@ pub fn process_category(spec: &UntypedProcessSpecification, offset: usize) -> Co
     if let Some(category) = data_specification_category(&spec.data_specification, offset) {
         return category;
     }
+
     for decl in &spec.global_variables {
         if contains(&decl.sort.span, offset) {
             return CompletionCategory::Sort;
         }
     }
+
     for decl in &spec.action_declarations {
         for arg in &decl.args {
             if contains(&arg.span, offset) {
@@ -301,6 +329,7 @@ pub fn process_category(spec: &UntypedProcessSpecification, offset: usize) -> Co
             }
         }
     }
+
     for decl in &spec.process_declarations {
         for param in &decl.params {
             if contains(&param.sort.span, offset) {
@@ -311,11 +340,13 @@ pub fn process_category(spec: &UntypedProcessSpecification, offset: usize) -> Co
             return process_expr_category(&decl.body, offset);
         }
     }
+
     if let Some(init) = &spec.init
         && contains(&init.span, offset)
     {
         return process_expr_category(init, offset);
     }
+
     CompletionCategory::Unscoped
 }
 
@@ -324,11 +355,13 @@ pub fn pbes_category(spec: &UntypedPbes, offset: usize) -> CompletionCategory {
     if let Some(category) = data_specification_category(&spec.data_specification, offset) {
         return category;
     }
+
     for decl in &spec.global_variables {
         if contains(&decl.sort.span, offset) {
             return CompletionCategory::Sort;
         }
     }
+    
     for eqn in &spec.equations {
         for param in &eqn.variable.parameters {
             if contains(&param.sort.span, offset) {
@@ -339,6 +372,7 @@ pub fn pbes_category(spec: &UntypedPbes, offset: usize) -> CompletionCategory {
             return pbes_formula_category(&eqn.formula, offset);
         }
     }
+
     if contains(&spec.init.span, offset) {
         return prop_var_init_category(&spec.init, offset);
     }
@@ -350,11 +384,13 @@ pub fn pres_category(spec: &UntypedPres, offset: usize) -> CompletionCategory {
     if let Some(category) = data_specification_category(&spec.data_specification, offset) {
         return category;
     }
+
     for decl in &spec.global_variables {
         if contains(&decl.sort.span, offset) {
             return CompletionCategory::Sort;
         }
     }
+
     for eqn in &spec.equations {
         for param in &eqn.variable.parameters {
             if contains(&param.sort.span, offset) {
@@ -365,9 +401,11 @@ pub fn pres_category(spec: &UntypedPres, offset: usize) -> CompletionCategory {
             return pres_formula_category(&eqn.formula, offset);
         }
     }
+
     if contains(&spec.init.span, offset) {
         return prop_var_init_category(&spec.init, offset);
     }
+
     CompletionCategory::Unscoped
 }
 
@@ -393,11 +431,9 @@ pub fn modal_category(spec: &UntypedStateFrmSpec, offset: usize) -> CompletionCa
     CompletionCategory::Unscoped
 }
 
-/// The category expected at `offset` within `formula`, a modal state formula — descends by hand
-/// the same way [`process_expr_category`]/[`pbes_formula_category`] do, falling back to
-/// [`CompletionCategory::StateVariable`] once no child accounts for `offset` (a fixpoint-variable
-/// reference is a state formula's "callable name" concept, the same role
-/// [`CompletionCategory::PropositionalVariable`] plays for a PBES/PRES).
+/// The category expected at `offset` within `formula`, a modal state formula —
+/// descends by hand, falling back to [`CompletionCategory::StateVariable`] once
+/// no child accounts for `offset`.
 fn state_frm_category(formula: &StateFrm, offset: usize) -> CompletionCategory {
     match &formula.node {
         StateFrmKind::True | StateFrmKind::False => CompletionCategory::StateVariable,
@@ -418,30 +454,40 @@ fn state_frm_category(formula: &StateFrm, offset: usize) -> CompletionCategory {
             if data_contains(constant, offset) {
                 CompletionCategory::Data
             } else {
-                recurse_or(expr, offset, state_frm_category).unwrap_or(CompletionCategory::StateVariable)
+                recurse_or(expr, offset, state_frm_category)
+                    .unwrap_or(CompletionCategory::StateVariable)
             }
         }
         StateFrmKind::DataValExprRightMult(expr, constant) => {
             if data_contains(constant, offset) {
                 CompletionCategory::Data
             } else {
-                recurse_or(expr, offset, state_frm_category).unwrap_or(CompletionCategory::StateVariable)
+                recurse_or(expr, offset, state_frm_category)
+                    .unwrap_or(CompletionCategory::StateVariable)
             }
         }
-        StateFrmKind::Modality { formula: reg, expr, .. } => {
+        StateFrmKind::Modality {
+            formula: reg, expr, ..
+        } => {
             if contains(&reg.span, offset) {
                 reg_frm_category(reg, offset)
             } else {
-                recurse_or(expr, offset, state_frm_category).unwrap_or(CompletionCategory::StateVariable)
+                recurse_or(expr, offset, state_frm_category)
+                    .unwrap_or(CompletionCategory::StateVariable)
             }
         }
-        StateFrmKind::Unary { expr, .. } => recurse_or(expr, offset, state_frm_category).unwrap_or(CompletionCategory::StateVariable),
+        StateFrmKind::Unary { expr, .. } => recurse_or(expr, offset, state_frm_category)
+            .unwrap_or(CompletionCategory::StateVariable),
         StateFrmKind::Binary { lhs, rhs, .. } => recurse_or(lhs, offset, state_frm_category)
             .or_else(|| recurse_or(rhs, offset, state_frm_category))
             .unwrap_or(CompletionCategory::StateVariable),
-        StateFrmKind::Quantifier { variables, body, .. } | StateFrmKind::Bound { variables, body, .. } => {
-            recurse_or(body, offset, state_frm_category).unwrap_or_else(|| binder_or(variables, offset, CompletionCategory::StateVariable))
+        StateFrmKind::Quantifier {
+            variables, body, ..
         }
+        | StateFrmKind::Bound {
+            variables, body, ..
+        } => recurse_or(body, offset, state_frm_category)
+            .unwrap_or_else(|| binder_or(variables, offset, CompletionCategory::StateVariable)),
         StateFrmKind::FixedPoint { variable, body, .. } => {
             for argument in &variable.arguments {
                 if contains(&argument.sort.span, offset) {
@@ -451,7 +497,8 @@ fn state_frm_category(formula: &StateFrm, offset: usize) -> CompletionCategory {
                     return CompletionCategory::Data;
                 }
             }
-            recurse_or(body, offset, state_frm_category).unwrap_or(CompletionCategory::StateVariable)
+            recurse_or(body, offset, state_frm_category)
+                .unwrap_or(CompletionCategory::StateVariable)
         }
     }
 }
@@ -460,10 +507,14 @@ fn state_frm_category(formula: &StateFrm, offset: usize) -> CompletionCategory {
 fn reg_frm_category(formula: &RegFrm, offset: usize) -> CompletionCategory {
     match &formula.node {
         RegFrmKind::Action(action) => act_frm_category(action, offset),
-        RegFrmKind::Iteration(inner) | RegFrmKind::Plus(inner) => recurse_or(inner, offset, reg_frm_category).unwrap_or(CompletionCategory::Action),
-        RegFrmKind::Sequence { lhs, rhs } | RegFrmKind::Choice { lhs, rhs } => recurse_or(lhs, offset, reg_frm_category)
-            .or_else(|| recurse_or(rhs, offset, reg_frm_category))
-            .unwrap_or(CompletionCategory::Action),
+        RegFrmKind::Iteration(inner) | RegFrmKind::Plus(inner) => {
+            recurse_or(inner, offset, reg_frm_category).unwrap_or(CompletionCategory::Action)
+        }
+        RegFrmKind::Sequence { lhs, rhs } | RegFrmKind::Choice { lhs, rhs } => {
+            recurse_or(lhs, offset, reg_frm_category)
+                .or_else(|| recurse_or(rhs, offset, reg_frm_category))
+                .unwrap_or(CompletionCategory::Action)
+        }
     }
 }
 
@@ -473,12 +524,18 @@ fn act_frm_category(formula: &ActFrm, offset: usize) -> CompletionCategory {
         ActFrmKind::True | ActFrmKind::False => CompletionCategory::Action,
         ActFrmKind::MultAct(multi_action) => multi_action_category(multi_action, offset),
         ActFrmKind::DataExprVal(_) => CompletionCategory::Data,
-        ActFrmKind::Negation(inner) => recurse_or(inner, offset, act_frm_category).unwrap_or(CompletionCategory::Action),
-        ActFrmKind::Quantifier { variables, body, .. } => {
-            recurse_or(body, offset, act_frm_category).unwrap_or_else(|| binder_or(variables, offset, CompletionCategory::Action))
+        ActFrmKind::Negation(inner) => {
+            recurse_or(inner, offset, act_frm_category).unwrap_or(CompletionCategory::Action)
         }
+        ActFrmKind::Quantifier {
+            variables, body, ..
+        } => recurse_or(body, offset, act_frm_category)
+            .unwrap_or_else(|| binder_or(variables, offset, CompletionCategory::Action)),
         ActFrmKind::Binary { lhs, rhs, .. } => recurse_or(lhs, offset, act_frm_category)
             .or_else(|| recurse_or(rhs, offset, act_frm_category))
+            .unwrap_or(CompletionCategory::Action),
+        ActFrmKind::At { expr, operand } => recurse_or(expr, offset, act_frm_category)
+            .or_else(|| data_contains(operand, offset).then_some(CompletionCategory::Data))
             .unwrap_or(CompletionCategory::Action),
     }
 }
@@ -491,12 +548,14 @@ fn multi_action_category(multi_action: &MultiAction, offset: usize) -> Completio
         if contains(&action.id.span, offset) {
             return CompletionCategory::Action;
         }
+
         for argument in &action.args {
             if data_contains(argument, offset) {
                 return CompletionCategory::Data;
             }
         }
     }
+    
     CompletionCategory::Action
 }
 
@@ -532,14 +591,18 @@ mod tests {
     /// The offset of the *last* occurrence of `needle` in `text` — used to land inside a token
     /// unambiguously even when an earlier, unrelated declaration uses the same name.
     fn last_offset_of(text: &str, needle: &str) -> usize {
-        text.rfind(needle).unwrap_or_else(|| panic!("'{needle}' not found in {text:?}"))
+        text.rfind(needle)
+            .unwrap_or_else(|| panic!("'{needle}' not found in {text:?}"))
     }
 
     #[tokio::test]
     async fn sort_alias_expression_is_sort_context() {
         let text = "sort D = List(Nat);\ninit delta;";
         let spec = process_spec_for(text).await;
-        assert_eq!(process_category(&spec, last_offset_of(text, "Nat")), CompletionCategory::Sort);
+        assert_eq!(
+            process_category(&spec, last_offset_of(text, "Nat")),
+            CompletionCategory::Sort
+        );
     }
 
     #[tokio::test]
@@ -547,21 +610,30 @@ mod tests {
         let text = "sort D;\nmap f: D -> D;\ninit delta;";
         let spec = process_spec_for(text).await;
         // Anywhere in "D -> D" is inside the map's one (function-shaped) sort expression.
-        assert_eq!(process_category(&spec, last_offset_of(text, "->")), CompletionCategory::Sort);
+        assert_eq!(
+            process_category(&spec, last_offset_of(text, "->")),
+            CompletionCategory::Sort
+        );
     }
 
     #[tokio::test]
     async fn action_argument_sort_is_sort_context() {
         let text = "sort D;\nact a: D;\ninit delta;";
         let spec = process_spec_for(text).await;
-        assert_eq!(process_category(&spec, last_offset_of(text, "D")), CompletionCategory::Sort);
+        assert_eq!(
+            process_category(&spec, last_offset_of(text, "D")),
+            CompletionCategory::Sort
+        );
     }
 
     #[tokio::test]
     async fn equation_right_hand_side_is_data_context() {
         let text = "sort D;\ncons c: D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = c;\ninit delta;";
         let spec = process_spec_for(text).await;
-        assert_eq!(process_category(&spec, last_offset_of(text, "c;")), CompletionCategory::Data);
+        assert_eq!(
+            process_category(&spec, last_offset_of(text, "c;")),
+            CompletionCategory::Data
+        );
     }
 
     #[tokio::test]
@@ -569,28 +641,40 @@ mod tests {
         let text = "sort D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = x;\ninit delta;";
         let spec = process_spec_for(text).await;
         // The last 'D' in the text is the one in "var x: D;", the equation variable's own sort.
-        assert_eq!(process_category(&spec, last_offset_of(text, "D")), CompletionCategory::Sort);
+        assert_eq!(
+            process_category(&spec, last_offset_of(text, "D")),
+            CompletionCategory::Sort
+        );
     }
 
     #[tokio::test]
     async fn process_instantiation_name_is_action_or_process_context() {
         let text = "act a: Bool;\nproc P(n: Bool) = a(n);\ninit P(true);";
         let spec = process_spec_for(text).await;
-        assert_eq!(process_category(&spec, last_offset_of(text, "P(true)")), CompletionCategory::ActionOrProcess);
+        assert_eq!(
+            process_category(&spec, last_offset_of(text, "P(true)")),
+            CompletionCategory::ActionOrProcess
+        );
     }
 
     #[tokio::test]
     async fn process_instantiation_argument_is_data_context() {
         let text = "act a: Bool;\nproc P(n: Bool) = a(n);\ninit P(true);";
         let spec = process_spec_for(text).await;
-        assert_eq!(process_category(&spec, last_offset_of(text, "true")), CompletionCategory::Data);
+        assert_eq!(
+            process_category(&spec, last_offset_of(text, "true")),
+            CompletionCategory::Data
+        );
     }
 
     #[tokio::test]
     async fn process_parameter_sort_is_sort_context() {
         let text = "proc P(n: Bool) = delta;\ninit P(true);";
         let spec = process_spec_for(text).await;
-        assert_eq!(process_category(&spec, last_offset_of(text, "Bool")), CompletionCategory::Sort);
+        assert_eq!(
+            process_category(&spec, last_offset_of(text, "Bool")),
+            CompletionCategory::Sort
+        );
     }
 
     #[tokio::test]
@@ -598,56 +682,80 @@ mod tests {
         let text = "act a, b: Bool;\ninit a(true) . b(true);\n";
         let spec = process_spec_for(text).await;
         // Right at the '.' between the two actions: no argument, no callee name, just an operator.
-        assert_eq!(process_category(&spec, last_offset_of(text, ".")), CompletionCategory::ActionOrProcess);
+        assert_eq!(
+            process_category(&spec, last_offset_of(text, ".")),
+            CompletionCategory::ActionOrProcess
+        );
     }
 
     #[tokio::test]
     async fn sum_binder_sort_is_sort_context() {
         let text = "act a: Nat;\ninit sum n: Nat . a(n);\n";
         let spec = process_spec_for(text).await;
-        assert_eq!(process_category(&spec, last_offset_of(text, "Nat .")), CompletionCategory::Sort);
+        assert_eq!(
+            process_category(&spec, last_offset_of(text, "Nat .")),
+            CompletionCategory::Sort
+        );
     }
 
     #[tokio::test]
     async fn outside_every_declaration_is_unscoped() {
         let text = "sort D;\ninit delta;";
         let spec = process_spec_for(text).await;
-        assert_eq!(process_category(&spec, text.len()), CompletionCategory::Unscoped);
+        assert_eq!(
+            process_category(&spec, text.len()),
+            CompletionCategory::Unscoped
+        );
     }
 
     #[tokio::test]
     async fn pbes_prop_var_inst_name_is_propositional_variable_context() {
         let text = "pbes mu X(n: Bool) = val(n);\ninit X(true);";
         let spec = pbes_spec_for(text).await;
-        assert_eq!(pbes_category(&spec, last_offset_of(text, "X(true)")), CompletionCategory::PropositionalVariable);
+        assert_eq!(
+            pbes_category(&spec, last_offset_of(text, "X(true)")),
+            CompletionCategory::PropositionalVariable
+        );
     }
 
     #[tokio::test]
     async fn pbes_val_argument_is_data_context() {
         let text = "pbes mu X(n: Bool) = val(n);\ninit X(true);";
         let spec = pbes_spec_for(text).await;
-        assert_eq!(pbes_category(&spec, last_offset_of(text, "val(n)")), CompletionCategory::Data);
+        assert_eq!(
+            pbes_category(&spec, last_offset_of(text, "val(n)")),
+            CompletionCategory::Data
+        );
     }
 
     #[tokio::test]
     async fn pbes_equation_parameter_sort_is_sort_context() {
         let text = "pbes mu X(n: Bool) = val(n);\ninit X(true);";
         let spec = pbes_spec_for(text).await;
-        assert_eq!(pbes_category(&spec, last_offset_of(text, "Bool")), CompletionCategory::Sort);
+        assert_eq!(
+            pbes_category(&spec, last_offset_of(text, "Bool")),
+            CompletionCategory::Sort
+        );
     }
 
     #[tokio::test]
     async fn modal_action_reference_is_action_context() {
         let text = "act a: Nat;\nform nu X . [a(1)]X;";
         let spec = modal_spec_for(text).await;
-        assert_eq!(modal_category(&spec, last_offset_of(text, "a(1)")), CompletionCategory::Action);
+        assert_eq!(
+            modal_category(&spec, last_offset_of(text, "a(1)")),
+            CompletionCategory::Action
+        );
     }
 
     #[tokio::test]
     async fn modal_action_argument_is_data_context() {
         let text = "act a: Nat;\nform nu X . [a(1)]X;";
         let spec = modal_spec_for(text).await;
-        assert_eq!(modal_category(&spec, last_offset_of(text, "1)")), CompletionCategory::Data);
+        assert_eq!(
+            modal_category(&spec, last_offset_of(text, "1)")),
+            CompletionCategory::Data
+        );
     }
 
     #[tokio::test]
@@ -656,14 +764,20 @@ mod tests {
         let spec = modal_spec_for(text).await;
         // One past the ']': the boundary right at it is inclusively still the action formula (see
         // `contains`'s own doc comment), so this lands unambiguously on the trailing 'X' reference.
-        assert_eq!(modal_category(&spec, last_offset_of(text, "]X") + 1), CompletionCategory::StateVariable);
+        assert_eq!(
+            modal_category(&spec, last_offset_of(text, "]X") + 1),
+            CompletionCategory::StateVariable
+        );
     }
 
     #[tokio::test]
     async fn modal_fixed_point_parameter_sort_is_sort_context() {
         let text = "act a: Nat;\nform nu X(n: Nat = 0) . [a(n)]X(n);";
         let spec = modal_spec_for(text).await;
-        assert_eq!(modal_category(&spec, last_offset_of(text, "Nat = 0")), CompletionCategory::Sort);
+        assert_eq!(
+            modal_category(&spec, last_offset_of(text, "Nat = 0")),
+            CompletionCategory::Sort
+        );
     }
 
     #[test]

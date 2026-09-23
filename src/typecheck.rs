@@ -115,12 +115,16 @@ pub async fn typecheck_pres(spec: UntypedPres) -> PresTypecheckOutcome {
 pub async fn typecheck_modal(
     spec: UntypedStateFrmSpec,
     sources: SourceMap,
-    formula_type: FormulaType
+    formula_type: FormulaType,
 ) -> (ModalTypecheckOutcome, SourceMap) {
     match tokio::task::spawn_blocking(move || {
         let mut sources = sources;
-        let outcome =
-            ModalSpecification::from_untyped_with(spec, formula_type, NumberEncoding::default(), &mut sources);
+        let outcome = ModalSpecification::from_untyped_with(
+            spec,
+            formula_type,
+            NumberEncoding::default(),
+            &mut sources,
+        );
 
         (outcome, sources)
     })
@@ -154,7 +158,9 @@ pub(crate) async fn typecheck_ignoring_sources(
 pub(crate) async fn typecheck_modal_ignoring_sources(
     spec: UntypedStateFrmSpec,
 ) -> ModalTypecheckOutcome {
-    typecheck_modal(spec, SourceMap::new(), FormulaType::Real).await.0
+    typecheck_modal(spec, SourceMap::new(), FormulaType::Real)
+        .await
+        .0
 }
 
 #[cfg(test)]

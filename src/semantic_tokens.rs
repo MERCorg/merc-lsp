@@ -1,6 +1,6 @@
 //! Builds `textDocument/semanticTokens/full` output from a parsed
 //! specification.
-//! 
+//!
 //! A system sort (`Bool`, `Nat`, …, and the parameterized
 //! `List`/`Set`/`Bag`/`FSet`/`FBag`) is tagged [`TokenKind::Type`] like any
 //! other sort reference, but with [`MODIFIER_DEFAULT_LIBRARY`] set, so a theme
@@ -439,7 +439,7 @@ impl<'a> SymbolTable<'a> {
 /// into the sorted, delta-encoded `Vec<SemanticToken>` the protocol requires, in [`Builder::finish`].
 struct Builder<'a> {
     text: &'a str,
-    
+
     line_index: &'a LineIndex,
 
     raw: Vec<(Span, TokenKind, u32)>,

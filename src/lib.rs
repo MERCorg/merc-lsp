@@ -72,7 +72,7 @@ pub async fn run_stdio() {
         async_lsp::stdio::PipeStdout::lock_tokio()
             .expect("stdout is not lockable as an async pipe"),
     );
-    
+
     // Fallback to spawn-blocking read/write otherwise, bridged from tokio's IO traits to
     // `futures`'s via `tokio-util`'s compatibility layer.
     #[cfg(not(unix))]
