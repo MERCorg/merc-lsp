@@ -1,12 +1,10 @@
-//! Builds `textDocument/semanticTokens/full` output from a parsed [`UntypedProcessSpecification`]
-//! ([`semantic_tokens`]), [`UntypedPbes`] ([`pbes_semantic_tokens`]), [`UntypedPres`]
-//! ([`pres_semantic_tokens`]), or [`UntypedStateFrmSpec`] ([`modal_semantic_tokens`]).
-//!
+//! Builds `textDocument/semanticTokens/full` output from a parsed
+//! specification.
+//! 
 //! A system sort (`Bool`, `Nat`, …, and the parameterized
 //! `List`/`Set`/`Bag`/`FSet`/`FBag`) is tagged [`TokenKind::Type`] like any
 //! other sort reference, but with [`MODIFIER_DEFAULT_LIBRARY`] set, so a theme
 //! can still tell it apart from a user's own `sort` declaration.
-
 
 use std::collections::HashSet;
 use std::ops::ControlFlow;
@@ -51,11 +49,7 @@ enum TokenKind {
     Type = 0,
     Variable = 1,
     /// A process reference, whether a `proc` declaration itself or an
-    /// instantiation of one. Deliberately kept a distinct token type from
-    /// [`TokenKind::Event`], so a theme colors a process instantiation
-    /// differently from an action instantiation even though the grammar parses both the same way,
-    /// as [`ProcessExprKind::Action`] — `a(x)` is only known to name a process rather than an
-    /// action once its name is resolved against the specification's declarations.
+    /// instantiation of one.
     Method = 2,
     /// An action declaration or instantiation. Kept a separate token type from
     /// [`TokenKind::Method`] specifically so actions and processes don't end up
@@ -98,7 +92,11 @@ pub fn legend() -> SemanticTokensLegend {
 }
 
 /// Builds the full, delta-encoded semantic token list for `spec`.
-pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcessSpecification) -> Vec<SemanticToken> {
+pub fn semantic_tokens(
+    text: &str,
+    line_index: &LineIndex,
+    spec: &UntypedProcessSpecification,
+) -> Vec<SemanticToken> {
     let symbols = SymbolTable::collect_process(spec);
     let mut builder = Builder::new(text, line_index);
 
@@ -122,7 +120,11 @@ pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcess
         // `decl.identifier.span` is the precise name, leaving the params/body below to tag
         // themselves without `decl`'s own token swallowing them.
         builder.push(&decl.identifier.span, TokenKind::Method, true);
-        let params: HashSet<&str> = decl.params.iter().map(|param| param.identifier.as_str()).collect();
+        let params: HashSet<&str> = decl
+            .params
+            .iter()
+            .map(|param| param.identifier.as_str())
+            .collect();
         for param in &decl.params {
             builder.push(&param.identifier.span, TokenKind::Parameter, true);
             walk_sort_expression(&param.sort, &mut builder);
@@ -145,7 +147,11 @@ pub fn semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedProcess
 /// `DataExpr`/`SortExpression` walker with the process-specification side; only the
 /// process-algebra-shaped parts (`act`/`proc`/`init`) differ, replaced here by a PBES's
 /// propositional-variable equations, quantifier binders, and `PropVarInst`s.
-pub fn pbes_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPbes) -> Vec<SemanticToken> {
+pub fn pbes_semantic_tokens(
+    text: &str,
+    line_index: &LineIndex,
+    spec: &UntypedPbes,
+) -> Vec<SemanticToken> {
     let symbols = SymbolTable::collect_pbes(spec);
     let mut builder = Builder::new(text, line_index);
 
@@ -161,7 +167,12 @@ pub fn pbes_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPb
         // action/process distinction to make (unlike `ProcessExprKind::Action`, see the module
         // docs above), so this and every `PropVarInst` below are unconditionally `Method`.
         builder.push(&eqn.variable.identifier.span, TokenKind::Method, true);
-        let params: HashSet<&str> = eqn.variable.parameters.iter().map(|param| param.identifier.as_str()).collect();
+        let params: HashSet<&str> = eqn
+            .variable
+            .parameters
+            .iter()
+            .map(|param| param.identifier.as_str())
+            .collect();
         for param in &eqn.variable.parameters {
             builder.push(&param.identifier.span, TokenKind::Parameter, true);
             walk_sort_expression(&param.sort, &mut builder);
@@ -180,7 +191,11 @@ pub fn pbes_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPb
 /// As [`pbes_semantic_tokens`], for a parsed PRES — [`UntypedPres`] has the identical shape one
 /// level down (see [`crate::completion::pres_completions`]'s doc comment), so this differs only in
 /// walking [`PresExpr`] instead of [`PbesExpr`] for each equation's formula.
-pub fn pres_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPres) -> Vec<SemanticToken> {
+pub fn pres_semantic_tokens(
+    text: &str,
+    line_index: &LineIndex,
+    spec: &UntypedPres,
+) -> Vec<SemanticToken> {
     let symbols = SymbolTable::collect_pres(spec);
     let mut builder = Builder::new(text, line_index);
 
@@ -196,7 +211,12 @@ pub fn pres_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPr
         // callable-name concept too, so this and every `PropVarInst` below are unconditionally
         // `Method`.
         builder.push(&eqn.variable.identifier.span, TokenKind::Method, true);
-        let params: HashSet<&str> = eqn.variable.parameters.iter().map(|param| param.identifier.as_str()).collect();
+        let params: HashSet<&str> = eqn
+            .variable
+            .parameters
+            .iter()
+            .map(|param| param.identifier.as_str())
+            .collect();
         for param in &eqn.variable.parameters {
             builder.push(&param.identifier.span, TokenKind::Parameter, true);
             walk_sort_expression(&param.sort, &mut builder);
@@ -225,7 +245,11 @@ pub fn pres_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedPr
 /// `ActFrm` a modality (`[...]`/`<...>`) carries are walked by hand for the same reason `Traverse`
 /// stops at a `RegFrmKind::Action` node (see `merc_syntax::traverse`'s own tests) rather than
 /// descending into it.
-pub fn modal_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedStateFrmSpec) -> Vec<SemanticToken> {
+pub fn modal_semantic_tokens(
+    text: &str,
+    line_index: &LineIndex,
+    spec: &UntypedStateFrmSpec,
+) -> Vec<SemanticToken> {
     let symbols = SymbolTable::collect_modal(spec);
     let mut builder = Builder::new(text, line_index);
 
@@ -249,7 +273,11 @@ pub fn modal_semantic_tokens(text: &str, line_index: &LineIndex, spec: &UntypedS
 /// The `sort`/`cons`/`map`/`eqn` part of tagging, shared by [`semantic_tokens`] and
 /// [`pbes_semantic_tokens`] — both a process specification and a PBES have the identical
 /// `UntypedDataSpecification` subtree.
-fn tag_data_specification(data: &UntypedDataSpecification, symbols: &SymbolTable, builder: &mut Builder) {
+fn tag_data_specification(
+    data: &UntypedDataSpecification,
+    symbols: &SymbolTable,
+    builder: &mut Builder,
+) {
     for decl in &data.sort_declarations {
         builder.push(&decl.span, TokenKind::Type, true);
         if let Some(expr) = &decl.expr {
@@ -288,74 +316,72 @@ fn tag_data_specification(data: &UntypedDataSpecification, symbols: &SymbolTable
 }
 
 /// Which declared identifiers name what — the disambiguation a TextMate grammar cannot do, since
-/// the grammar gives the same shape to several different declaration kinds. Used to classify a
-/// bare [`DataExprKind::Id`] (function, constructor, parameter, or variable) and a
-/// [`ProcessExprKind::Action`] whose name might actually belong to a process, not an action —
-/// grammatically identical (`a(x)`), and only distinguished by which declaration its name
-/// resolves to.
+/// the grammar gives the same shape to several different declaration kinds.
 struct SymbolTable<'a> {
     maps: HashSet<&'a str>,
+
     constructors: HashSet<&'a str>,
     /// Every accessor function (a named argument projection or a `?`-recogniser) a `sort D =
-    /// struct c1(a: S)?is_c1 | c2;` alternative declares — kept separate from `maps` so a *use*
-    /// of `a`/`is_c1` elsewhere still resolves to [`TokenKind::Method`] (see
-    /// [`Self::classify_data_id`]), unlike a plain `map`-declared function, which is deliberately
-    /// left uncolored. See [`walk_sort_expression`]'s `SortExpressionKind::Struct` arm for why the
-    /// declaration site itself needs the distinct coloring in the first place.
+    /// struct c1(a: S)?is_c1 | c2;` alternative declares.
     struct_accessors: HashSet<&'a str>,
+
     processes: HashSet<&'a str>,
 }
 
 impl<'a> SymbolTable<'a> {
     fn collect_process(spec: &'a UntypedProcessSpecification) -> Self {
         SymbolTable {
-            processes: spec.process_declarations.iter().map(|decl| decl.identifier.as_str()).collect(),
+            processes: spec
+                .process_declarations
+                .iter()
+                .map(|decl| decl.identifier.as_str())
+                .collect(),
             ..Self::collect_data(&spec.data_specification)
         }
     }
 
-    /// As [`Self::collect_process`], for a PBES: `processes` stays empty, since
-    /// [`SymbolTable::classify_action`] (the one thing that reads it) has nothing to disambiguate
-    /// for a PBES's `PropVarInst`s (see [`pbes_semantic_tokens`]).
+    /// As [`Self::collect_process`], for a PBES: `processes` stays empty.
     fn collect_pbes(spec: &'a UntypedPbes) -> Self {
         Self::collect_data(&spec.data_specification)
     }
 
-    /// As [`Self::collect_pbes`], for a PRES — same reasoning, `processes` stays empty.
+    /// As [`Self::collect_pbes`], for a PRES.
     fn collect_pres(spec: &'a UntypedPres) -> Self {
         Self::collect_data(&spec.data_specification)
     }
 
-    /// As [`Self::collect_pbes`]/[`Self::collect_pres`], for a modal formula — `processes` stays
-    /// empty too: a state formula's modalities only ever reference actions, so
-    /// [`Self::classify_action`]'s process/action disambiguation never applies to one (see
-    /// [`modal_semantic_tokens`], which tags every action reference directly instead of going
-    /// through it).
+    /// As [`Self::collect_pbes`]/[`Self::collect_pres`], for a modal formula.
     fn collect_modal(spec: &'a UntypedStateFrmSpec) -> Self {
         Self::collect_data(&spec.data_specification)
     }
 
-    /// As [`Self::collect_process`]/[`Self::collect_pbes`]/[`Self::collect_pres`], for the
-    /// data-specification-only namespace all three share — `processes` stays empty, filled in by
-    /// [`Self::collect_process`].
+    /// Collect every map and constructor from the given data specification.
     ///
-    /// Also harvests every `sort D = struct c1(a: S)?is_c1 | c2;` alternative's own constructor
-    /// name (`c1`/`c2`, into `constructors`) and accessor functions (`a`/`is_c1`, into
-    /// `struct_accessors`) — `merc_typecheck` desugars a struct into real `cons`/`map`
-    /// declarations (see `merc_typecheck::ir::desugar::desugar_structured_sorts`, private to that
-    /// crate), but that desugaring runs on the *checked* specification, not the raw
-    /// [`UntypedDataSpecification`] this table is built from, so a *use* of `c1`/`a`/`is_c1`
-    /// elsewhere in the document would otherwise fall through [`Self::classify_data_id`]'s
-    /// free/bound-variable fallback instead of resolving to the same kind its declaration gets
-    /// (see [`walk_sort_expression`]'s `Struct` arm).
+    /// Also harvests every `sort D = struct c1(a: S)?is_c1 | c2;` alternative's
+    /// own constructor name and accessor functions into `struct_accessors`. In
+    /// the type checking this is desugared, but this is more convenient for the
+    /// user.
     fn collect_data(data: &'a UntypedDataSpecification) -> Self {
-        let mut constructors: HashSet<&str> = data.constructor_declarations.iter().map(|decl| decl.identifier.as_str()).collect();
-        let maps: HashSet<&str> = data.map_declarations.iter().map(|decl| decl.identifier.as_str()).collect();
+        let mut constructors: HashSet<&str> = data
+            .constructor_declarations
+            .iter()
+            .map(|decl| decl.identifier.as_str())
+            .collect();
+
+        let maps: HashSet<&str> = data
+            .map_declarations
+            .iter()
+            .map(|decl| decl.identifier.as_str())
+            .collect();
+
         let mut struct_accessors: HashSet<&str> = HashSet::new();
 
         for decl in &data.sort_declarations {
             let Some(expr) = &decl.expr else { continue };
-            let SortExpressionKind::Struct { inner } = &expr.node else { continue };
+            let SortExpressionKind::Struct { inner } = &expr.node else {
+                continue;
+            };
+
             for constructor in inner {
                 constructors.insert(constructor.name.node.as_str());
                 for (name, _) in &constructor.args {
@@ -363,7 +389,8 @@ impl<'a> SymbolTable<'a> {
                         struct_accessors.insert(name.node.as_str());
                     }
                 }
-                if let Some(projection) = &constructor.projection {
+
+                if let Some(projection) = &constructor.recogniser {
                     struct_accessors.insert(projection.node.as_str());
                 }
             }
@@ -377,20 +404,11 @@ impl<'a> SymbolTable<'a> {
         }
     }
 
-    /// Classifies a [`DataExprKind::Id`] occurrence, or `None` if it names a plain mapping —
-    /// mappings are deliberately left uncolored (see [`semantic_tokens`]'s map-declaration loop),
-    /// so a use site has to stay uncolored too rather than fall back to some other kind. A struct
-    /// accessor (`struct_accessors`) is a mapping too, but colored like a [`TokenKind::Method`]
-    /// instead of left uncolored — [`MODIFIER_STRUCT_VARIANT`] itself is only ever set at the
-    /// declaration site inside the `struct` expression (see [`walk_sort_expression`]); a use
-    /// elsewhere carries no modifier, same as any other [`TokenKind::Method`] reference.
+    /// Classifies a [`DataExprKind::Id`] occurrence based on which mapping it
+    /// belongs to.
     ///
-    /// `current_params` is the *current* `proc`/PBES-equation declaration's own parameter names
-    /// only — unlike every other set on `self`, parameters are genuinely scoped (see the module
-    /// docs' "deliberately unscoped" note, which is about everything *except* this): a name that
-    /// merely happens to be some *other* declaration's parameter must not read as
-    /// [`TokenKind::Parameter`] here, or every process/equation would highlight every other one's
-    /// parameter names too. Callers thread the right set in via [`walk_data_expr`].
+    /// `current_params` is the *current* `proc`/PBES-equation declaration's own
+    /// parameter names only, because these are scoped.
     fn classify_data_id(&self, name: &str, current_params: &HashSet<&str>) -> Option<TokenKind> {
         if self.constructors.contains(name) {
             Some(TokenKind::EnumMember)
@@ -401,21 +419,17 @@ impl<'a> SymbolTable<'a> {
         } else if current_params.contains(name) {
             Some(TokenKind::Parameter)
         } else {
-            // Not declared as a map, constructor, or (in-scope) parameter: a bound or free
-            // variable. This is also the fallback for a name that isn't declared at all —
-            // flagging that is a diagnostics concern (type checking), not this pass's job.
+            // Any other token fallback.
             Some(TokenKind::Variable)
         }
     }
 
-    /// Classifies a [`ProcessExprKind::Action`] occurrence, which is also how a process
-    /// instantiation parses — the grammar doesn't distinguish the two shapes.
+    /// Classifies a [`ProcessExprKind::Action`] occurrence.
     fn classify_action(&self, name: &str) -> TokenKind {
         if self.processes.contains(name) {
             TokenKind::Method
         } else {
-            // Either a real action, or a name nothing declares — same reasoning as
-            // `classify_data_id`'s fallback.
+            // Either a real action, or a name nothing declares.
             TokenKind::Event
         }
     }
@@ -425,27 +439,37 @@ impl<'a> SymbolTable<'a> {
 /// into the sorted, delta-encoded `Vec<SemanticToken>` the protocol requires, in [`Builder::finish`].
 struct Builder<'a> {
     text: &'a str,
+    
     line_index: &'a LineIndex,
+
     raw: Vec<(Span, TokenKind, u32)>,
 }
 
 impl<'a> Builder<'a> {
     fn new(text: &'a str, line_index: &'a LineIndex) -> Self {
-        Builder { text, line_index, raw: Vec::new() }
+        Builder {
+            text,
+            line_index,
+            raw: Vec::new(),
+        }
     }
 
     /// Tags `span` directly — used for expression-level AST nodes, whose span is already exactly
-    /// the identifier (verified against `merc_syntax`'s `precedence.rs`/`consume.rs`: `DataExpr`
-    /// leaves and `SortExpression` references are spanned from their own grammar rule, not a
-    /// surrounding one).
+    /// the identifier.
     fn push(&mut self, span: &Span, kind: TokenKind, is_declaration: bool) {
-        self.push_with_modifiers(span, kind, if is_declaration { MODIFIER_DECLARATION } else { 0 });
+        self.push_with_modifiers(
+            span,
+            kind,
+            if is_declaration {
+                MODIFIER_DECLARATION
+            } else {
+                0
+            },
+        );
     }
 
     /// As [`Builder::push`], for a caller that needs to combine more than just
-    /// [`MODIFIER_DECLARATION`] — a struct-declared constructor/accessor also carries
-    /// [`MODIFIER_STRUCT_VARIANT`] (see [`walk_sort_expression`]'s `SortExpressionKind::Struct`
-    /// arm).
+    /// [`MODIFIER_DECLARATION`].
     fn push_with_modifiers(&mut self, span: &Span, kind: TokenKind, modifiers: u32) {
         self.raw.push((span.clone(), kind, modifiers));
     }
@@ -453,7 +477,8 @@ impl<'a> Builder<'a> {
     /// Tags `span` as [`TokenKind::Type`] with [`MODIFIER_DEFAULT_LIBRARY`] — a reference to one
     /// of mCRL2's own system sorts, never a declaration. See [`walk_sort_expression`].
     fn push_builtin_type(&mut self, span: &Span) {
-        self.raw.push((span.clone(), TokenKind::Type, MODIFIER_DEFAULT_LIBRARY));
+        self.raw
+            .push((span.clone(), TokenKind::Type, MODIFIER_DEFAULT_LIBRARY));
     }
 
     fn finish(mut self) -> Vec<SemanticToken> {
@@ -498,20 +523,10 @@ impl<'a> Builder<'a> {
     }
 }
 
-/// Walks every sort name in `expr`'s subtree, distinguishing a user-defined sort
-/// ([`SortExpressionKind::Reference`]/[`SortExpressionKind::Resolved`]) from one of mCRL2's own
-/// system sorts ([`SortExpressionKind::Simple`] — `Bool`/`Pos`/`Nat`/`Int`/`Real` — and
-/// [`SortExpressionKind::Complex`] — the parameterized `List`/`Set`/`Bag`/`FSet`/`FBag`) via
-/// [`MODIFIER_DEFAULT_LIBRARY`]. A TextMate grammar cannot make either distinction context-free:
-/// `D` and `Bool` are both just identifiers to it, and it has no notion of "declared by the user"
-/// at all.
+/// Walks every sort name in `expr`'s subtree, distinguishing a user-defined
+/// sort ([`SortExpressionKind::Reference`]/[`SortExpressionKind::Resolved`])
+/// from one of mCRL2's own system sorts.
 ///
-/// `Complex`'s own span covers the whole `List(Nat)`, not just the keyword (unlike every other
-/// span this module tags directly — see [`Builder::push`]'s doc comment) — its subsort is a
-/// *child* node the recursion below reaches on its own, so tagging the whole span here would
-/// double-tag it with an overlapping token. `ComplexSort`'s `Display` is exactly its source
-/// keyword (`List`, `Set`, …), so its own span is cheap to compute the same way a few `merc_syntax`
-/// declaration spans are: it starts exactly where the whole node does.
 fn walk_sort_expression(expr: &SortExpression, builder: &mut Builder) {
     expr.visit::<(), _>(|node| {
         match &node.node {
@@ -522,31 +537,37 @@ fn walk_sort_expression(expr: &SortExpression, builder: &mut Builder) {
                 builder.push_builtin_type(&node.span);
             }
             SortExpressionKind::Complex(complex_sort, _) => {
+                // `Complex`'s own span covers the whole `List(Nat)`, so we fix
+                // it to just the complex keyword to avoid double tagging.
                 let keyword = complex_sort.to_string();
-                let span = Span { start: node.span.start, end: node.span.start + keyword.len() };
+                let span = Span {
+                    start: node.span.start,
+                    end: node.span.start + keyword.len(),
+                };
                 builder.push_builtin_type(&span);
             }
             SortExpressionKind::Struct { inner } => {
-                // A `sort D = struct c1(a: S)?is_c1 | c2;` alternative implicitly declares a
-                // constructor (`c1`) plus, per named argument or `?`-recogniser, an accessor
-                // function (`a`, `is_c1`) — real declarations `merc_typecheck` desugars into the
-                // same `cons`/`map` signature a top-level block would (see
-                // `SymbolTable::collect_data`'s own doc comment for where that desugaring lives),
-                // so they're tagged the same base kinds a `cons`/`map` declaration gets
-                // ([`TokenKind::EnumMember`]/[`TokenKind::Method`]) — plus
-                // [`MODIFIER_STRUCT_VARIANT`], so a theme can still tell a struct-declared
-                // constructor/accessor apart from an explicit block's.
-                // Each argument's own sort (`S` above) is a child `SortExpression` node the
-                // recursion below reaches on its own, same as `Complex`'s subsort above.
                 for constructor in inner {
-                    builder.push_with_modifiers(&constructor.name.span, TokenKind::EnumMember, MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT);
+                    builder.push_with_modifiers(
+                        &constructor.name.span,
+                        TokenKind::EnumMember,
+                        MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT,
+                    );
                     for (name, _) in &constructor.args {
                         if let Some(name) = name {
-                            builder.push_with_modifiers(&name.span, TokenKind::Method, MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT);
+                            builder.push_with_modifiers(
+                                &name.span,
+                                TokenKind::Method,
+                                MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT,
+                            );
                         }
                     }
-                    if let Some(projection) = &constructor.projection {
-                        builder.push_with_modifiers(&projection.span, TokenKind::Method, MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT);
+                    if let Some(projection) = &constructor.recogniser {
+                        builder.push_with_modifiers(
+                            &projection.span,
+                            TokenKind::Method,
+                            MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT,
+                        );
                     }
                 }
             }
@@ -556,11 +577,14 @@ fn walk_sort_expression(expr: &SortExpression, builder: &mut Builder) {
     });
 }
 
-/// Walks every identifier in `expr`'s subtree: bare references (classified via `symbols`, scoped
-/// to `current_params` — see [`SymbolTable::classify_data_id`]) and any binder
-/// (`lambda`/`forall`/`exists`/set-or-bag comprehension) it introduces along the way, plus that
-/// binder's sort.
-fn walk_data_expr(expr: &DataExpr, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+/// Walks every identifier in `expr`'s subtree: bare references and any binder
+/// it introduces along the way, plus that binder's sort.
+fn walk_data_expr(
+    expr: &DataExpr,
+    symbols: &SymbolTable,
+    current_params: &HashSet<&str>,
+    builder: &mut Builder,
+) {
     expr.visit::<(), _>(|node| {
         match &node.node {
             DataExprKind::Id(name) => {
@@ -589,19 +613,20 @@ fn walk_data_expr(expr: &DataExpr, symbols: &SymbolTable, current_params: &HashS
 /// assignments, distributions, and conditions — none of which `Traverse` crosses into on its own,
 /// since they're a different node type ([`DataExpr`], not [`ProcessExpr`]).
 ///
-/// `current_params` is the enclosing `proc` declaration's own parameter names (see
-/// [`SymbolTable::classify_data_id`]) — the same set for every node in `expr`, since a process
-/// body cannot itself declare a nested `proc`.
-fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+/// `current_params` is the enclosing `proc` declaration's own parameter names.
+fn walk_process_expr(
+    expr: &ProcessExpr,
+    symbols: &SymbolTable,
+    current_params: &HashSet<&str>,
+    builder: &mut Builder,
+) {
     expr.visit::<(), _>(|node| {
         match &node.node {
             ProcessExprKind::Id(name, assignments) => {
                 builder.push(&name.span, TokenKind::Method, false);
                 for assignment in assignments {
                     // The parameter name in `x = e` — a *use* of the *target* process `name`'s
-                    // own parameter (by construction of the assignment syntax), not necessarily
-                    // one of the enclosing process's — always `Parameter` regardless of
-                    // `current_params`, same as before this function took that scope.
+                    // own parameter.
                     builder.push(&assignment.span, TokenKind::Parameter, false);
                     walk_data_expr(&assignment.expr, symbols, current_params, builder);
                 }
@@ -618,7 +643,9 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, current_params: 
                     walk_sort_expression(&variable.sort, builder);
                 }
             }
-            ProcessExprKind::Dist { variables, expr, .. } => {
+            ProcessExprKind::Dist {
+                variables, expr, ..
+            } => {
                 for variable in variables {
                     builder.push(&variable.identifier.span, TokenKind::Variable, true);
                     walk_sort_expression(&variable.sort, builder);
@@ -631,12 +658,7 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, current_params: 
             ProcessExprKind::At { operand, .. } => {
                 walk_data_expr(operand, symbols, current_params, builder);
             }
-            // `hide`/`block`/`allow`/`comm`/`rename`'s own action-name sets: unlike
-            // `ProcessExprKind::Action`, the grammar allows only an action name here (never a
-            // process), so each is tagged `Event` directly rather than through
-            // `classify_action` — no `TokenKind::Method` disambiguation to make. `operand` itself
-            // isn't handled here: `Traverse` already descends into it like any other nested
-            // `ProcessExpr`, so it comes back through this same `visit` closure as its own node.
+            // `hide`/`block`/`allow`/`comm`/`rename`'s only declare actions.
             ProcessExprKind::Hide { actions, .. } | ProcessExprKind::Block { actions, .. } => {
                 for action in actions {
                     builder.push(&action.span, TokenKind::Event, false);
@@ -675,14 +697,21 @@ fn walk_process_expr(expr: &ProcessExpr, symbols: &SymbolTable, current_params: 
 /// carries — none of which `Traverse` crosses into on its own, same reasoning as
 /// [`walk_process_expr`].
 ///
-/// `current_params` is the enclosing PBES equation's own parameter names (see
-/// [`SymbolTable::classify_data_id`]) — the same set for every node in `expr`, since a formula
-/// cannot itself declare a nested equation.
-fn walk_pbes_expr(expr: &PbesExpr, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+/// `current_params` is the enclosing PBES equation's own parameter names.
+fn walk_pbes_expr(
+    expr: &PbesExpr,
+    symbols: &SymbolTable,
+    current_params: &HashSet<&str>,
+    builder: &mut Builder,
+) {
     expr.visit::<(), _>(|node| {
         match &node.node {
-            PbesExprKind::PropVarInst(inst) => walk_prop_var_inst(inst, symbols, current_params, builder),
-            PbesExprKind::DataValExpr(data_expr) => walk_data_expr(data_expr, symbols, current_params, builder),
+            PbesExprKind::PropVarInst(inst) => {
+                walk_prop_var_inst(inst, symbols, current_params, builder)
+            }
+            PbesExprKind::DataValExpr(data_expr) => {
+                walk_data_expr(data_expr, symbols, current_params, builder)
+            }
             PbesExprKind::Quantifier { variables, .. } => {
                 for variable in variables {
                     builder.push(&variable.identifier.span, TokenKind::Variable, true);
@@ -698,17 +727,23 @@ fn walk_pbes_expr(expr: &PbesExpr, symbols: &SymbolTable, current_params: &HashS
 /// As [`walk_pbes_expr`], for a [`PresExpr`] tree — a `val(...)`-wrapped data expression and any
 /// `PropVarInst` are tagged the same way; a `sum`/`inf`/`sup` [`PresExprKind::Bound`] binder plays
 /// the same role a PBES `Quantifier` does; and each side of a scalar multiplication
-/// (`PresExprKind::RightConstantMultiply`/`LeftConstantMultiply`) carries its own `constant` —
-/// a [`DataExpr`], not a nested [`PresExpr`], so `Traverse` doesn't reach it on its own, same
-/// reasoning as every other data-expression field this module walks explicitly. `Equal`'s and
-/// `Condition`'s own tag fields (`Eq`/`Condition`) carry no identifiers; their `body`/`lhs`/
-/// `then`/`else_` children are plain [`PresExpr`] nodes `Traverse` already recurses into.
-fn walk_pres_expr(expr: &PresExpr, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+/// (`PresExprKind::RightConstantMultiply`/`LeftConstantMultiply`) carries its own `constant`.
+fn walk_pres_expr(
+    expr: &PresExpr,
+    symbols: &SymbolTable,
+    current_params: &HashSet<&str>,
+    builder: &mut Builder,
+) {
     expr.visit::<(), _>(|node| {
         match &node.node {
-            PresExprKind::PropVarInst(inst) => walk_prop_var_inst(inst, symbols, current_params, builder),
-            PresExprKind::DataValExpr(data_expr) => walk_data_expr(data_expr, symbols, current_params, builder),
-            PresExprKind::RightConstantMultiply { constant, .. } | PresExprKind::LeftConstantMultiply { constant, .. } => {
+            PresExprKind::PropVarInst(inst) => {
+                walk_prop_var_inst(inst, symbols, current_params, builder)
+            }
+            PresExprKind::DataValExpr(data_expr) => {
+                walk_data_expr(data_expr, symbols, current_params, builder)
+            }
+            PresExprKind::RightConstantMultiply { constant, .. }
+            | PresExprKind::LeftConstantMultiply { constant, .. } => {
                 walk_data_expr(constant, symbols, current_params, builder);
             }
             PresExprKind::Bound { variables, .. } => {
@@ -723,13 +758,13 @@ fn walk_pres_expr(expr: &PresExpr, symbols: &SymbolTable, current_params: &HashS
     });
 }
 
-/// Tags a propositional-variable instantiation's own name, then walks each of its arguments —
-/// shared by [`walk_pbes_expr`]/[`walk_pres_expr`] (a `PropVarInst` occurring inside a formula)
-/// and [`pbes_semantic_tokens`]/[`pres_semantic_tokens`] (a PBES/PRES's `init`, which passes an
-/// empty `current_params`: no equation is in scope there). `identifier` now carries its own span,
-/// precisely the name (an upstream `merc_syntax` addition mirroring `ActionName`), so this tags it
-/// directly rather than text-searching `inst`'s whole `name(args)` span for it.
-fn walk_prop_var_inst(inst: &PropVarInst, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+/// Tags a propositional-variable instantiation's own name, then walks each of its arguments.
+fn walk_prop_var_inst(
+    inst: &PropVarInst,
+    symbols: &SymbolTable,
+    current_params: &HashSet<&str>,
+    builder: &mut Builder,
+) {
     builder.push(&inst.node.identifier.span, TokenKind::Method, false);
     for argument in &inst.node.arguments {
         walk_data_expr(argument, symbols, current_params, builder);
@@ -740,7 +775,12 @@ fn walk_prop_var_inst(inst: &PropVarInst, symbols: &SymbolTable, current_params:
 /// [`modal_semantic_tokens`]'s doc comment for why: a nested `mu`/`nu` genuinely shadows an outer
 /// one's own parameters, so `current_params` has to change partway through the walk, which
 /// `Traverse`'s flat callback cannot do.
-fn walk_state_frm(formula: &StateFrm, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+fn walk_state_frm(
+    formula: &StateFrm,
+    symbols: &SymbolTable,
+    current_params: &HashSet<&str>,
+    builder: &mut Builder,
+) {
     match &formula.node {
         StateFrmKind::True | StateFrmKind::False => {}
         StateFrmKind::Delay(time) | StateFrmKind::Yaled(time) => {
@@ -756,7 +796,10 @@ fn walk_state_frm(formula: &StateFrm, symbols: &SymbolTable, current_params: &Ha
             // (see `merc_typecheck::ResolvedName::StateVariable`'s own doc comment), so the name's
             // own span is sliced from the front of it the same way `walk_sort_expression` slices
             // `SortExpressionKind::Complex`'s own keyword.
-            let name_span = Span { start: formula.span.start, end: formula.span.start + name.len() };
+            let name_span = Span {
+                start: formula.span.start,
+                end: formula.span.start + name.len(),
+            };
             builder.push(&name_span, TokenKind::Method, false);
             for argument in arguments {
                 walk_data_expr(argument, symbols, current_params, builder);
@@ -771,7 +814,9 @@ fn walk_state_frm(formula: &StateFrm, symbols: &SymbolTable, current_params: &Ha
             walk_state_frm(expr, symbols, current_params, builder);
             walk_data_expr(constant, symbols, current_params, builder);
         }
-        StateFrmKind::Modality { formula: reg, expr, .. } => {
+        StateFrmKind::Modality {
+            formula: reg, expr, ..
+        } => {
             walk_reg_frm(reg, symbols, current_params, builder);
             walk_state_frm(expr, symbols, current_params, builder);
         }
@@ -780,7 +825,12 @@ fn walk_state_frm(formula: &StateFrm, symbols: &SymbolTable, current_params: &Ha
             walk_state_frm(lhs, symbols, current_params, builder);
             walk_state_frm(rhs, symbols, current_params, builder);
         }
-        StateFrmKind::Quantifier { variables, body, .. } | StateFrmKind::Bound { variables, body, .. } => {
+        StateFrmKind::Quantifier {
+            variables, body, ..
+        }
+        | StateFrmKind::Bound {
+            variables, body, ..
+        } => {
             for variable in variables {
                 builder.push(&variable.identifier.span, TokenKind::Variable, true);
                 walk_sort_expression(&variable.sort, builder);
@@ -795,13 +845,15 @@ fn walk_state_frm(formula: &StateFrm, symbols: &SymbolTable, current_params: &Ha
                 end: variable.span.start + variable.identifier.len(),
             };
             builder.push(&name_span, TokenKind::Method, true);
-            let params: HashSet<&str> = variable.arguments.iter().map(|argument| argument.identifier.as_str()).collect();
+            let params: HashSet<&str> = variable
+                .arguments
+                .iter()
+                .map(|argument| argument.identifier.as_str())
+                .collect();
             for argument in &variable.arguments {
                 builder.push(&argument.identifier.span, TokenKind::Parameter, true);
                 walk_sort_expression(&argument.sort, builder);
-                // The initial value is checked in the *outer* scope (mirrors a process
-                // instantiation's assignment value, see `merc_typecheck`'s `check_fixed_point`) —
-                // `current_params`, not this fixpoint's own `params`.
+                // The initial value is checked in the *outer* scope.
                 walk_data_expr(&argument.expr, symbols, current_params, builder);
             }
             walk_state_frm(body, symbols, &params, builder);
@@ -812,10 +864,17 @@ fn walk_state_frm(formula: &StateFrm, symbols: &SymbolTable, current_params: &Ha
 /// As [`walk_state_frm`], for a modality's regular formula (`[a*]X`'s `a*`) — descends by hand for
 /// the same reason: `Traverse` stops at `RegFrmKind::Action` rather than crossing into the `ActFrm`
 /// it carries (see `merc_syntax::traverse`'s own tests).
-fn walk_reg_frm(formula: &RegFrm, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+fn walk_reg_frm(
+    formula: &RegFrm,
+    symbols: &SymbolTable,
+    current_params: &HashSet<&str>,
+    builder: &mut Builder,
+) {
     match &formula.node {
         RegFrmKind::Action(action) => walk_act_frm(action, symbols, current_params, builder),
-        RegFrmKind::Iteration(inner) | RegFrmKind::Plus(inner) => walk_reg_frm(inner, symbols, current_params, builder),
+        RegFrmKind::Iteration(inner) | RegFrmKind::Plus(inner) => {
+            walk_reg_frm(inner, symbols, current_params, builder)
+        }
         RegFrmKind::Sequence { lhs, rhs } | RegFrmKind::Choice { lhs, rhs } => {
             walk_reg_frm(lhs, symbols, current_params, builder);
             walk_reg_frm(rhs, symbols, current_params, builder);
@@ -824,13 +883,22 @@ fn walk_reg_frm(formula: &RegFrm, symbols: &SymbolTable, current_params: &HashSe
 }
 
 /// As [`walk_reg_frm`], for an action formula (`a(1) && !b`).
-fn walk_act_frm(formula: &ActFrm, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+fn walk_act_frm(
+    formula: &ActFrm,
+    symbols: &SymbolTable,
+    current_params: &HashSet<&str>,
+    builder: &mut Builder,
+) {
     match &formula.node {
         ActFrmKind::True | ActFrmKind::False => {}
-        ActFrmKind::MultAct(multi_action) => walk_multi_action(multi_action, symbols, current_params, builder),
+        ActFrmKind::MultAct(multi_action) => {
+            walk_multi_action(multi_action, symbols, current_params, builder)
+        }
         ActFrmKind::DataExprVal(expr) => walk_data_expr(expr, symbols, current_params, builder),
         ActFrmKind::Negation(inner) => walk_act_frm(inner, symbols, current_params, builder),
-        ActFrmKind::Quantifier { variables, body, .. } => {
+        ActFrmKind::Quantifier {
+            variables, body, ..
+        } => {
             for variable in variables {
                 builder.push(&variable.identifier.span, TokenKind::Variable, true);
                 walk_sort_expression(&variable.sort, builder);
@@ -841,15 +909,20 @@ fn walk_act_frm(formula: &ActFrm, symbols: &SymbolTable, current_params: &HashSe
             walk_act_frm(lhs, symbols, current_params, builder);
             walk_act_frm(rhs, symbols, current_params, builder);
         }
+        ActFrmKind::At { expr, operand } => {
+            walk_act_frm(expr, symbols, current_params, builder);
+            walk_data_expr(operand, symbols, current_params, builder);
+        }
     }
 }
 
-/// Tags every action occurrence in a multi-action (`a(1)|b(2)`) directly as [`TokenKind::Event`] —
-/// unlike [`SymbolTable::classify_action`]'s process/action disambiguation (used for a process
-/// specification's own `ProcessExprKind::Action`), a state formula's modality can only ever
-/// reference a declared action, never a process (see [`SymbolTable::collect_modal`]) — then walks
-/// each of its arguments.
-fn walk_multi_action(multi_action: &MultiAction, symbols: &SymbolTable, current_params: &HashSet<&str>, builder: &mut Builder) {
+/// Tags every action occurrence in a multi-action (`a(1)|b(2)`) directly as [`TokenKind::Event`].
+fn walk_multi_action(
+    multi_action: &MultiAction,
+    symbols: &SymbolTable,
+    current_params: &HashSet<&str>,
+    builder: &mut Builder,
+) {
     for action in &multi_action.actions {
         builder.push(&action.id.span, TokenKind::Event, false);
         for argument in &action.args {
@@ -860,41 +933,16 @@ fn walk_multi_action(multi_action: &MultiAction, symbols: &SymbolTable, current_
 
 /// Every word-like mCRL2 keyword relevant to a process/data specification, for [`tag_keywords`]
 /// (and, `pub(crate)`, for [`crate::completion`]'s keyword completion items). Built-in sort names
-/// (`Bool`, `List`, …) are deliberately not here: [`walk_sort_expression`] already tags those,
-/// more precisely (node by node, off the AST, not a blind text scan) — `completion.rs` has its
-/// own small list for the same names, for the same reason `SYSTEM_SORTS` gives there.
-///
-/// `true`/`false`/`delta`/`tau` are genuinely reserved — the grammar rejects them as the prefix
-/// of a longer identifier (`DataExprTrue = { "true" ~ !Id }` and siblings; see `merc_syntax`'s
-/// own `keywords_are_not_prefix_of_identifiers` test) — so a word-boundary match of one of these
-/// can never actually be a user identifier. The rest (`sort`, `map`, `proc`, …) only ever appear
-/// as unambiguous block-introducing prefixes in the grammar and have no such guard, so in
-/// principle nothing stops a spec from declaring, say, a map literally named `sort`; in practice
-/// this essentially never happens, and accepting that rather than leaving every structural
-/// keyword uncolored is the better trade.
+/// (`Bool`, `List`, …) are deliberately not here: [`walk_sort_expression`] already tags those.
 pub(crate) const KEYWORDS: &[&str] = &[
     "sort", "cons", "map", "glob", "act", "proc", "init", "var", "eqn", "struct", "whr", "end",
-    "forall", "exists", "lambda", "sum", "dist", "val", "true", "false", "delta", "tau",
-    "hide", "block", "allow", "comm", "rename", "pbes", "pres", "mu", "nu",
-    // Modal (mu-calculus) formula-only keywords: `form`'s own bare-formula section header, the
-    // "must eventually be able to" pseudo-actions `delay`/`yaled`, and the `inf`/`sup` real-valued
-    // binders (`sum` above doubles as both PRES's and a modal formula's summation binder).
+    "forall", "exists", "lambda", "sum", "dist", "val", "true", "false", "delta", "tau", "hide",
+    "block", "allow", "comm", "rename", "pbes", "pres", "mu", "nu",
+    // Modal (mu-calculus) formula-only keywords.
     "form", "delay", "yaled", "inf", "sup",
 ];
 
 /// Tags every occurrence of a reserved mCRL2 keyword (see [`KEYWORDS`]) as [`TokenKind::Keyword`].
-///
-/// Unlike every other pass in this module, this is a blind scan over the raw source text, not
-/// the AST — deliberately: a general-purpose LSP server can't assume its client has (or even
-/// *can* have) a TextMate grammar to fall back on for something as basic as keyword coloring —
-/// that format is a VS Code-family convention, not a universal one, and plenty of LSP clients
-/// (Neovim, Helix, Emacs' `eglot`, …) have no such fallback at all. So the server colors keywords
-/// itself, the same way it colors everything else. Word-boundary matching (via
-/// [`is_identifier_byte`]) keeps this from matching a keyword-shaped substring of a longer
-/// identifier (`sortable` does not contain the keyword `sort`), and `%`-comments — mCRL2's only
-/// comment syntax, running to end of line, with no escape mechanism that could hide a literal `%`
-/// inside anything else — are skipped explicitly, since nothing else marks their extent for a
-/// text-only pass to lean on.
 fn tag_keywords(text: &str, builder: &mut Builder) {
     let bytes = text.as_bytes();
     let mut in_comment = false;
@@ -922,7 +970,14 @@ fn tag_keywords(text: &str, builder: &mut Builder) {
         }
         let word = &text[word_start..i];
         if KEYWORDS.contains(&word) {
-            builder.push(&Span { start: word_start, end: i }, TokenKind::Keyword, false);
+            builder.push(
+                &Span {
+                    start: word_start,
+                    end: i,
+                },
+                TokenKind::Keyword,
+                false,
+            );
         }
     }
 }
@@ -939,7 +994,9 @@ mod tests {
         let outcome = parse(SpecKind::Process, text.to_string()).await;
         let line_index = LineIndex::new(text);
         match outcome {
-            ParseOutcome::Ok(Specification::Process(spec)) => semantic_tokens(text, &line_index, &spec),
+            ParseOutcome::Ok(Specification::Process(spec)) => {
+                semantic_tokens(text, &line_index, &spec)
+            }
             _ => panic!("fixture failed to parse"),
         }
     }
@@ -948,7 +1005,9 @@ mod tests {
         let outcome = parse(SpecKind::Pbes, text.to_string()).await;
         let line_index = LineIndex::new(text);
         match outcome {
-            ParseOutcome::Ok(Specification::Pbes(spec)) => pbes_semantic_tokens(text, &line_index, &spec),
+            ParseOutcome::Ok(Specification::Pbes(spec)) => {
+                pbes_semantic_tokens(text, &line_index, &spec)
+            }
             _ => panic!("fixture failed to parse"),
         }
     }
@@ -957,7 +1016,9 @@ mod tests {
         let outcome = parse(SpecKind::Pres, text.to_string()).await;
         let line_index = LineIndex::new(text);
         match outcome {
-            ParseOutcome::Ok(Specification::Pres(spec)) => pres_semantic_tokens(text, &line_index, &spec),
+            ParseOutcome::Ok(Specification::Pres(spec)) => {
+                pres_semantic_tokens(text, &line_index, &spec)
+            }
             _ => panic!("fixture failed to parse"),
         }
     }
@@ -970,8 +1031,18 @@ mod tests {
         let mut result = Vec::new();
         for token in tokens {
             line += token.delta_line;
-            character = if token.delta_line == 0 { character + token.delta_start } else { token.delta_start };
-            result.push((line, character, token.length, token.token_type, token.token_modifiers_bitset));
+            character = if token.delta_line == 0 {
+                character + token.delta_start
+            } else {
+                token.delta_start
+            };
+            result.push((
+                line,
+                character,
+                token.length,
+                token.token_type,
+                token.token_modifiers_bitset,
+            ));
         }
         result
     }
@@ -998,13 +1069,24 @@ mod tests {
         assert!(
             positions
                 .iter()
-                .any(|&(l, c, len, ty, _)| l == event_pos.line && c == event_pos.character && len == 1 && ty == TokenKind::Event as u32)
+                .any(|&(l, c, len, ty, _)| l == event_pos.line
+                    && c == event_pos.character
+                    && len == 1
+                    && ty == TokenKind::Event as u32)
         );
-        assert!(positions.iter().any(|&(l, c, _, ty, _)| l == method_pos.line
-            && c == method_pos.character
-            && ty == TokenKind::Method as u32));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, _)| l == method_pos.line
+                    && c == method_pos.character
+                    && ty == TokenKind::Method as u32)
+        );
         // `f` (a mapping) is deliberately left uncolored: no token starts at its use site.
-        assert!(!positions.iter().any(|&(l, c, ..)| l == mapping_pos.line && c == mapping_pos.character));
+        assert!(
+            !positions
+                .iter()
+                .any(|&(l, c, ..)| l == mapping_pos.line && c == mapping_pos.character)
+        );
     }
 
     #[tokio::test]
@@ -1047,7 +1129,11 @@ mod tests {
             ("rename's a", rename_a),
             ("rename's target b", rename_b),
         ] {
-            assert_eq!(kind_at(offset), Some(TokenKind::Event as u32), "{name} should be tagged Event");
+            assert_eq!(
+                kind_at(offset),
+                Some(TokenKind::Event as u32),
+                "{name} should be tagged Event"
+            );
         }
     }
 
@@ -1081,21 +1167,42 @@ mod tests {
         // last branch's.
         let mut x_offsets = text.match_indices('x').map(|(i, _)| i);
         x_offsets.next(); // skip the parameter declaration `P(x: Bool)`
-        let condition_offsets: Vec<usize> = [x_offsets.next().unwrap(), x_offsets.nth(2).unwrap()].to_vec();
+        let condition_offsets: Vec<usize> =
+            [x_offsets.next().unwrap(), x_offsets.nth(2).unwrap()].to_vec();
         for offset in condition_offsets {
-            assert_eq!(kind_at(offset), Some(TokenKind::Parameter as u32), "condition `x` at byte {offset} should be tagged Parameter");
+            assert_eq!(
+                kind_at(offset),
+                Some(TokenKind::Parameter as u32),
+                "condition `x` at byte {offset} should be tagged Parameter"
+            );
         }
 
         let event_offsets: Vec<usize> = text.match_indices("e(x)").map(|(i, _)| i).collect();
-        assert_eq!(event_offsets.len(), 2, "fixture should contain exactly two `e(x)` calls");
+        assert_eq!(
+            event_offsets.len(),
+            2,
+            "fixture should contain exactly two `e(x)` calls"
+        );
         for offset in event_offsets {
-            assert_eq!(kind_at(offset), Some(TokenKind::Event as u32), "`e` at byte {offset} should be tagged Event");
+            assert_eq!(
+                kind_at(offset),
+                Some(TokenKind::Event as u32),
+                "`e` at byte {offset} should be tagged Event"
+            );
         }
 
         let method_offsets: Vec<usize> = text.match_indices("P(x)").map(|(i, _)| i).collect();
-        assert_eq!(method_offsets.len(), 2, "fixture should contain exactly two `P(x)` calls");
+        assert_eq!(
+            method_offsets.len(),
+            2,
+            "fixture should contain exactly two `P(x)` calls"
+        );
         for offset in method_offsets {
-            assert_eq!(kind_at(offset), Some(TokenKind::Method as u32), "`P` at byte {offset} should be tagged Method");
+            assert_eq!(
+                kind_at(offset),
+                Some(TokenKind::Method as u32),
+                "`P` at byte {offset} should be tagged Method"
+            );
         }
     }
 
@@ -1112,14 +1219,22 @@ mod tests {
         let c_pos = line_index.position(text, c_use);
         let x_pos = line_index.position(text, x_use);
 
-        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == c_pos.line
-            && c == c_pos.character
-            && ty == TokenKind::EnumMember as u32
-            && modifiers == 0));
-        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == x_pos.line
-            && c == x_pos.character
-            && ty == TokenKind::Variable as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, modifiers)| l == c_pos.line
+                    && c == c_pos.character
+                    && ty == TokenKind::EnumMember as u32
+                    && modifiers == 0)
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, modifiers)| l == x_pos.line
+                    && c == x_pos.character
+                    && ty == TokenKind::Variable as u32
+                    && modifiers == 0)
+        );
     }
 
     #[tokio::test]
@@ -1129,8 +1244,13 @@ mod tests {
         let positions = absolute(&tokens);
 
         for window in positions.windows(2) {
-            let [(l1, c1, len1, ..), (l2, c2, ..)] = window else { unreachable!() };
-            assert!((*l1, *c1) < (*l2, *c2), "tokens must be strictly ordered by position");
+            let [(l1, c1, len1, ..), (l2, c2, ..)] = window else {
+                unreachable!()
+            };
+            assert!(
+                (*l1, *c1) < (*l2, *c2),
+                "tokens must be strictly ordered by position"
+            );
             if l1 == l2 {
                 assert!(c1 + len1 <= *c2, "tokens on the same line must not overlap");
             }
@@ -1149,10 +1269,14 @@ mod tests {
         let binder = text.find("x:").unwrap();
         let binder_pos = line_index.position(text, binder);
 
-        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == binder_pos.line
-            && c == binder_pos.character
-            && ty == TokenKind::Variable as u32
-            && modifiers == MODIFIER_DECLARATION));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, modifiers)| l == binder_pos.line
+                    && c == binder_pos.character
+                    && ty == TokenKind::Variable as u32
+                    && modifiers == MODIFIER_DECLARATION)
+        );
     }
 
     #[tokio::test]
@@ -1167,11 +1291,15 @@ mod tests {
         let use_site = text.rfind("x = true").unwrap();
         let use_pos = line_index.position(text, use_site);
 
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == use_pos.line
-            && c == use_pos.character
-            && len == 1
-            && ty == TokenKind::Parameter as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == use_pos.line
+                    && c == use_pos.character
+                    && len == 1
+                    && ty == TokenKind::Parameter as u32
+                    && modifiers == 0)
+        );
     }
 
     #[tokio::test]
@@ -1188,11 +1316,15 @@ mod tests {
         let recursive_use = text.rfind("P(x)").unwrap() + "P(".len();
         let use_pos = line_index.position(text, recursive_use);
 
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == use_pos.line
-            && c == use_pos.character
-            && len == 1
-            && ty == TokenKind::Parameter as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == use_pos.line
+                    && c == use_pos.character
+                    && len == 1
+                    && ty == TokenKind::Parameter as u32
+                    && modifiers == 0)
+        );
     }
 
     #[tokio::test]
@@ -1212,18 +1344,26 @@ mod tests {
         let q_use_pos = line_index.position(text, q_use);
 
         // Inside `P`, `x` is `P`'s own parameter.
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == p_use_pos.line
-            && c == p_use_pos.character
-            && len == 1
-            && ty == TokenKind::Parameter as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == p_use_pos.line
+                    && c == p_use_pos.character
+                    && len == 1
+                    && ty == TokenKind::Parameter as u32
+                    && modifiers == 0)
+        );
         // Inside `Q`, the same name `x` is not a parameter of `Q` — it's the global variable — so
         // it must be tagged `Variable`, not `Parameter`.
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == q_use_pos.line
-            && c == q_use_pos.character
-            && len == 1
-            && ty == TokenKind::Variable as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == q_use_pos.line
+                    && c == q_use_pos.character
+                    && len == 1
+                    && ty == TokenKind::Variable as u32
+                    && modifiers == 0)
+        );
     }
 
     #[tokio::test]
@@ -1238,11 +1378,15 @@ mod tests {
         let val_use = text.find("val(n)").unwrap() + "val(".len();
         let use_pos = line_index.position(text, val_use);
 
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == use_pos.line
-            && c == use_pos.character
-            && len == 1
-            && ty == TokenKind::Parameter as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == use_pos.line
+                    && c == use_pos.character
+                    && len == 1
+                    && ty == TokenKind::Parameter as u32
+                    && modifiers == 0)
+        );
     }
 
     #[tokio::test]
@@ -1257,23 +1401,42 @@ mod tests {
         let list_pos = line_index.position(text, text.find("List(Nat)").unwrap());
         let nat_pos = line_index.position(text, text.find("Nat").unwrap());
 
-        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == user_sort_pos.line
-            && c == user_sort_pos.character
-            && ty == TokenKind::Type as u32
-            && modifiers == 0), "a user sort reference must not be marked default-library");
-        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == bool_pos.line
-            && c == bool_pos.character
-            && ty == TokenKind::Type as u32
-            && modifiers == MODIFIER_DEFAULT_LIBRARY), "Bool must be marked default-library");
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == list_pos.line
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, modifiers)| l == user_sort_pos.line
+                    && c == user_sort_pos.character
+                    && ty == TokenKind::Type as u32
+                    && modifiers == 0),
+            "a user sort reference must not be marked default-library"
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, modifiers)| l == bool_pos.line
+                    && c == bool_pos.character
+                    && ty == TokenKind::Type as u32
+                    && modifiers == MODIFIER_DEFAULT_LIBRARY),
+            "Bool must be marked default-library"
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == list_pos.line
             && c == list_pos.character
             && len == 4 // "List", not "List(Nat)" — must not swallow the subsort.
             && ty == TokenKind::Type as u32
-            && modifiers == MODIFIER_DEFAULT_LIBRARY));
-        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == nat_pos.line
-            && c == nat_pos.character
-            && ty == TokenKind::Type as u32
-            && modifiers == MODIFIER_DEFAULT_LIBRARY), "List's own subsort Nat is tagged separately");
+            && modifiers == MODIFIER_DEFAULT_LIBRARY)
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, modifiers)| l == nat_pos.line
+                    && c == nat_pos.character
+                    && ty == TokenKind::Type as u32
+                    && modifiers == MODIFIER_DEFAULT_LIBRARY),
+            "List's own subsort Nat is tagged separately"
+        );
     }
 
     #[tokio::test]
@@ -1284,15 +1447,20 @@ mod tests {
         let line_index = LineIndex::new(text);
 
         let param_pos = line_index.position(text, text.find('x').unwrap());
-        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == param_pos.line
-            && c == param_pos.character
-            && ty == TokenKind::Parameter as u32
-            && modifiers == MODIFIER_DECLARATION));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, modifiers)| l == param_pos.line
+                    && c == param_pos.character
+                    && ty == TokenKind::Parameter as u32
+                    && modifiers == MODIFIER_DECLARATION)
+        );
     }
 
     #[tokio::test]
     async fn struct_constructor_and_accessors_are_tagged_distinctly_from_a_plain_cons_map_block() {
-        let text = "sort D = struct c1(a: Bool)?is_c1 | c2; map f: D -> Bool; eqn f(c1(true)) = true;";
+        let text =
+            "sort D = struct c1(a: Bool)?is_c1 | c2; map f: D -> Bool; eqn f(c1(true)) = true;";
         let tokens = tokens_for(text).await;
         let positions = absolute(&tokens);
         let line_index = LineIndex::new(text);
@@ -1301,44 +1469,64 @@ mod tests {
         // top-level `cons` gets, but with `MODIFIER_STRUCT_VARIANT` layered on top of
         // `MODIFIER_DECLARATION` so a theme can still tell the two apart.
         let c1_decl_pos = line_index.position(text, text.find("c1(a").unwrap());
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == c1_decl_pos.line
-            && c == c1_decl_pos.character
-            && len == 2
-            && ty == TokenKind::EnumMember as u32
-            && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT)));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == c1_decl_pos.line
+                    && c == c1_decl_pos.character
+                    && len == 2
+                    && ty == TokenKind::EnumMember as u32
+                    && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT))
+        );
 
         // `a`, the named projection: a `Method`, not left uncolored the way a plain `map` is.
         let a_decl_pos = line_index.position(text, text.find("a: Bool").unwrap());
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == a_decl_pos.line
-            && c == a_decl_pos.character
-            && len == 1
-            && ty == TokenKind::Method as u32
-            && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT)));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == a_decl_pos.line
+                    && c == a_decl_pos.character
+                    && len == 1
+                    && ty == TokenKind::Method as u32
+                    && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT))
+        );
 
         // `is_c1`, the recogniser: same treatment as the projection above.
         let is_c1_decl_pos = line_index.position(text, text.find("is_c1").unwrap());
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == is_c1_decl_pos.line
-            && c == is_c1_decl_pos.character
-            && len == 5
-            && ty == TokenKind::Method as u32
-            && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT)));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == is_c1_decl_pos.line
+                    && c == is_c1_decl_pos.character
+                    && len == 5
+                    && ty == TokenKind::Method as u32
+                    && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT))
+        );
 
         // `c2` has no arguments and no recogniser: still an `EnumMember` declaration.
         let c2_decl_pos = line_index.position(text, text.find("c2;").unwrap());
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == c2_decl_pos.line
-            && c == c2_decl_pos.character
-            && len == 2
-            && ty == TokenKind::EnumMember as u32
-            && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT)));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == c2_decl_pos.line
+                    && c == c2_decl_pos.character
+                    && len == 2
+                    && ty == TokenKind::EnumMember as u32
+                    && modifiers == (MODIFIER_DECLARATION | MODIFIER_STRUCT_VARIANT))
+        );
 
         // A *use* of the constructor, `c1(true)` in the equation, still reads as a plain
         // `EnumMember` — no `MODIFIER_STRUCT_VARIANT` outside the struct declaration itself.
         let c1_use_pos = line_index.position(text, text.rfind("c1(true)").unwrap());
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == c1_use_pos.line
-            && c == c1_use_pos.character
-            && len == 2
-            && ty == TokenKind::EnumMember as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == c1_use_pos.line
+                    && c == c1_use_pos.character
+                    && len == 2
+                    && ty == TokenKind::EnumMember as u32
+                    && modifiers == 0)
+        );
     }
 
     #[tokio::test]
@@ -1352,9 +1540,14 @@ mod tests {
         let tokens = tokens_for(text).await;
         let positions = absolute(&tokens);
         for window in positions.windows(2) {
-            let [(l1, c1, len1, ..), (l2, c2, ..)] = window else { unreachable!() };
+            let [(l1, c1, len1, ..), (l2, c2, ..)] = window else {
+                unreachable!()
+            };
             if l1 == l2 {
-                assert!(c1 + len1 <= *c2, "tokens on the same line must not overlap: {window:?}");
+                assert!(
+                    c1 + len1 <= *c2,
+                    "tokens on the same line must not overlap: {window:?}"
+                );
             }
         }
     }
@@ -1371,25 +1564,41 @@ mod tests {
         let recursive_use_pos = line_index.position(text, text.rfind("X(n)").unwrap());
         let init_use_pos = line_index.position(text, text.find("init X").unwrap() + "init ".len());
 
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == decl_pos.line
-            && c == decl_pos.character
-            && len == 1
-            && ty == TokenKind::Method as u32
-            && modifiers == MODIFIER_DECLARATION));
-        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == param_decl_pos.line
-            && c == param_decl_pos.character
-            && ty == TokenKind::Parameter as u32
-            && modifiers == MODIFIER_DECLARATION));
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == recursive_use_pos.line
-            && c == recursive_use_pos.character
-            && len == 1
-            && ty == TokenKind::Method as u32
-            && modifiers == 0));
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == init_use_pos.line
-            && c == init_use_pos.character
-            && len == 1
-            && ty == TokenKind::Method as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == decl_pos.line
+                    && c == decl_pos.character
+                    && len == 1
+                    && ty == TokenKind::Method as u32
+                    && modifiers == MODIFIER_DECLARATION)
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, modifiers)| l == param_decl_pos.line
+                    && c == param_decl_pos.character
+                    && ty == TokenKind::Parameter as u32
+                    && modifiers == MODIFIER_DECLARATION)
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == recursive_use_pos.line
+                    && c == recursive_use_pos.character
+                    && len == 1
+                    && ty == TokenKind::Method as u32
+                    && modifiers == 0)
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == init_use_pos.line
+                    && c == init_use_pos.character
+                    && len == 1
+                    && ty == TokenKind::Method as u32
+                    && modifiers == 0)
+        );
     }
 
     #[tokio::test]
@@ -1400,10 +1609,14 @@ mod tests {
         let line_index = LineIndex::new(text);
 
         let binder_pos = line_index.position(text, text.find("n: Bool").unwrap());
-        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == binder_pos.line
-            && c == binder_pos.character
-            && ty == TokenKind::Variable as u32
-            && modifiers == MODIFIER_DECLARATION));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, modifiers)| l == binder_pos.line
+                    && c == binder_pos.character
+                    && ty == TokenKind::Variable as u32
+                    && modifiers == MODIFIER_DECLARATION)
+        );
     }
 
     #[tokio::test]
@@ -1413,8 +1626,13 @@ mod tests {
         let positions = absolute(&tokens);
 
         for window in positions.windows(2) {
-            let [(l1, c1, len1, ..), (l2, c2, ..)] = window else { unreachable!() };
-            assert!((*l1, *c1) < (*l2, *c2), "tokens must be strictly ordered by position");
+            let [(l1, c1, len1, ..), (l2, c2, ..)] = window else {
+                unreachable!()
+            };
+            assert!(
+                (*l1, *c1) < (*l2, *c2),
+                "tokens must be strictly ordered by position"
+            );
             if l1 == l2 {
                 assert!(c1 + len1 <= *c2, "tokens on the same line must not overlap");
             }
@@ -1437,11 +1655,15 @@ mod tests {
         let recursive_pos = line_index.position(text, recursive_use);
 
         for pos in [val_pos, recursive_pos] {
-            assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == pos.line
-                && c == pos.character
-                && len == 1
-                && ty == TokenKind::Parameter as u32
-                && modifiers == 0));
+            assert!(
+                positions
+                    .iter()
+                    .any(|&(l, c, len, ty, modifiers)| l == pos.line
+                        && c == pos.character
+                        && len == 1
+                        && ty == TokenKind::Parameter as u32
+                        && modifiers == 0)
+            );
         }
     }
 
@@ -1457,25 +1679,41 @@ mod tests {
         let recursive_use_pos = line_index.position(text, text.rfind("X(n)").unwrap());
         let init_use_pos = line_index.position(text, text.find("init X").unwrap() + "init ".len());
 
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == decl_pos.line
-            && c == decl_pos.character
-            && len == 1
-            && ty == TokenKind::Method as u32
-            && modifiers == MODIFIER_DECLARATION));
-        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == param_decl_pos.line
-            && c == param_decl_pos.character
-            && ty == TokenKind::Parameter as u32
-            && modifiers == MODIFIER_DECLARATION));
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == recursive_use_pos.line
-            && c == recursive_use_pos.character
-            && len == 1
-            && ty == TokenKind::Method as u32
-            && modifiers == 0));
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == init_use_pos.line
-            && c == init_use_pos.character
-            && len == 1
-            && ty == TokenKind::Method as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == decl_pos.line
+                    && c == decl_pos.character
+                    && len == 1
+                    && ty == TokenKind::Method as u32
+                    && modifiers == MODIFIER_DECLARATION)
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, modifiers)| l == param_decl_pos.line
+                    && c == param_decl_pos.character
+                    && ty == TokenKind::Parameter as u32
+                    && modifiers == MODIFIER_DECLARATION)
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == recursive_use_pos.line
+                    && c == recursive_use_pos.character
+                    && len == 1
+                    && ty == TokenKind::Method as u32
+                    && modifiers == 0)
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == init_use_pos.line
+                    && c == init_use_pos.character
+                    && len == 1
+                    && ty == TokenKind::Method as u32
+                    && modifiers == 0)
+        );
     }
 
     #[tokio::test]
@@ -1488,10 +1726,14 @@ mod tests {
         let line_index = LineIndex::new(text);
 
         let binder_pos = line_index.position(text, text.find("n: Nat").unwrap());
-        assert!(positions.iter().any(|&(l, c, _, ty, modifiers)| l == binder_pos.line
-            && c == binder_pos.character
-            && ty == TokenKind::Variable as u32
-            && modifiers == MODIFIER_DECLARATION));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, _, ty, modifiers)| l == binder_pos.line
+                    && c == binder_pos.character
+                    && ty == TokenKind::Variable as u32
+                    && modifiers == MODIFIER_DECLARATION)
+        );
     }
 
     #[tokio::test]
@@ -1506,11 +1748,15 @@ mod tests {
 
         let constant_use = text.rfind("val(n) * X(n)").unwrap() + "val(".len();
         let constant_pos = line_index.position(text, constant_use);
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == constant_pos.line
-            && c == constant_pos.character
-            && len == 1
-            && ty == TokenKind::Parameter as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == constant_pos.line
+                    && c == constant_pos.character
+                    && len == 1
+                    && ty == TokenKind::Parameter as u32
+                    && modifiers == 0)
+        );
     }
 
     #[tokio::test]
@@ -1529,18 +1775,26 @@ mod tests {
         let y_use_pos = line_index.position(text, y_use);
 
         // Inside `X`, `n` is `X`'s own parameter.
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == x_use_pos.line
-            && c == x_use_pos.character
-            && len == 1
-            && ty == TokenKind::Parameter as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == x_use_pos.line
+                    && c == x_use_pos.character
+                    && len == 1
+                    && ty == TokenKind::Parameter as u32
+                    && modifiers == 0)
+        );
         // Inside `Y`, the same name `n` is not a parameter of `Y` — it's the global variable —
         // so it must be tagged `Variable`, not `Parameter`.
-        assert!(positions.iter().any(|&(l, c, len, ty, modifiers)| l == y_use_pos.line
-            && c == y_use_pos.character
-            && len == 1
-            && ty == TokenKind::Variable as u32
-            && modifiers == 0));
+        assert!(
+            positions
+                .iter()
+                .any(|&(l, c, len, ty, modifiers)| l == y_use_pos.line
+                    && c == y_use_pos.character
+                    && len == 1
+                    && ty == TokenKind::Variable as u32
+                    && modifiers == 0)
+        );
     }
 
     #[tokio::test]
@@ -1550,8 +1804,13 @@ mod tests {
         let positions = absolute(&tokens);
 
         for window in positions.windows(2) {
-            let [(l1, c1, len1, ..), (l2, c2, ..)] = window else { unreachable!() };
-            assert!((*l1, *c1) < (*l2, *c2), "tokens must be strictly ordered by position");
+            let [(l1, c1, len1, ..), (l2, c2, ..)] = window else {
+                unreachable!()
+            };
+            assert!(
+                (*l1, *c1) < (*l2, *c2),
+                "tokens must be strictly ordered by position"
+            );
             if l1 == l2 {
                 assert!(c1 + len1 <= *c2, "tokens on the same line must not overlap");
             }

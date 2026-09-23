@@ -8,7 +8,8 @@ modal (mu-calculus) state formulas (`.mcf`).
 ## Current status
 
 Supports syntax and type checking error diagnostics, document outline, semantic
-tokens, hover and go-to-definition, inlay hints, and text completion.
+tokens, hover and go-to-definition, inlay hints, text completion, and quick fixes
+(parenthesizing ambiguous quantifier scopes, renaming an undeclared name to its closest match).
 
 ## Building the server
 

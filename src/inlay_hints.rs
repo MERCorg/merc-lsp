@@ -7,28 +7,9 @@
 //!
 //! - A `name:` hint *before* an argument, whenever the callee names that
 //!   position. Is skipped when the argument is itself a bare variable already
-//!   spelled the same as the name being shown.//! 
+//!   spelled the same as the name being shown.//!
 //! - A `: Sort` hint *after* an argument, whenever no name is available. Only
 //!   for top-level call arguments. Doesn't appear for infix operators.
-//!
-//! An equation's condition (`eqn ... = ... when b;`) is never hinted at all —
-//! `b` is a boolean guard, not a value worth annotating.
-//!
-//! `merc_syntax::Traverse` doesn't cross between node types (a
-//! `ProcessExpr`/`PbesExpr` traversal doesn't descend into the `DataExpr`s
-//! inside its actions/conditions/`dist` weights/`val(...)` expressions), so
-//! [`inlay_hints`]/[`pbes_inlay_hints`] each walk their own tree by hand for
-//! its `DataExpr`-bearing fields, then hand each one to
-//! [`walk_struct_applications`], which *does* use `Traverse` (`DataExpr`
-//! recurses fully into itself) to find every nested struct-constructor
-//! application within it, including the field's own top level — an equation's
-//! LHS pattern is walked the same way as everywhere else. Its arguments are
-//! never sort-suffixed; see the module doc comment above and [`push_hint`].
-//! [`emit_call_hints`] is the part shared by both trees: a process's
-//! `Action`/`Id` and a PBES's `PropVarInst` are the same "named callee,
-//! positional `DataExpr` arguments" shape one level down, so both feed it the
-//! same way, just with a different (spec-specific) parameter-name lookup — see
-//! [`resolved_process_param_names`]/[`propvarinst_param_names`].
 
 use std::ops::ControlFlow;
 
@@ -80,14 +61,17 @@ use crate::convert::LineIndex;
 /// emitting helper pushes into.
 struct Ctx<'a> {
     text: &'a str,
+
     line_index: &'a LineIndex,
+
     sort_declarations: &'a [SortDecl],
+
     typing_info: &'a TypingInfo,
+
     /// The document's whole-project [`SourceMap`], used only to keep [`push_hint`] from placing a
-    /// hint against a span that belongs to an `%import`ed file rather than the root document being
-    /// hinted — see [`push_hint`]'s doc comment. Empty (`file_count() == 0`) in the unit tests
-    /// below, which parse a fixture standalone rather than through a real `%import` resolution.
+    /// hint against a span that belongs to an `%import`ed file.
     sources: &'a SourceMap,
+
     hints: Vec<InlayHint>,
 }
 
@@ -126,7 +110,6 @@ pub fn inlay_hints(
         for eqn in &eqn_spec.node.equations {
             walk_struct_applications(&eqn.lhs, &mut ctx);
             walk_struct_applications(&eqn.rhs, &mut ctx);
-            // The condition (`when b`) is a boolean guard, not a value — never hinted.
         }
     }
 
@@ -135,8 +118,7 @@ pub fn inlay_hints(
 }
 
 /// As [`inlay_hints`], for a PBES: no `act`/`proc` tree to walk, just every equation's formula
-/// plus `init` — both a [`PbesExpr`] tree, hand-walked the same way `inlay_hints` walks a
-/// `ProcessExpr` tree, for the same reason (see the module doc comment).
+/// plus `init` — both a [`PbesExpr`] tree.
 pub fn pbes_inlay_hints(
     text: &str,
     line_index: &LineIndex,
@@ -158,6 +140,7 @@ pub fn pbes_inlay_hints(
     for eqn in spec.equations() {
         walk_pbes_expr(&eqn.formula, spec, &mut ctx);
     }
+
     let init = spec.init();
     let param_names =
         propvarinst_param_names(spec, &init.node.identifier, init.node.arguments.len());
@@ -185,8 +168,7 @@ pub fn pbes_inlay_hints(
 }
 
 /// As [`pbes_inlay_hints`], for a PRES: [`PresSpecification`] has the identical shape one level
-/// down (see `crate::completion::pres_completions`'s doc comment), so this differs only in walking
-/// [`PresExpr`] instead of [`PbesExpr`] for each equation's formula.
+/// down.
 pub fn pres_inlay_hints(
     text: &str,
     line_index: &LineIndex,
@@ -208,9 +190,16 @@ pub fn pres_inlay_hints(
     for eqn in spec.equations() {
         walk_pres_expr(&eqn.formula, spec, &mut ctx);
     }
+
     let init = spec.init();
-    let param_names = pres_propvarinst_param_names(spec, &init.node.identifier, init.node.arguments.len());
-    emit_call_hints(&init.node.arguments, param_names.as_deref(), false, &mut ctx);
+    let param_names =
+        pres_propvarinst_param_names(spec, &init.node.identifier, init.node.arguments.len());
+    emit_call_hints(
+        &init.node.arguments,
+        param_names.as_deref(),
+        false,
+        &mut ctx,
+    );
 
     for eqn_spec in &spec
         .data_specification()
@@ -227,10 +216,7 @@ pub fn pres_inlay_hints(
     ctx.hints
 }
 
-/// As [`pbes_inlay_hints`]/[`pres_inlay_hints`], for a modal (mu-calculus) formula: no flat
-/// top-level equation list to walk — a fixpoint variable's own reference/declaration is found
-/// recursively instead (see [`walk_state_frm`]/[`resolved_state_var_param_names`]), the same way
-/// `symbols.rs`'s own `collect_fixed_points` has to.
+/// As [`pbes_inlay_hints`]/[`pres_inlay_hints`], for a modal (mu-calculus) formula.
 pub fn modal_inlay_hints(
     text: &str,
     line_index: &LineIndex,
@@ -266,8 +252,7 @@ pub fn modal_inlay_hints(
     ctx.hints
 }
 
-/// Walks every `ProcessExpr` in `expr`'s subtree, picking out each node's `DataExpr`-bearing
-/// fields — the ones `Traverse` itself won't reach — and hinting them.
+/// Walks every `ProcessExpr` in `expr`'s subtree, picking out each node's `DataExpr`.
 fn walk_process_expr(expr: &ProcessExpr, spec: &ProcessSpecification, ctx: &mut Ctx) {
     expr.visit::<(), _>(|node| {
         match &node.node {
@@ -293,10 +278,7 @@ fn walk_process_expr(expr: &ProcessExpr, spec: &ProcessSpecification, ctx: &mut 
     });
 }
 
-/// As [`walk_process_expr`], for a [`PbesExpr`] tree: a `val(...)` expression is itself a
-/// `DataExpr` worth hinting into, and a `PropVarInst` is the PBES counterpart of an action/process
-/// call — everything else (`Quantifier`/`Negation`/`Binary`/`True`/`False`) is either already
-/// walked by `Traverse` itself (same-typed children) or has no `DataExpr` in it at all.
+/// As [`walk_process_expr`], for a [`PbesExpr`] tree.
 fn walk_pbes_expr(expr: &PbesExpr, spec: &PbesSpecification, ctx: &mut Ctx) {
     expr.visit::<(), _>(|node| {
         match &node.node {
@@ -312,21 +294,21 @@ fn walk_pbes_expr(expr: &PbesExpr, spec: &PbesSpecification, ctx: &mut Ctx) {
     });
 }
 
-/// As [`walk_pbes_expr`], for a [`PresExpr`] tree — a `val(...)` expression and a `PropVarInst` are
-/// hinted the same way; each side of a scalar multiplication
-/// (`PresExprKind::RightConstantMultiply`/`LeftConstantMultiply`) carries its own `constant`, a
-/// `DataExpr` `Traverse` doesn't reach on its own, so it's hinted the same way too. `Equal`'s and
-/// `Condition`'s own tag fields carry no `DataExpr` at all; their `body`/`lhs`/`then`/`else_`
-/// children are plain `PresExpr` nodes `Traverse` already recurses into.
+/// As [`walk_pbes_expr`], for a [`PresExpr`] tree.
 fn walk_pres_expr(expr: &PresExpr, spec: &PresSpecification, ctx: &mut Ctx) {
     expr.visit::<(), _>(|node| {
         match &node.node {
             PresExprKind::DataValExpr(value) => walk_struct_applications(value, ctx),
             PresExprKind::PropVarInst(inst) => {
-                let param_names = pres_propvarinst_param_names(spec, &inst.node.identifier, inst.node.arguments.len());
+                let param_names = pres_propvarinst_param_names(
+                    spec,
+                    &inst.node.identifier,
+                    inst.node.arguments.len(),
+                );
                 emit_call_hints(&inst.node.arguments, param_names.as_deref(), false, ctx);
             }
-            PresExprKind::RightConstantMultiply { constant, .. } | PresExprKind::LeftConstantMultiply { constant, .. } => {
+            PresExprKind::RightConstantMultiply { constant, .. }
+            | PresExprKind::LeftConstantMultiply { constant, .. } => {
                 walk_struct_applications(constant, ctx);
             }
             _ => {}
@@ -335,12 +317,7 @@ fn walk_pres_expr(expr: &PresExpr, spec: &PresSpecification, ctx: &mut Ctx) {
     });
 }
 
-/// Walks a modal (mu-calculus) state formula's own tree by hand, hinting a fixpoint-variable
-/// reference's arguments the same way [`walk_process_expr`]/[`walk_pbes_expr`] hint a process/
-/// propositional-variable call's — descends by hand (rather than via `Traverse::visit`, the way
-/// `walk_process_expr`/`walk_pbes_expr` do) for the same reason `symbols.rs`'s own
-/// `collect_fixed_points` and `semantic_tokens.rs`'s own `walk_state_frm` do: `Traverse` doesn't
-/// cross into the `RegFrm`/`ActFrm` a modality carries either.
+/// Walks a modal (mu-calculus) state formula's own tree by hand.
 fn walk_state_frm(formula: &StateFrm, spec: &ModalSpecification, ctx: &mut Ctx) {
     match &formula.node {
         StateFrmKind::True | StateFrmKind::False => {}
@@ -362,7 +339,9 @@ fn walk_state_frm(formula: &StateFrm, spec: &ModalSpecification, ctx: &mut Ctx) 
             walk_state_frm(expr, spec, ctx);
             walk_struct_applications(constant, ctx);
         }
-        StateFrmKind::Modality { formula: reg, expr, .. } => {
+        StateFrmKind::Modality {
+            formula: reg, expr, ..
+        } => {
             walk_reg_frm(reg, ctx);
             walk_state_frm(expr, spec, ctx);
         }
@@ -371,14 +350,15 @@ fn walk_state_frm(formula: &StateFrm, spec: &ModalSpecification, ctx: &mut Ctx) 
             walk_state_frm(lhs, spec, ctx);
             walk_state_frm(rhs, spec, ctx);
         }
-        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => walk_state_frm(body, spec, ctx),
+        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => {
+            walk_state_frm(body, spec, ctx)
+        }
         StateFrmKind::FixedPoint { variable, body, .. } => {
-            // Each parameter's own initial value is checked in the *outer* scope (mirrors a
-            // process instantiation's assignment value) — never sort-suffixed (it's not a call
-            // argument), but still worth descending into for a nested struct application.
+            // Each parameter's own initial value is checked in the *outer* scope.
             for argument in &variable.arguments {
                 walk_struct_applications(&argument.expr, ctx);
             }
+
             walk_state_frm(body, spec, ctx);
         }
     }
@@ -396,10 +376,7 @@ fn walk_reg_frm(formula: &RegFrm, ctx: &mut Ctx) {
     }
 }
 
-/// As [`walk_reg_frm`], for an action formula (`a(1) && !b`) — an action's own arguments are never
-/// hinted with a name or sort suffix (see the module doc comment), only descended into for a
-/// nested struct application, the same way [`walk_process_expr`]'s `ProcessExprKind::Action`
-/// arguments never get a top-level hint of their own either (`emit_call_hints` isn't called here).
+/// As [`walk_reg_frm`], for an action formula (`a(1) && !b`).
 fn walk_act_frm(formula: &ActFrm, ctx: &mut Ctx) {
     match &formula.node {
         ActFrmKind::True | ActFrmKind::False => {}
@@ -416,17 +393,17 @@ fn walk_act_frm(formula: &ActFrm, ctx: &mut Ctx) {
         ActFrmKind::Binary { lhs, rhs, .. } => {
             walk_act_frm(lhs, ctx);
             walk_act_frm(rhs, ctx);
+        },
+        ActFrmKind::At { expr, operand } => {
+            walk_act_frm(expr, ctx);
+            walk_struct_applications(operand, ctx);
         }
     }
 }
 
 /// Hints `args`, the positional arguments of an action instance, process instantiation, or PBES
 /// propositional-variable instantiation: a `name: ` prefix per argument when `param_names` has a
-/// name for that position, otherwise a `: Sort` suffix (only when `allow_sort_suffix` is true;
-/// an action never names its arguments, nor does an instantiation of a variable/equation resolved
-/// without a matching arity). Then recurses into each argument for any nested struct application
-/// of its own — never for a nested sort suffix; see the module doc comment for why a call
-/// argument's own hint is the only `: Sort` an argument should get.
+/// name for that position, otherwise a `: Sort` suffix.
 fn emit_call_hints(
     args: &[DataExpr],
     param_names: Option<&[&str]>,
@@ -435,6 +412,7 @@ fn emit_call_hints(
 ) {
     for (i, argument) in args.iter().enumerate() {
         let field_name = param_names.and_then(|names| names.get(i).copied());
+
         if field_name.is_some() || allow_sort_suffix {
             push_hint(
                 argument,
@@ -443,16 +421,13 @@ fn emit_call_hints(
                 ctx,
             );
         }
+
         walk_struct_applications(argument, ctx);
     }
 }
 
 /// Finds every struct-constructor application anywhere in `expr`'s subtree (including `expr`
-/// itself) and hints its arguments with a `name: ` prefix per named field. A plain (non-struct)
-/// application's arguments are left alone — no hint at all — since there's nothing to say about
-/// them that their own declaration doesn't already say (see the module doc comment). This is used
-/// for an equation's own LHS pattern too: a plain function application there gets no `: Sort`
-/// hint either — its sort is a hover away, and one on every equation would be clutter.
+/// itself) and hints its arguments with a `name: ` prefix per named field.
 fn walk_struct_applications(expr: &DataExpr, ctx: &mut Ctx) {
     expr.visit::<(), _>(|node| {
         if let DataExprKind::Application {
@@ -465,15 +440,19 @@ fn walk_struct_applications(expr: &DataExpr, ctx: &mut Ctx) {
                 DataExprKind::Resolved(name, _) => Some(name.as_str()),
                 _ => None,
             };
+
             let field_names = callee
                 .and_then(|name| struct_field_names(ctx.sort_declarations, name, arguments.len()));
+
             for (i, argument) in arguments.iter().enumerate() {
                 let field_name = field_names
                     .as_ref()
                     .and_then(|names| names.get(i).copied().flatten());
+
                 let Some(field_name) = field_name else {
                     continue;
                 };
+
                 push_hint(
                     argument,
                     Some(field_name),
@@ -487,12 +466,7 @@ fn walk_struct_applications(expr: &DataExpr, ctx: &mut Ctx) {
 }
 
 /// The parameter names of the `proc` declaration that the `TypingInfo` resolved `name`'s span to —
-/// i.e. the single winning overload, not just any declaration sharing a name and arity. Resolving
-/// via the type checker's `ResolvedName::Process` declaration span is what lets an overloaded
-/// process (same name and parameter count, different parameter sorts) pick the declaration the
-/// checked call actually selected. `None` when `name`'s span resolves to no process (an action, or
-/// a process reference the checker didn't record — the checked call sites this skips anyway, so a
-/// `None` just falls back to the sort-only hint).
+/// i.e. the single winning overload.
 fn resolved_process_param_names<'a>(
     spec: &'a ProcessSpecification,
     ctx: &Ctx,
@@ -508,6 +482,7 @@ fn resolved_process_param_names<'a>(
             None
         }
     })?;
+
     spec.process_declarations()
         .iter()
         .find(|decl| decl.identifier.span == decl_span)
@@ -519,11 +494,7 @@ fn resolved_process_param_names<'a>(
         })
 }
 
-/// As [`resolved_process_param_names`], for a PBES propositional-variable equation — the parameter names of
-/// the equation named `name` with exactly `arity` parameters, if one exists. `None` when `name`
-/// resolves to nothing with a matching arity (a free/global variable used where a `PropVarInst` is
-/// expected, or a genuinely undeclared name — either way, a checked specification wouldn't have
-/// accepted the document, so this is defensive rather than expected in practice).
+/// As [`resolved_process_param_names`], for a PBES propositional-variable equation.
 fn propvarinst_param_names<'a>(
     spec: &'a PbesSpecification,
     name: &str,
@@ -531,7 +502,9 @@ fn propvarinst_param_names<'a>(
 ) -> Option<Vec<&'a str>> {
     spec.equations()
         .iter()
-        .find(|eqn| eqn.variable.identifier.as_str() == name && eqn.variable.parameters.len() == arity)
+        .find(|eqn| {
+            eqn.variable.identifier.as_str() == name && eqn.variable.parameters.len() == arity
+        })
         .map(|eqn| {
             eqn.variable
                 .parameters
@@ -542,10 +515,16 @@ fn propvarinst_param_names<'a>(
 }
 
 /// As [`propvarinst_param_names`], for a PRES.
-fn pres_propvarinst_param_names<'a>(spec: &'a PresSpecification, name: &str, arity: usize) -> Option<Vec<&'a str>> {
+fn pres_propvarinst_param_names<'a>(
+    spec: &'a PresSpecification,
+    name: &str,
+    arity: usize,
+) -> Option<Vec<&'a str>> {
     spec.equations()
         .iter()
-        .find(|eqn| eqn.variable.identifier.as_str() == name && eqn.variable.parameters.len() == arity)
+        .find(|eqn| {
+            eqn.variable.identifier.as_str() == name && eqn.variable.parameters.len() == arity
+        })
         .map(|eqn| {
             eqn.variable
                 .parameters
@@ -555,12 +534,12 @@ fn pres_propvarinst_param_names<'a>(spec: &'a PresSpecification, name: &str, ari
         })
 }
 
-/// As [`resolved_process_param_names`], for a modal formula's fixpoint-variable reference — the
-/// parameter names of the `mu`/`nu` declaration the `TypingInfo` resolved `occurrence_span` (the
-/// whole `Id`/`Resolved` node — see [`merc_typecheck::ResolvedName::StateVariable`]'s own doc
-/// comment for why there is no narrower span) to. `None` when it resolves to nothing (shouldn't
-/// arise for a checked specification, but degrading to a sort-only hint is safer than a wrong one).
-fn resolved_state_var_param_names<'a>(spec: &'a ModalSpecification, ctx: &Ctx, occurrence_span: &Span) -> Option<Vec<&'a str>> {
+/// As [`resolved_process_param_names`], for a modal formula's fixpoint-variable reference.
+fn resolved_state_var_param_names<'a>(
+    spec: &'a ModalSpecification,
+    ctx: &Ctx,
+    occurrence_span: &Span,
+) -> Option<Vec<&'a str>> {
     let decl_span = ctx.typing_info.nodes().iter().find_map(|node| {
         if node.span.start == occurrence_span.start
             && node.span.end == occurrence_span.end
@@ -571,13 +550,16 @@ fn resolved_state_var_param_names<'a>(spec: &'a ModalSpecification, ctx: &Ctx, o
             None
         }
     })?;
-    find_state_var_decl(spec.formula(), &decl_span).map(|decl| decl.arguments.iter().map(|argument| argument.identifier.as_str()).collect())
+    find_state_var_decl(spec.formula(), &decl_span).map(|decl| {
+        decl.arguments
+            .iter()
+            .map(|argument| argument.identifier.as_str())
+            .collect()
+    })
 }
 
 /// The `StateVarDecl` whose own span is exactly `decl_span`, found by recursing through the
-/// formula tree by hand — mirrors `crate::hover::find_state_var_in_formula` and `symbols.rs`'s own
-/// `collect_fixed_points`: a modal formula's fixpoint variables aren't listed anywhere flat the way
-/// a PBES/PRES's `equations` are.
+/// formula tree by hand.
 fn find_state_var_decl<'a>(formula: &'a StateFrm, decl_span: &Span) -> Option<&'a StateVarDecl> {
     match &formula.node {
         StateFrmKind::FixedPoint { variable, body, .. } => {
@@ -587,10 +569,17 @@ fn find_state_var_decl<'a>(formula: &'a StateFrm, decl_span: &Span) -> Option<&'
                 find_state_var_decl(body, decl_span)
             }
         }
-        StateFrmKind::Unary { expr, .. } | StateFrmKind::Modality { expr, .. } => find_state_var_decl(expr, decl_span),
-        StateFrmKind::Binary { lhs, rhs, .. } => find_state_var_decl(lhs, decl_span).or_else(|| find_state_var_decl(rhs, decl_span)),
-        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => find_state_var_decl(body, decl_span),
-        StateFrmKind::DataValExprLeftMult(_, expr) | StateFrmKind::DataValExprRightMult(expr, _) => find_state_var_decl(expr, decl_span),
+        StateFrmKind::Unary { expr, .. } | StateFrmKind::Modality { expr, .. } => {
+            find_state_var_decl(expr, decl_span)
+        }
+        StateFrmKind::Binary { lhs, rhs, .. } => {
+            find_state_var_decl(lhs, decl_span).or_else(|| find_state_var_decl(rhs, decl_span))
+        }
+        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => {
+            find_state_var_decl(body, decl_span)
+        }
+        StateFrmKind::DataValExprLeftMult(_, expr)
+        | StateFrmKind::DataValExprRightMult(expr, _) => find_state_var_decl(expr, decl_span),
         StateFrmKind::True
         | StateFrmKind::False
         | StateFrmKind::Delay(_)
@@ -613,6 +602,7 @@ fn struct_field_names<'a>(
         let SortExpressionKind::Struct { inner } = &decl.expr.as_ref()?.node else {
             return None;
         };
+
         inner
             .iter()
             .find(|constructor| constructor.name.node == name && constructor.args.len() == arity)
@@ -626,9 +616,7 @@ fn struct_field_names<'a>(
     })
 }
 
-/// The sort [`TypingInfo`] recorded for the node whose span is exactly `span` — an argument's own
-/// span always has one recorded exactly, since every checked argument is a whole `DataExpr` node
-/// in its own right.
+/// The sort [`TypingInfo`] recorded for the node whose span is exactly `span`.
 fn sort_of<'a>(typing_info: &'a TypingInfo, span: &Span) -> Option<&'a SortExpression> {
     typing_info
         .nodes()
@@ -637,30 +625,21 @@ fn sort_of<'a>(typing_info: &'a TypingInfo, span: &Span) -> Option<&'a SortExpre
         .and_then(|node| node.sort.as_ref())
 }
 
-/// Emits one hint for `argument`: a `name: ` prefix at its start when `field_name` is known,
-/// otherwise a `: Sort` suffix at its end when `sort` is known. Emits nothing when neither is
-/// available (an argument `TypingInfo` has no node for at all — shouldn't arise for a checked
-/// specification, but degrading to no hint is safer than a wrong one), nor when `argument` is
-/// already a bare variable spelled the same as `field_name` — `P(n)` for a parameter also named
-/// `n` doesn't need `n:` repeated right in front of it. The `: Sort` suffix is also skipped when
-/// `argument` is itself an infix/prefix operator application (`x |> l`, `-x`) — its operands are
-/// already visible right there in the source, so appending the *result*'s sort on top would just
-/// be noise; a `name:` prefix is unaffected, since that names the argument, not its result.
+/// Emits one hint for `argument`: a `name: ` prefix at its start when
+/// `field_name` is known, otherwise a `: Sort` suffix at its end when `sort` is
+/// known. Emits nothing when neither is available.
+/// 
+/// Skipped when the name is the same as the expression, of for infix/prefix
+/// operators the sort suffix is skipped.
 fn push_hint(
     argument: &DataExpr,
     field_name: Option<&str>,
     sort: Option<&SortExpression>,
     ctx: &mut Ctx,
 ) {
-    // `spec.process_declarations()` (and the equivalent equation lists for PBES/PRES/modal specs)
-    // include every declaration merged in from an `%import`ed file, so `argument.span` can be a
-    // global offset into a file other than the one being hinted. Rendering that against `ctx.text`/
-    // `ctx.line_index` (always the root document's own) would silently clamp to the end of the
-    // document (see `LineIndex::position`'s doc comment) rather than the argument's real position —
-    // in practice a pile of hints all stacked on the document's last line whenever it imports
-    // anything. Inlay hints have nowhere to point a foreign one at anyway (no per-hint URI in the
-    // protocol), so it's dropped rather than mislocated.
     if !convert::is_local_span(ctx.sources, &argument.span) {
+        // Ignore spans in imported files, they are merged into the one
+        // specification.
         return;
     }
 
@@ -751,6 +730,7 @@ mod tests {
             ParseOutcome::Ok(Specification::Process(spec)) => *spec,
             _ => panic!("fixture failed to parse"),
         };
+
         // Struct field names only live on the raw, pre-typecheck AST (see
         // `Document::parsed_process_specification`'s doc comment) — cloned out before `spec` is
         // moved into `typecheck` below.
@@ -762,6 +742,7 @@ mod tests {
                 panic!("internal error typechecking fixture: {message}")
             }
         };
+
         let line_index = LineIndex::new(text);
         let typing_info = checked.typing_info();
         let whole_document = Range {
@@ -774,6 +755,7 @@ mod tests {
                 character: u32::MAX,
             },
         };
+
         let hints = inlay_hints(
             text,
             &line_index,
@@ -791,6 +773,7 @@ mod tests {
             ParseOutcome::Ok(Specification::Pbes(spec)) => *spec,
             _ => panic!("fixture failed to parse"),
         };
+
         let sort_declarations = spec.data_specification.sort_declarations.clone();
         let mut checked = match typecheck_pbes(spec.clone()).await {
             PbesTypecheckOutcome::Ok(checked) => checked,
@@ -799,8 +782,10 @@ mod tests {
                 panic!("internal error typechecking fixture: {message}")
             }
         };
+
         let line_index = LineIndex::new(text);
         let typing_info = checked.typing_info();
+
         let whole_document = Range {
             start: Position {
                 line: 0,
@@ -811,6 +796,7 @@ mod tests {
                 character: u32::MAX,
             },
         };
+
         let hints = pbes_inlay_hints(
             text,
             &line_index,
@@ -829,18 +815,37 @@ mod tests {
             _ => panic!("fixture failed to parse"),
         };
         let sort_declarations = spec.data_specification.sort_declarations.clone();
-        let mut checked = match crate::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await {
-            crate::typecheck::ModalTypecheckOutcome::Ok(checked) => checked,
-            crate::typecheck::ModalTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
-            crate::typecheck::ModalTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
-        };
+        let mut checked =
+            match crate::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await {
+                crate::typecheck::ModalTypecheckOutcome::Ok(checked) => checked,
+                crate::typecheck::ModalTypecheckOutcome::Error(error) => {
+                    panic!("fixture failed to typecheck: {error}")
+                }
+                crate::typecheck::ModalTypecheckOutcome::Internal(message) => {
+                    panic!("internal error typechecking fixture: {message}")
+                }
+            };
         let line_index = LineIndex::new(text);
         let typing_info = checked.typing_info();
         let whole_document = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: u32::MAX, character: u32::MAX },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: u32::MAX,
+                character: u32::MAX,
+            },
         };
-        let hints = modal_inlay_hints(text, &line_index, &checked, &sort_declarations, &typing_info, &SourceMap::new(), whole_document);
+        let hints = modal_inlay_hints(
+            text,
+            &line_index,
+            &checked,
+            &sort_declarations,
+            &typing_info,
+            &SourceMap::new(),
+            whole_document,
+        );
         (hints, line_index)
     }
 
@@ -919,10 +924,7 @@ mod tests {
         let text = "sort D;\nmap f: D -> D;\nmap p: D -> Bool;\nvar x: D;\neqn p(x) -> f(x) = x;\ninit delta;";
         let (hints, _line_index) = hints_for(text).await;
 
-        assert!(
-            hints.is_empty(),
-            "did not expect any hint, got {hints:?}"
-        );
+        assert!(hints.is_empty(), "did not expect any hint, got {hints:?}");
     }
 
     #[tokio::test]
@@ -931,10 +933,7 @@ mod tests {
             "sort D;\nmap f: D -> D;\nmap g: D -> D;\nvar x: D;\neqn f(x) = g(x);\ninit delta;";
         let (hints, _line_index) = hints_for(text).await;
 
-        assert!(
-            hints.is_empty(),
-            "did not expect any hint, got {hints:?}"
-        );
+        assert!(hints.is_empty(), "did not expect any hint, got {hints:?}");
     }
 
     #[tokio::test]
@@ -991,10 +990,7 @@ mod tests {
         let text = "sort D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = x;\ninit delta;";
         let (hints, _line_index) = hints_for(text).await;
 
-        assert!(
-            hints.is_empty(),
-            "did not expect any hint, got {hints:?}"
-        );
+        assert!(hints.is_empty(), "did not expect any hint, got {hints:?}");
     }
 
     #[tokio::test]
@@ -1088,19 +1084,21 @@ mod tests {
     #[tokio::test]
     async fn a_call_inside_an_imported_declarations_body_gets_no_hint() {
         // Regression test: `spec.process_declarations()` includes every `proc` merged in from an
-        // `%import`ed file (see `syntax_tree.rs`'s `UntypedProcessSpecification::merge`), so walking
-        // it used to hand `push_hint` a call-argument span that belongs to `common.mcrl2`, not
-        // `main.mcrl2`. Rendered against `main.mcrl2`'s own `line_index`/text regardless, that
-        // clamped to the end of `main.mcrl2` (see `LineIndex::position`'s doc comment) instead of
-        // being placed correctly (or, as fixed, not placed in this document at all) — in practice a
-        // pile of stray hints stacked on the last line of any file that imports another one.
+        // `%import`ed file.
         let dir = temp_project(&[
-            ("main.mcrl2", "%import \"common.mcrl2\"\nproc P(m: Nat) = delta;\ninit P(1);\n"),
-            ("common.mcrl2", "proc Callee(n: Nat) = delta;\nproc Caller = Callee(5);\n"),
+            (
+                "main.mcrl2",
+                "%import \"common.mcrl2\"\nproc P(m: Nat) = delta;\ninit P(1);\n",
+            ),
+            (
+                "common.mcrl2",
+                "proc Callee(n: Nat) = delta;\nproc Caller = Callee(5);\n",
+            ),
         ]);
         let main_path = dir.path().join("main.mcrl2");
         let text = std::fs::read_to_string(&main_path).unwrap();
-        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let (outcome, sources) =
+            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
             panic!("fixture failed to parse");
         };
@@ -1112,8 +1110,14 @@ mod tests {
         let line_index = LineIndex::new(&text);
         let typing_info = checked.typing_info();
         let whole_document = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: u32::MAX, character: u32::MAX },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: u32::MAX,
+                character: u32::MAX,
+            },
         };
 
         let end_of_file = line_index.position(&text, text.len());

@@ -43,10 +43,6 @@ use tower::ServiceBuilder;
 
 /// Runs the server over `input`/`output` until the client disconnects (`exit` notification) or a
 /// transport error occurs.
-///
-/// Generic over the transport (rather than hardcoding stdio) so `tests/protocol.rs` can drive
-/// this exact service construction — `backend::router` plus the full middleware stack — over
-/// an in-memory duplex pipe instead of real stdio. [`run_stdio`] is the only other caller.
 pub async fn serve(input: impl AsyncRead, output: impl AsyncWrite) {
     let (mainloop, _client) = async_lsp::MainLoop::new_server(|client| {
         let router = backend::router(client.clone());
@@ -73,8 +69,10 @@ pub async fn run_stdio() {
     #[cfg(unix)]
     let (stdin, stdout) = (
         async_lsp::stdio::PipeStdin::lock_tokio().expect("stdin is not lockable as an async pipe"),
-        async_lsp::stdio::PipeStdout::lock_tokio().expect("stdout is not lockable as an async pipe"),
+        async_lsp::stdio::PipeStdout::lock_tokio()
+            .expect("stdout is not lockable as an async pipe"),
     );
+    
     // Fallback to spawn-blocking read/write otherwise, bridged from tokio's IO traits to
     // `futures`'s via `tokio-util`'s compatibility layer.
     #[cfg(not(unix))]

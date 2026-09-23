@@ -1,15 +1,10 @@
-//! A "closest declared name" lookup, built on [`strsim::levenshtein`] — the fix suggestion behind
-//! both the "did you mean '...'?" suffix [`crate::diagnostics`] appends to an undeclared-name
-//! error and the "change to '...'" quick fix [`crate::code_action`] offers for it, using the
-//! candidate lists [`crate::names`] extracts from the document's raw parse.
-
-/// Finds the candidate closest to `name` by Levenshtein distance, provided it is close enough to
-/// be worth suggesting as a typo fix — within a third of `name`'s own length, rounded up and never
-/// less than 1 (so a one- or two-character name still tolerates a single-character slip). Ties
-/// keep whichever candidate `candidates` yields first. A candidate identical to `name` is never
-/// suggested — that would not be a typo fix at all, and can happen when `name` is itself a
-/// legitimate declaration excluded from `candidates` by the caller only in some cases.
-pub fn closest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+/// A "closest declared name" lookup, built on [`strsim::levenshtein`] — the fix suggestion behind
+/// both the "did you mean '...'?" suffix [`crate::diagnostics`] appends to an undeclared-name
+/// error and the "change to '...'" quick fix [`crate::code_action`] offers for it, using the
+/// candidate lists [`crate::names`] extracts from the document's raw parse.
+pub fn closest<'a, I>(name: &str, candidates: I) -> Option<&'a str> 
+    where I: IntoIterator<Item = &'a str>
+{
     let max_distance = name.chars().count().div_ceil(3).max(1);
 
     candidates
