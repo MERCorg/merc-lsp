@@ -30,14 +30,19 @@ use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
 
-pub use crate::completion_context::CompletionCategory;
 use crate::completion_context;
+pub use crate::completion_context::CompletionCategory;
 use crate::convert::LineIndex;
 use crate::names::SYSTEM_SORTS;
 
 /// Completion items listing the `.mcrl2` files (and subdirectories) available at the `%import`
 /// path the cursor is currently sitting in.
-pub fn import_path_completions(text: &str, line_index: &LineIndex, doc_path: Option<&Path>, position: Position) -> Option<Vec<CompletionItem>> {
+pub fn import_path_completions(
+    text: &str,
+    line_index: &LineIndex,
+    doc_path: Option<&Path>,
+    position: Position,
+) -> Option<Vec<CompletionItem>> {
     let doc_dir = doc_path?.parent().unwrap_or_else(|| Path::new("."));
     let offset = line_index.offset(text, position)?;
     let typed = completion_context::import_path_prefix(text, offset)?;
@@ -95,7 +100,9 @@ pub fn import_path_completions(text: &str, line_index: &LineIndex, doc_path: Opt
 const DATA_KEYWORDS: &[&str] = &["true", "false", "whr", "end", "forall", "exists", "lambda"];
 
 /// Keywords that start a process-algebra term.
-const PROCESS_KEYWORDS: &[&str] = &["delta", "tau", "sum", "dist", "hide", "block", "allow", "comm", "rename"];
+const PROCESS_KEYWORDS: &[&str] = &[
+    "delta", "tau", "sum", "dist", "hide", "block", "allow", "comm", "rename",
+];
 
 /// Keywords that start or continue a PBES/PRES formula.
 const FORMULA_KEYWORDS: &[&str] = &["true", "false", "val", "forall", "exists"];
@@ -105,7 +112,9 @@ const FORMULA_KEYWORDS: &[&str] = &["true", "false", "val", "forall", "exists"];
 const ACTION_KEYWORDS: &[&str] = &["true", "false", "val", "forall", "exists"];
 
 /// Keywords that start or continue a modal (mu-calculus) state formula.
-const STATE_FORMULA_KEYWORDS: &[&str] = &["true", "false", "val", "forall", "exists", "inf", "sup", "sum", "mu", "nu", "delay", "yaled"];
+const STATE_FORMULA_KEYWORDS: &[&str] = &[
+    "true", "false", "val", "forall", "exists", "inf", "sup", "sum", "mu", "nu", "delay", "yaled",
+];
 
 /// The keywords relevant to `category` — a subset of [`crate::semantic_tokens::KEYWORDS`], except
 /// for [`CompletionCategory::Unscoped`], which offers all of them (matching this module's
@@ -139,24 +148,48 @@ fn system_sorts_for(category: CompletionCategory) -> &'static [&'static str] {
 }
 
 /// Builds the completion list for a process specification, filtered to `category`.
-pub fn completions(spec: &UntypedProcessSpecification, category: CompletionCategory) -> Vec<CompletionItem> {
+pub fn completions(
+    spec: &UntypedProcessSpecification,
+    category: CompletionCategory,
+) -> Vec<CompletionItem> {
     let mut items = base_items(category);
 
-    if matches!(category, CompletionCategory::Sort | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::Sort | CompletionCategory::Unscoped
+    ) {
         push_sort_items(&spec.data_specification, &mut items);
     }
-    if matches!(category, CompletionCategory::Data | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::Data | CompletionCategory::Unscoped
+    ) {
         push_data_value_items(&spec.data_specification, &mut items);
         for decl in &spec.global_variables {
-            items.push(item(&decl.identifier, CompletionItemKind::VARIABLE, Some(decl.sort.to_string())));
+            items.push(item(
+                &decl.identifier,
+                CompletionItemKind::VARIABLE,
+                Some(decl.sort.to_string()),
+            ));
         }
     }
-    if matches!(category, CompletionCategory::ActionOrProcess | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::ActionOrProcess | CompletionCategory::Unscoped
+    ) {
         for decl in &spec.action_declarations {
-            items.push(item(&decl.identifier, CompletionItemKind::EVENT, sort_list_detail(&decl.args)));
+            items.push(item(
+                &decl.identifier,
+                CompletionItemKind::EVENT,
+                sort_list_detail(&decl.args),
+            ));
         }
         for decl in &spec.process_declarations {
-            items.push(item(&decl.identifier, CompletionItemKind::METHOD, id_decl_list_detail(&decl.params)));
+            items.push(item(
+                &decl.identifier,
+                CompletionItemKind::METHOD,
+                id_decl_list_detail(&decl.params),
+            ));
         }
     }
 
@@ -170,18 +203,35 @@ pub fn completions(spec: &UntypedProcessSpecification, category: CompletionCateg
 pub fn pbes_completions(spec: &UntypedPbes, category: CompletionCategory) -> Vec<CompletionItem> {
     let mut items = base_items(category);
 
-    if matches!(category, CompletionCategory::Sort | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::Sort | CompletionCategory::Unscoped
+    ) {
         push_sort_items(&spec.data_specification, &mut items);
     }
-    if matches!(category, CompletionCategory::Data | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::Data | CompletionCategory::Unscoped
+    ) {
         push_data_value_items(&spec.data_specification, &mut items);
         for decl in &spec.global_variables {
-            items.push(item(&decl.identifier, CompletionItemKind::VARIABLE, Some(decl.sort.to_string())));
+            items.push(item(
+                &decl.identifier,
+                CompletionItemKind::VARIABLE,
+                Some(decl.sort.to_string()),
+            ));
         }
     }
-    if matches!(category, CompletionCategory::PropositionalVariable | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::PropositionalVariable | CompletionCategory::Unscoped
+    ) {
         for eqn in &spec.equations {
-            items.push(item(&eqn.variable.identifier, CompletionItemKind::METHOD, id_decl_list_detail(&eqn.variable.parameters)));
+            items.push(item(
+                &eqn.variable.identifier,
+                CompletionItemKind::METHOD,
+                id_decl_list_detail(&eqn.variable.parameters),
+            ));
         }
     }
 
@@ -195,18 +245,35 @@ pub fn pbes_completions(spec: &UntypedPbes, category: CompletionCategory) -> Vec
 pub fn pres_completions(spec: &UntypedPres, category: CompletionCategory) -> Vec<CompletionItem> {
     let mut items = base_items(category);
 
-    if matches!(category, CompletionCategory::Sort | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::Sort | CompletionCategory::Unscoped
+    ) {
         push_sort_items(&spec.data_specification, &mut items);
     }
-    if matches!(category, CompletionCategory::Data | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::Data | CompletionCategory::Unscoped
+    ) {
         push_data_value_items(&spec.data_specification, &mut items);
         for decl in &spec.global_variables {
-            items.push(item(&decl.identifier, CompletionItemKind::VARIABLE, Some(decl.sort.to_string())));
+            items.push(item(
+                &decl.identifier,
+                CompletionItemKind::VARIABLE,
+                Some(decl.sort.to_string()),
+            ));
         }
     }
-    if matches!(category, CompletionCategory::PropositionalVariable | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::PropositionalVariable | CompletionCategory::Unscoped
+    ) {
         for eqn in &spec.equations {
-            items.push(item(&eqn.variable.identifier, CompletionItemKind::METHOD, id_decl_list_detail(&eqn.variable.parameters)));
+            items.push(item(
+                &eqn.variable.identifier,
+                CompletionItemKind::METHOD,
+                id_decl_list_detail(&eqn.variable.parameters),
+            ));
         }
     }
 
@@ -220,21 +287,40 @@ pub fn pres_completions(spec: &UntypedPres, category: CompletionCategory) -> Vec
 /// recursively since — unlike a PBES/PRES's `equations` — they aren't listed anywhere flat (see
 /// [`push_state_variable_items`]). [`UntypedStateFrmSpec`] declares no `glob`al variables of its
 /// own either, unlike a process specification/PBES/PRES.
-pub fn modal_completions(spec: &UntypedStateFrmSpec, category: CompletionCategory) -> Vec<CompletionItem> {
+pub fn modal_completions(
+    spec: &UntypedStateFrmSpec,
+    category: CompletionCategory,
+) -> Vec<CompletionItem> {
     let mut items = base_items(category);
 
-    if matches!(category, CompletionCategory::Sort | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::Sort | CompletionCategory::Unscoped
+    ) {
         push_sort_items(&spec.data_specification, &mut items);
     }
-    if matches!(category, CompletionCategory::Data | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::Data | CompletionCategory::Unscoped
+    ) {
         push_data_value_items(&spec.data_specification, &mut items);
     }
-    if matches!(category, CompletionCategory::Action | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::Action | CompletionCategory::Unscoped
+    ) {
         for decl in &spec.action_declarations {
-            items.push(item(&decl.identifier, CompletionItemKind::EVENT, sort_list_detail(&decl.args)));
+            items.push(item(
+                &decl.identifier,
+                CompletionItemKind::EVENT,
+                sort_list_detail(&decl.args),
+            ));
         }
     }
-    if matches!(category, CompletionCategory::StateVariable | CompletionCategory::Unscoped) {
+    if matches!(
+        category,
+        CompletionCategory::StateVariable | CompletionCategory::Unscoped
+    ) {
         push_state_variable_items(&spec.formula, &mut items);
     }
 
@@ -247,17 +333,33 @@ pub fn modal_completions(spec: &UntypedStateFrmSpec, category: CompletionCategor
 fn push_state_variable_items(formula: &StateFrm, items: &mut Vec<CompletionItem>) {
     match &formula.node {
         StateFrmKind::FixedPoint { variable, body, .. } => {
-            let detail = (!variable.arguments.is_empty()).then(|| variable.arguments.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "));
-            items.push(item(&variable.identifier, CompletionItemKind::METHOD, detail));
+            let detail = (!variable.arguments.is_empty()).then(|| {
+                variable
+                    .arguments
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            });
+            items.push(item(
+                &variable.identifier,
+                CompletionItemKind::METHOD,
+                detail,
+            ));
             push_state_variable_items(body, items);
         }
-        StateFrmKind::Unary { expr, .. } | StateFrmKind::Modality { expr, .. } => push_state_variable_items(expr, items),
+        StateFrmKind::Unary { expr, .. } | StateFrmKind::Modality { expr, .. } => {
+            push_state_variable_items(expr, items)
+        }
         StateFrmKind::Binary { lhs, rhs, .. } => {
             push_state_variable_items(lhs, items);
             push_state_variable_items(rhs, items);
         }
-        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => push_state_variable_items(body, items),
-        StateFrmKind::DataValExprLeftMult(_, expr) | StateFrmKind::DataValExprRightMult(expr, _) => push_state_variable_items(expr, items),
+        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => {
+            push_state_variable_items(body, items)
+        }
+        StateFrmKind::DataValExprLeftMult(_, expr)
+        | StateFrmKind::DataValExprRightMult(expr, _) => push_state_variable_items(expr, items),
         StateFrmKind::True
         | StateFrmKind::False
         | StateFrmKind::Delay(_)
@@ -273,7 +375,11 @@ fn push_state_variable_items(formula: &StateFrm, items: &mut Vec<CompletionItem>
 /// `UntypedDataSpecification` subtree.
 fn push_sort_items(data: &UntypedDataSpecification, items: &mut Vec<CompletionItem>) {
     for decl in &data.sort_declarations {
-        items.push(item(&decl.identifier, CompletionItemKind::STRUCT, decl.expr.as_ref().map(ToString::to_string)));
+        items.push(item(
+            &decl.identifier,
+            CompletionItemKind::STRUCT,
+            decl.expr.as_ref().map(ToString::to_string),
+        ));
     }
 }
 
@@ -281,14 +387,26 @@ fn push_sort_items(data: &UntypedDataSpecification, items: &mut Vec<CompletionIt
 /// declarations usable as a data *value*, as opposed to [`push_sort_items`]'s sort names.
 fn push_data_value_items(data: &UntypedDataSpecification, items: &mut Vec<CompletionItem>) {
     for decl in &data.constructor_declarations {
-        items.push(item(&decl.identifier, CompletionItemKind::ENUM_MEMBER, Some(decl.sort.to_string())));
+        items.push(item(
+            &decl.identifier,
+            CompletionItemKind::ENUM_MEMBER,
+            Some(decl.sort.to_string()),
+        ));
     }
     for decl in &data.map_declarations {
-        items.push(item(&decl.identifier, CompletionItemKind::FUNCTION, Some(decl.sort.to_string())));
+        items.push(item(
+            &decl.identifier,
+            CompletionItemKind::FUNCTION,
+            Some(decl.sort.to_string()),
+        ));
     }
     for eqn_spec in &data.equation_declarations {
         for decl in &eqn_spec.variables {
-            items.push(item(&decl.identifier, CompletionItemKind::VARIABLE, Some(decl.sort.to_string())));
+            items.push(item(
+                &decl.identifier,
+                CompletionItemKind::VARIABLE,
+                Some(decl.sort.to_string()),
+            ));
         }
     }
 }
@@ -296,10 +414,16 @@ fn push_data_value_items(data: &UntypedDataSpecification, items: &mut Vec<Comple
 /// The keyword and built-in-sort items relevant to `category` — see [`keywords_for`]/
 /// [`system_sorts_for`].
 fn base_items(category: CompletionCategory) -> Vec<CompletionItem> {
-    let keywords = keywords_for(category).iter().map(|&keyword| item(keyword, CompletionItemKind::KEYWORD, None));
-    let system_sorts = system_sorts_for(category)
+    let keywords = keywords_for(category)
         .iter()
-        .map(|&sort| item(sort, CompletionItemKind::STRUCT, Some("built-in sort".to_string())));
+        .map(|&keyword| item(keyword, CompletionItemKind::KEYWORD, None));
+    let system_sorts = system_sorts_for(category).iter().map(|&sort| {
+        item(
+            sort,
+            CompletionItemKind::STRUCT,
+            Some("built-in sort".to_string()),
+        )
+    });
     keywords.chain(system_sorts).collect()
 }
 
@@ -308,13 +432,24 @@ fn base_items(category: CompletionCategory) -> Vec<CompletionItem> {
 /// own `detail` formatting for the same declaration kinds, so hover-over-completion-item and the
 /// outline read the same way.
 fn id_decl_list_detail<Id>(params: &[merc_syntax::IdDecl<Id>]) -> Option<String> {
-    (!params.is_empty()).then(|| params.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))
+    (!params.is_empty()).then(|| {
+        params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
 }
 
 /// As [`id_decl_list_detail`], for an action's unnamed argument-sort list (`#`-joined, matching
 /// mCRL2's own product-sort notation — see `symbols.rs`'s identical formatting).
 fn sort_list_detail(args: &[merc_syntax::SortExpression]) -> Option<String> {
-    (!args.is_empty()).then(|| args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" # "))
+    (!args.is_empty()).then(|| {
+        args.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" # ")
+    })
 }
 
 fn item(label: &str, kind: CompletionItemKind, detail: Option<String>) -> CompletionItem {
@@ -336,20 +471,27 @@ mod tests {
 
     async fn completions_for(text: &str) -> Vec<CompletionItem> {
         match parse(SpecKind::Process, text.to_string()).await {
-            ParseOutcome::Ok(Specification::Process(spec)) => completions(&spec, CompletionCategory::Unscoped),
+            ParseOutcome::Ok(Specification::Process(spec)) => {
+                completions(&spec, CompletionCategory::Unscoped)
+            }
             _ => panic!("fixture failed to parse"),
         }
     }
 
     async fn pbes_completions_for(text: &str) -> Vec<CompletionItem> {
         match parse(SpecKind::Pbes, text.to_string()).await {
-            ParseOutcome::Ok(Specification::Pbes(spec)) => pbes_completions(&spec, CompletionCategory::Unscoped),
+            ParseOutcome::Ok(Specification::Pbes(spec)) => {
+                pbes_completions(&spec, CompletionCategory::Unscoped)
+            }
             _ => panic!("fixture failed to parse"),
         }
     }
 
     fn find<'a>(items: &'a [CompletionItem], label: &str) -> &'a CompletionItem {
-        items.iter().find(|item| item.label == label).unwrap_or_else(|| panic!("no completion item labelled '{label}'"))
+        items
+            .iter()
+            .find(|item| item.label == label)
+            .unwrap_or_else(|| panic!("no completion item labelled '{label}'"))
     }
 
     fn contains(items: &[CompletionItem], label: &str) -> bool {
@@ -362,7 +504,10 @@ mod tests {
         let items = completions_for(text).await;
 
         assert_eq!(find(&items, "D").kind, Some(CompletionItemKind::STRUCT));
-        assert_eq!(find(&items, "c").kind, Some(CompletionItemKind::ENUM_MEMBER));
+        assert_eq!(
+            find(&items, "c").kind,
+            Some(CompletionItemKind::ENUM_MEMBER)
+        );
         assert_eq!(find(&items, "f").kind, Some(CompletionItemKind::FUNCTION));
         assert_eq!(find(&items, "x").kind, Some(CompletionItemKind::VARIABLE));
         assert_eq!(find(&items, "g").kind, Some(CompletionItemKind::VARIABLE));
@@ -401,7 +546,9 @@ mod tests {
     async fn pres_equation_gets_a_completion_item() {
         let text = "pres mu X(n: Bool) = true;\ninit X(true);";
         let items = match parse(SpecKind::Pres, text.to_string()).await {
-            ParseOutcome::Ok(Specification::Pres(spec)) => pres_completions(&spec, CompletionCategory::Unscoped),
+            ParseOutcome::Ok(Specification::Pres(spec)) => {
+                pres_completions(&spec, CompletionCategory::Unscoped)
+            }
             _ => panic!("fixture failed to parse"),
         };
         let equation = find(&items, "X");
@@ -413,7 +560,9 @@ mod tests {
     async fn sort_category_only_offers_sorts_and_built_ins() {
         let text = "sort D;\ncons c: D;\nact a: D;\nproc P(n: D) = a(n);\ninit P(c);";
         let outcome = parse(SpecKind::Process, text.to_string()).await;
-        let ParseOutcome::Ok(Specification::Process(spec)) = outcome else { panic!("fixture failed to parse") };
+        let ParseOutcome::Ok(Specification::Process(spec)) = outcome else {
+            panic!("fixture failed to parse")
+        };
         let items = completions(&spec, CompletionCategory::Sort);
 
         assert!(contains(&items, "D"));
@@ -421,51 +570,93 @@ mod tests {
         assert!(!contains(&items, "c"), "a constructor is not a valid sort");
         assert!(!contains(&items, "a"), "an action is not a valid sort");
         assert!(!contains(&items, "P"), "a process is not a valid sort");
-        assert!(!contains(&items, "proc"), "a section keyword does not belong in a sort expression");
+        assert!(
+            !contains(&items, "proc"),
+            "a section keyword does not belong in a sort expression"
+        );
     }
 
     #[tokio::test]
     async fn data_category_excludes_sorts_actions_and_processes() {
         let text = "sort D;\ncons c: D;\nact a: D;\nproc P(n: D) = a(n);\ninit P(c);";
         let outcome = parse(SpecKind::Process, text.to_string()).await;
-        let ParseOutcome::Ok(Specification::Process(spec)) = outcome else { panic!("fixture failed to parse") };
+        let ParseOutcome::Ok(Specification::Process(spec)) = outcome else {
+            panic!("fixture failed to parse")
+        };
         let items = completions(&spec, CompletionCategory::Data);
 
         assert!(contains(&items, "c"));
-        assert!(contains(&items, "true"), "a data keyword belongs in a data expression");
-        assert!(!contains(&items, "D"), "a sort name is not a valid data value");
-        assert!(!contains(&items, "Nat"), "a built-in sort is not a valid data value");
-        assert!(!contains(&items, "a"), "an action name is not a valid data value");
-        assert!(!contains(&items, "P"), "a process name is not a valid data value");
+        assert!(
+            contains(&items, "true"),
+            "a data keyword belongs in a data expression"
+        );
+        assert!(
+            !contains(&items, "D"),
+            "a sort name is not a valid data value"
+        );
+        assert!(
+            !contains(&items, "Nat"),
+            "a built-in sort is not a valid data value"
+        );
+        assert!(
+            !contains(&items, "a"),
+            "an action name is not a valid data value"
+        );
+        assert!(
+            !contains(&items, "P"),
+            "a process name is not a valid data value"
+        );
     }
 
     #[tokio::test]
     async fn action_or_process_category_excludes_sorts_and_data_values() {
         let text = "sort D;\ncons c: D;\nact a: D;\nproc P(n: D) = a(n);\ninit P(c);";
         let outcome = parse(SpecKind::Process, text.to_string()).await;
-        let ParseOutcome::Ok(Specification::Process(spec)) = outcome else { panic!("fixture failed to parse") };
+        let ParseOutcome::Ok(Specification::Process(spec)) = outcome else {
+            panic!("fixture failed to parse")
+        };
         let items = completions(&spec, CompletionCategory::ActionOrProcess);
 
         assert!(contains(&items, "a"));
         assert!(contains(&items, "P"));
-        assert!(contains(&items, "delta"), "a process keyword belongs in a process term");
-        assert!(!contains(&items, "c"), "a constructor is not an action or process name");
-        assert!(!contains(&items, "D"), "a sort name is not an action or process name");
+        assert!(
+            contains(&items, "delta"),
+            "a process keyword belongs in a process term"
+        );
+        assert!(
+            !contains(&items, "c"),
+            "a constructor is not an action or process name"
+        );
+        assert!(
+            !contains(&items, "D"),
+            "a sort name is not an action or process name"
+        );
     }
 
     #[tokio::test]
     async fn propositional_variable_category_excludes_everything_else() {
         let text = "pbes mu X(n: Bool) = val(n);\ninit X(true);";
         let outcome = parse(SpecKind::Pbes, text.to_string()).await;
-        let ParseOutcome::Ok(Specification::Pbes(spec)) = outcome else { panic!("fixture failed to parse") };
+        let ParseOutcome::Ok(Specification::Pbes(spec)) = outcome else {
+            panic!("fixture failed to parse")
+        };
         let items = pbes_completions(&spec, CompletionCategory::PropositionalVariable);
 
         assert!(contains(&items, "X"));
-        assert!(contains(&items, "val"), "a formula keyword belongs in a formula");
-        assert!(!contains(&items, "Bool"), "a built-in sort is not a propositional variable");
+        assert!(
+            contains(&items, "val"),
+            "a formula keyword belongs in a formula"
+        );
+        assert!(
+            !contains(&items, "Bool"),
+            "a built-in sort is not a propositional variable"
+        );
     }
 
-    async fn modal_completions_for(text: &str, category: CompletionCategory) -> Vec<CompletionItem> {
+    async fn modal_completions_for(
+        text: &str,
+        category: CompletionCategory,
+    ) -> Vec<CompletionItem> {
         match parse(SpecKind::Modal, text.to_string()).await {
             ParseOutcome::Ok(Specification::Modal(spec)) => modal_completions(&spec, category),
             _ => panic!("fixture failed to parse"),
@@ -488,7 +679,10 @@ mod tests {
         assert_eq!(find(&items, "X").kind, Some(CompletionItemKind::METHOD));
         let inner = find(&items, "Y");
         assert_eq!(inner.kind, Some(CompletionItemKind::METHOD));
-        assert!(inner.detail.is_some(), "expected 'Y' to show its own parameter");
+        assert!(
+            inner.detail.is_some(),
+            "expected 'Y' to show its own parameter"
+        );
     }
 
     #[tokio::test]
@@ -497,8 +691,14 @@ mod tests {
         let items = modal_completions_for(text, CompletionCategory::Action).await;
 
         assert!(contains(&items, "a"));
-        assert!(!contains(&items, "X"), "a fixpoint variable is not an action name");
-        assert!(!contains(&items, "Nat"), "a built-in sort is not an action name");
+        assert!(
+            !contains(&items, "X"),
+            "a fixpoint variable is not an action name"
+        );
+        assert!(
+            !contains(&items, "Nat"),
+            "a built-in sort is not an action name"
+        );
     }
 
     #[tokio::test]
@@ -507,8 +707,14 @@ mod tests {
         let items = modal_completions_for(text, CompletionCategory::StateVariable).await;
 
         assert!(contains(&items, "X"));
-        assert!(contains(&items, "nu"), "a state-formula keyword belongs in a state formula");
-        assert!(!contains(&items, "a"), "an action name is not a fixpoint variable");
+        assert!(
+            contains(&items, "nu"),
+            "a state-formula keyword belongs in a state formula"
+        );
+        assert!(
+            !contains(&items, "a"),
+            "an action name is not a fixpoint variable"
+        );
     }
 
     #[test]
@@ -528,11 +734,22 @@ mod tests {
         let line_index = LineIndex::new(&text);
         let offset = text.find("c\"").unwrap() + 1;
         let position = line_index.position(&text, offset);
-        let items = import_path_completions(&text, &line_index, Some(main_path.as_path()), position).expect("should offer import completions");
+        let items =
+            import_path_completions(&text, &line_index, Some(main_path.as_path()), position)
+                .expect("should offer import completions");
 
-        assert!(items.iter().any(|item| item.label == "common.mcrl2"), "expected common.mcrl2 among {items:?}");
-        assert!(items.iter().any(|item| item.label == "sub/"), "expected the sub directory among {items:?}");
-        assert!(!items.iter().any(|item| item.label == "notes.txt"), "a non-mcrl2 file should not be offered");
+        assert!(
+            items.iter().any(|item| item.label == "common.mcrl2"),
+            "expected common.mcrl2 among {items:?}"
+        );
+        assert!(
+            items.iter().any(|item| item.label == "sub/"),
+            "expected the sub directory among {items:?}"
+        );
+        assert!(
+            !items.iter().any(|item| item.label == "notes.txt"),
+            "a non-mcrl2 file should not be offered"
+        );
     }
 
     #[test]
@@ -540,7 +757,15 @@ mod tests {
         let text = "init delta;".to_string();
         let line_index = LineIndex::new(&text);
         let position = line_index.position(&text, 0);
-        assert!(import_path_completions(&text, &line_index, Some(Path::new("/tmp/main.mcrl2")), position).is_none());
+        assert!(
+            import_path_completions(
+                &text,
+                &line_index,
+                Some(Path::new("/tmp/main.mcrl2")),
+                position
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -555,16 +780,25 @@ mod tests {
         let line_index = LineIndex::new(&text);
         let offset = text.find("co\"").unwrap() + "co".len();
         let position = line_index.position(&text, offset);
-        let items = import_path_completions(&text, &line_index, Some(main_path.as_path()), position).expect("should offer import completions");
+        let items =
+            import_path_completions(&text, &line_index, Some(main_path.as_path()), position)
+                .expect("should offer import completions");
 
-        let item = items.iter().find(|item| item.label == "common.mcrl2").expect("expected common.mcrl2 among the sub-directory's contents");
+        let item = items
+            .iter()
+            .find(|item| item.label == "common.mcrl2")
+            .expect("expected common.mcrl2 among the sub-directory's contents");
         let Some(CompletionTextEdit::Edit(edit)) = &item.text_edit else {
             panic!("expected a plain TextEdit, got: {:?}", item.text_edit);
         };
         assert_eq!(edit.new_text, "common.mcrl2");
         let start_offset = line_index.offset(&text, edit.range.start).unwrap();
         let end_offset = line_index.offset(&text, edit.range.end).unwrap();
-        assert_eq!(&text[start_offset..end_offset], "co", "should only replace the partial filename, not 'sub/'");
+        assert_eq!(
+            &text[start_offset..end_offset],
+            "co",
+            "should only replace the partial filename, not 'sub/'"
+        );
     }
 
     #[test]
@@ -588,9 +822,14 @@ mod tests {
         let line_index = LineIndex::new(&text);
         let offset = text.find("./\"").unwrap() + "./".len();
         let position = line_index.position(&text, offset);
-        let items = import_path_completions(&text, &line_index, Some(main_path.as_path()), position).expect("should offer import completions");
+        let items =
+            import_path_completions(&text, &line_index, Some(main_path.as_path()), position)
+                .expect("should offer import completions");
 
-        let item = items.iter().find(|item| item.label == "common.mcrl2").expect("expected common.mcrl2 among {items:?}");
+        let item = items
+            .iter()
+            .find(|item| item.label == "common.mcrl2")
+            .expect("expected common.mcrl2 among {items:?}");
         assert_eq!(item.filter_text.as_deref(), Some("./common.mcrl2"));
     }
 }

@@ -46,12 +46,20 @@ pub fn code_actions(
     let mut actions: Vec<CodeActionOrCommand> = match &document.parsed {
         ParseOutcome::Ok(spec) => {
             let hits = match spec {
-                Specification::Process(spec) => {
-                    ambiguity::find_in_process_specification(spec, &document.text, &document.sources)
+                Specification::Process(spec) => ambiguity::find_in_process_specification(
+                    spec,
+                    &document.text,
+                    &document.sources,
+                ),
+                Specification::Pbes(spec) => {
+                    ambiguity::find_in_pbes_specification(spec, &document.text, &document.sources)
                 }
-                Specification::Pbes(spec) => ambiguity::find_in_pbes_specification(spec, &document.text, &document.sources),
-                Specification::Pres(spec) => ambiguity::find_in_pres_specification(spec, &document.text, &document.sources),
-                Specification::Modal(spec) => ambiguity::find_in_modal_specification(spec, &document.text, &document.sources),
+                Specification::Pres(spec) => {
+                    ambiguity::find_in_pres_specification(spec, &document.text, &document.sources)
+                }
+                Specification::Modal(spec) => {
+                    ambiguity::find_in_modal_specification(spec, &document.text, &document.sources)
+                }
             };
 
             hits.iter()
@@ -86,16 +94,28 @@ pub fn code_actions(
 fn rename_quick_fix(document: &Document, uri: &Url, range: Range) -> Option<CodeActionOrCommand> {
     let (span, candidate) = match &document.checked {
         Some(CheckedOutcome::Process(TypecheckOutcome::Error(error))) => {
-            diagnostics::undeclared_name_candidate_for_process_error(error, document.parsed_process_specification()?)?
+            diagnostics::undeclared_name_candidate_for_process_error(
+                error,
+                document.parsed_process_specification()?,
+            )?
         }
         Some(CheckedOutcome::Pbes(PbesTypecheckOutcome::Error(error))) => {
-            diagnostics::undeclared_name_candidate_for_pbes_error(error, document.parsed_pbes_specification()?)?
+            diagnostics::undeclared_name_candidate_for_pbes_error(
+                error,
+                document.parsed_pbes_specification()?,
+            )?
         }
         Some(CheckedOutcome::Pres(PresTypecheckOutcome::Error(error))) => {
-            diagnostics::undeclared_name_candidate_for_pres_error(error, document.parsed_pres_specification()?)?
+            diagnostics::undeclared_name_candidate_for_pres_error(
+                error,
+                document.parsed_pres_specification()?,
+            )?
         }
         Some(CheckedOutcome::Modal(ModalTypecheckOutcome::Error(error))) => {
-            diagnostics::undeclared_name_candidate_for_modal_error(error, document.parsed_modal_specification()?)?
+            diagnostics::undeclared_name_candidate_for_modal_error(
+                error,
+                document.parsed_modal_specification()?,
+            )?
         }
         _ => return None,
     };
@@ -206,8 +226,16 @@ mod tests {
         let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
             panic!("fixture failed to parse");
         };
-        let checked = CheckedOutcome::Process(crate::typecheck::typecheck_ignoring_sources((**spec).clone()).await);
-        Document::new(text.to_string(), 0, outcome, Some(checked), SourceMap::new())
+        let checked = CheckedOutcome::Process(
+            crate::typecheck::typecheck_ignoring_sources((**spec).clone()).await,
+        );
+        Document::new(
+            text.to_string(),
+            0,
+            outcome,
+            Some(checked),
+            SourceMap::new(),
+        )
     }
 
     fn params(uri: &Url, range: Range) -> CodeActionParams {
@@ -314,7 +342,8 @@ mod tests {
                 character: 0,
             },
         };
-        let actions = code_actions(&documents, params(&uri, whole_document)).expect("should offer a quick fix");
+        let actions = code_actions(&documents, params(&uri, whole_document))
+            .expect("should offer a quick fix");
         assert_eq!(actions.len(), 1);
 
         let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
@@ -333,7 +362,10 @@ mod tests {
         let start = text.find("redy").expect("fixture contains 'redy'");
         let index = LineIndex::new(text);
         assert_eq!(edits[0].range.start, index.position(text, start));
-        assert_eq!(edits[0].range.end, index.position(text, start + "redy".len()));
+        assert_eq!(
+            edits[0].range.end,
+            index.position(text, start + "redy".len())
+        );
     }
 
     #[tokio::test]

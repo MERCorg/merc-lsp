@@ -2,8 +2,9 @@
 /// both the "did you mean '...'?" suffix [`crate::diagnostics`] appends to an undeclared-name
 /// error and the "change to '...'" quick fix [`crate::code_action`] offers for it, using the
 /// candidate lists [`crate::names`] extracts from the document's raw parse.
-pub fn closest<'a, I>(name: &str, candidates: I) -> Option<&'a str> 
-    where I: IntoIterator<Item = &'a str>
+pub fn closest<'a, I>(name: &str, candidates: I) -> Option<&'a str>
+where
+    I: IntoIterator<Item = &'a str>,
 {
     let max_distance = name.chars().count().div_ceil(3).max(1);
 

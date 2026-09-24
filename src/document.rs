@@ -31,32 +31,17 @@ use crate::typecheck::PresTypecheckOutcome;
 use crate::typecheck::TypecheckOutcome;
 
 /// A single open (or otherwise tracked) document.
-///
-/// `text`, `line_index`, `parsed`, `checked`, `semantic_tokens`, `sources`, and `line_indexes` are
-/// the last *analyzed* snapshot — always mutually consistent, all seven updated together, only by
-/// `backend::analyze` (on `did_open` or `did_save`) — and every completion/hover/goto-definition/
-/// inlay-hint/semantic-tokens/document-symbol request reads exactly this snapshot, stale or not.
-/// `checked` is `None` only when `parsed` isn't [`ParseOutcome::Ok`] — type checking only makes
-/// sense once parsing has already succeeded — since every parsed kind now has a type checker (see
-/// `backend::analyze`).
-///
-/// `pending_text`/`pending_version` are the separate, *unanalyzed* half: the latest buffer
-/// contents `did_change` has recorded (see `backend::router`), updated on every keystroke — cheap
-/// bookkeeping only, never parsed or type checked until the next `did_save` hands them to
-/// `backend::analyze`, which is deliberately the only place mCRL2 parsing/type checking happens.
-/// That's expensive enough that re-running it on every edit would make typing sluggish for no
-/// benefit, since none of the analyzed fields above are shown to the client before a save anyway —
-/// see `backend::analyze`'s doc comment.
 pub struct Document {
+    /// The last *analyzed* snapshot, parsed and fills all fields
+    /// simultaneously.
     pub text: String,
     pub version: i32,
+
     pub line_index: LineIndex,
     pub parsed: ParseOutcome,
     pub checked: Option<CheckedOutcome>,
-    /// The `textDocument/semanticTokens/full` payload for `text`/`parsed` above.
+    /// The semantic tokens payload.
     pub semantic_tokens: Vec<SemanticToken>,
-    pub pending_text: String,
-    pub pending_version: i32,
     /// Every file `parsed`'s spans are global offsets into.
     pub sources: SourceMap,
     pub line_indexes: Vec<LineIndex>,
@@ -64,12 +49,12 @@ pub struct Document {
     /// modification time.
     import_mtimes: HashMap<String, SystemTime>,
     /// Every URI besides this document's own that `backend::analyze` published diagnostics
-    /// against as of the last analysis — a diagnostic whose real span lands in something this
-    /// document `%import`s (see [`Self::diagnostics`]) is published against *that* file's URI, so
-    /// `backend::analyze` needs to remember which foreign URIs it touched to clear them (publish
-    /// an empty list) once a later analysis no longer produces anything for them; starts empty and
-    /// is only ever written by `backend::analyze` itself.
+    /// against as of the last analysis.
     pub published_foreign_uris: Vec<Url>,
+    
+    /// The latest buffer `did_change` has recorded.
+    pub pending_text: String,
+    pub pending_version: i32,
 }
 
 /// The result of type checking a document, tagged by which kind of specification it checked —
@@ -85,23 +70,32 @@ impl Document {
     /// Builds a new document snapshot from `text` at `version`, together with
     /// the outcomes of having parsed and (if parsing succeeded) type checked
     /// that exact `text`.
-    pub fn new(text: String, version: i32, parsed: ParseOutcome, checked: Option<CheckedOutcome>, sources: SourceMap) -> Self {
+    pub fn new(
+        text: String,
+        version: i32,
+        parsed: ParseOutcome,
+        checked: Option<CheckedOutcome>,
+        sources: SourceMap,
+    ) -> Self {
         let line_index = LineIndex::new(&text);
-        let line_indexes = (0..sources.file_count()).map(|id| LineIndex::new(sources.text(SourceId::new(id)))).collect();
+        let line_indexes = (0..sources.file_count())
+            .map(|id| LineIndex::new(sources.text(SourceId::new(id))))
+            .collect();
+
         let import_mtimes = (0..sources.file_count())
             .map(SourceId::new)
             .filter(|&id| !sources.is_virtual(id))
             .filter_map(|id| {
                 let path = sources.path(id);
-                let mtime = std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok()?;
+                let mtime = std::fs::metadata(path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()?;
                 Some((path.to_string(), mtime))
             })
             .collect();
+
         Document {
-            // A freshly analyzed document has nothing pending beyond what it was just analyzed
-            // from — `backend::analyze` may still overwrite this immediately after construction if
-            // `did_change` recorded a newer edit while the analysis it just finished was in
-            // flight; see its doc comment.
+            // A freshly analyzed document has nothing pending.
             pending_text: text.clone(),
             pending_version: version,
             text,
@@ -109,8 +103,7 @@ impl Document {
             line_index,
             parsed,
             checked,
-            // Left empty here; callers fill this in via `compute_semantic_tokens` once the rest of
-            // the snapshot above is in place (it reads `text`/`line_index`/`parsed`).
+            // Left empty here; callers fill this in via `compute_semantic_tokens`.
             semantic_tokens: Vec::new(),
             sources,
             line_indexes,
@@ -119,75 +112,168 @@ impl Document {
         }
     }
 
-    /// Whether any file this document's own analysis pulled in (its `%import`s, or itself, since
-    /// both are tracked in [`Self::import_mtimes`] the same way) now has a different on-disk
-    /// modification time than it did when this snapshot was analyzed.
+    /// Whether any file this document's own analysis pulled in now has a
+    /// different on-disk modification time than it did when this snapshot was
+    /// analyzed.
     pub fn is_stale(&self) -> bool {
         self.import_mtimes.iter().any(|(path, &snapshot)| {
-            let current = std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
+            let current = std::fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok();
             current != Some(snapshot)
         })
     }
 
     /// Whether this document's own text `%import`s a file among `changed_paths` that wasn't
-    /// resolved (and so isn't in [`Self::import_mtimes`]) at this document's last analysis — the
-    /// case [`Self::is_stale`] can't detect on its own, since it only re-checks files already
-    /// known to have loaded successfully. `own_path` is this document's own on-disk path (`None`
-    /// for an untitled/unsaved buffer, which — like `%import` resolution itself, see `parse.rs`'s
-    /// module docs — has no directory a relative import path could resolve against).
-    pub fn has_newly_available_import(&self, own_path: Option<&std::path::Path>, changed_paths: &[std::path::PathBuf]) -> bool {
-        let Some(own_path) = own_path else { return false };
+    /// resolved (and so isn't in [`Self::import_mtimes`]) at this document's last analysis.
+    pub fn has_newly_available_import(
+        &self,
+        own_path: Option<&std::path::Path>,
+        changed_paths: &[std::path::PathBuf],
+    ) -> bool {
+        let Some(own_path) = own_path else {
+            return false;
+        };
+
         if changed_paths.is_empty() {
             return false;
         }
-        let dir = own_path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        merc_syntax::scan_imports(&self.text).into_iter().any(|directive| {
-            let import_path = dir.join(&directive.node.path);
-            changed_paths.iter().any(|changed| paths_match(changed, &import_path))
-        })
+
+        let dir = own_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        merc_syntax::scan_imports(&self.text)
+            .into_iter()
+            .any(|directive| {
+                let import_path = dir.join(&directive.node.path);
+                changed_paths
+                    .iter()
+                    .any(|changed| paths_match(changed, &import_path))
+            })
     }
 
-    /// All diagnostics for this document: parse errors (if any), plus — once parsing has
-    /// succeeded — any type errors (tagged with a distinct `source`; see
-    /// [`crate::diagnostics::type_diagnostics`] and its PBES/PRES/modal-formula counterparts).
+    /// All diagnostics for this document.
     ///
     /// Each diagnostic is paired with the URI it should actually be published against.
     pub fn diagnostics(&self, uri: &Url) -> Vec<(Url, Diagnostic)> {
-        let mut diags = diagnostics::diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, &self.parsed, uri);
-        // Purely syntactic (see `crate::ambiguity`'s module doc comment), so — unlike the
-        // `checked` match below — this runs on any successful parse regardless of whether type
-        // checking also succeeded.
+        let mut diags = diagnostics::diagnostics(
+            &self.text,
+            &self.line_index,
+            &self.sources,
+            &self.line_indexes,
+            &self.parsed,
+            uri,
+        );
+
+        // Purely syntactic ambiguity checks.
         if let ParseOutcome::Ok(spec) = &self.parsed {
             match spec {
-                Specification::Process(spec) => diags.extend(diagnostics::ambiguity_diagnostics_process(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec, uri)),
-                Specification::Pbes(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pbes(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec, uri)),
-                Specification::Pres(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pres(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec, uri)),
-                Specification::Modal(spec) => diags.extend(diagnostics::ambiguity_diagnostics_modal(&self.text, &self.line_index, &self.sources, &self.line_indexes, spec, uri)),
+                Specification::Process(spec) => {
+                    diags.extend(diagnostics::ambiguity_diagnostics_process(
+                        &self.text,
+                        &self.line_index,
+                        &self.sources,
+                        &self.line_indexes,
+                        spec,
+                        uri,
+                    ))
+                }
+                Specification::Pbes(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pbes(
+                    &self.text,
+                    &self.line_index,
+                    &self.sources,
+                    &self.line_indexes,
+                    spec,
+                    uri,
+                )),
+                Specification::Pres(spec) => diags.extend(diagnostics::ambiguity_diagnostics_pres(
+                    &self.text,
+                    &self.line_index,
+                    &self.sources,
+                    &self.line_indexes,
+                    spec,
+                    uri,
+                )),
+                Specification::Modal(spec) => {
+                    diags.extend(diagnostics::ambiguity_diagnostics_modal(
+                        &self.text,
+                        &self.line_index,
+                        &self.sources,
+                        &self.line_indexes,
+                        spec,
+                        uri,
+                    ))
+                }
             }
         }
+
         match &self.checked {
-            // `checked`'s variant always matches `parsed`'s (see this struct's own doc comment
-            // and `backend::analyze`), so the raw parse is always available here to build an
-            // undeclared-name suggestion from (see `diagnostics.rs`'s module docs).
             Some(CheckedOutcome::Process(outcome)) => {
-                let spec = self.parsed_process_specification().expect("checked implies a parsed process specification");
-                diags.extend(diagnostics::type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec, uri));
+                let spec = self
+                    .parsed_process_specification()
+                    .expect("checked implies a parsed process specification");
+                diags.extend(diagnostics::type_diagnostics(
+                    &self.text,
+                    &self.line_index,
+                    &self.sources,
+                    &self.line_indexes,
+                    outcome,
+                    spec,
+                    uri,
+                ));
             }
             Some(CheckedOutcome::Pbes(outcome)) => {
-                let spec = self.parsed_pbes_specification().expect("checked implies a parsed PBES");
-                diags.extend(diagnostics::pbes_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec, uri));
+                let spec = self
+                    .parsed_pbes_specification()
+                    .expect("checked implies a parsed PBES");
+                diags.extend(diagnostics::pbes_type_diagnostics(
+                    &self.text,
+                    &self.line_index,
+                    &self.sources,
+                    &self.line_indexes,
+                    outcome,
+                    spec,
+                    uri,
+                ));
             }
             Some(CheckedOutcome::Pres(outcome)) => {
-                let spec = self.parsed_pres_specification().expect("checked implies a parsed PRES");
-                diags.extend(diagnostics::pres_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec, uri));
+                let spec = self
+                    .parsed_pres_specification()
+                    .expect("checked implies a parsed PRES");
+                diags.extend(diagnostics::pres_type_diagnostics(
+                    &self.text,
+                    &self.line_index,
+                    &self.sources,
+                    &self.line_indexes,
+                    outcome,
+                    spec,
+                    uri,
+                ));
             }
             Some(CheckedOutcome::Modal(outcome)) => {
-                let spec = self.parsed_modal_specification().expect("checked implies a parsed modal formula");
-                diags.extend(diagnostics::modal_type_diagnostics(&self.text, &self.line_index, &self.sources, &self.line_indexes, outcome, spec, uri));
+                let spec = self
+                    .parsed_modal_specification()
+                    .expect("checked implies a parsed modal formula");
+                diags.extend(diagnostics::modal_type_diagnostics(
+                    &self.text,
+                    &self.line_index,
+                    &self.sources,
+                    &self.line_indexes,
+                    outcome,
+                    spec,
+                    uri,
+                ));
             }
             None => {}
         }
-        let import_diags = diagnostics::import_error_diagnostics(&self.text, &self.line_index, &self.sources, uri, &diags);
+
+        let import_diags = diagnostics::import_error_diagnostics(
+            &self.text,
+            &self.line_index,
+            &self.sources,
+            uri,
+            &diags,
+        );
         diags.extend(import_diags);
         diags
     }
@@ -295,10 +381,18 @@ impl Document {
             return Vec::new();
         };
         match spec {
-            Specification::Process(spec) => semantic_tokens::semantic_tokens(&self.text, &self.line_index, spec),
-            Specification::Pbes(spec) => semantic_tokens::pbes_semantic_tokens(&self.text, &self.line_index, spec),
-            Specification::Pres(spec) => semantic_tokens::pres_semantic_tokens(&self.text, &self.line_index, spec),
-            Specification::Modal(spec) => semantic_tokens::modal_semantic_tokens(&self.text, &self.line_index, spec),
+            Specification::Process(spec) => {
+                semantic_tokens::semantic_tokens(&self.text, &self.line_index, spec)
+            }
+            Specification::Pbes(spec) => {
+                semantic_tokens::pbes_semantic_tokens(&self.text, &self.line_index, spec)
+            }
+            Specification::Pres(spec) => {
+                semantic_tokens::pres_semantic_tokens(&self.text, &self.line_index, spec)
+            }
+            Specification::Modal(spec) => {
+                semantic_tokens::modal_semantic_tokens(&self.text, &self.line_index, spec)
+            }
         }
     }
 
@@ -319,7 +413,9 @@ impl Document {
             Some(CheckedOutcome::Process(TypecheckOutcome::Ok(spec))) => Some(spec.typing_info()),
             Some(CheckedOutcome::Pbes(PbesTypecheckOutcome::Ok(spec))) => Some(spec.typing_info()),
             Some(CheckedOutcome::Pres(PresTypecheckOutcome::Ok(spec))) => Some(spec.typing_info()),
-            Some(CheckedOutcome::Modal(ModalTypecheckOutcome::Ok(spec))) => Some(spec.typing_info()),
+            Some(CheckedOutcome::Modal(ModalTypecheckOutcome::Ok(spec))) => {
+                Some(spec.typing_info())
+            }
             _ => None,
         }
     }
@@ -369,7 +465,9 @@ mod tests {
         let ParseOutcome::Ok(Specification::Modal(spec)) = &outcome else {
             panic!("fixture failed to parse as a modal formula");
         };
-        let checked = Some(CheckedOutcome::Modal(typecheck_modal((**spec).clone()).await));
+        let checked = Some(CheckedOutcome::Modal(
+            typecheck_modal((**spec).clone()).await,
+        ));
         Document::new(text.to_string(), 0, outcome, checked, SourceMap::new())
     }
 
@@ -451,18 +549,34 @@ mod tests {
         let main_path = dir.path().join("main.mcrl2");
         let main_uri = Url::from_file_path(&main_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
-        let expected_offset = text.find("undeclared").expect("fixture contains 'undeclared'");
+        let expected_offset = text
+            .find("undeclared")
+            .expect("fixture contains 'undeclared'");
         let expected = LineIndex::new(&text).position(&text, expected_offset);
-        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let (outcome, sources) =
+            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
             panic!("fixture failed to parse");
         };
         let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
-        let document = Document::new(text, 0, outcome, Some(CheckedOutcome::Process(checked)), sources);
+        let document = Document::new(
+            text,
+            0,
+            outcome,
+            Some(CheckedOutcome::Process(checked)),
+            sources,
+        );
 
         let diags = document.diagnostics(&main_uri);
-        assert!(!diags.is_empty(), "expected the undeclared action to be reported");
-        assert_eq!(diags[0].0, main_uri, "should be published against main.mcrl2 itself: {:?}", diags[0]);
+        assert!(
+            !diags.is_empty(),
+            "expected the undeclared action to be reported"
+        );
+        assert_eq!(
+            diags[0].0, main_uri,
+            "should be published against main.mcrl2 itself: {:?}",
+            diags[0]
+        );
         assert_eq!(
             diags[0].1.range.start, expected,
             "diagnostic should be located at 'undeclared' in main.mcrl2, not clamped elsewhere: {:?}",
@@ -483,8 +597,16 @@ mod tests {
         let main_path = dir.path().join("main.mcrl2");
         let main_uri = Url::from_file_path(&main_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
-        let (outcome, sources) = crate::parse::parse(crate::parse::SpecKind::Process, text.clone(), Some(main_path)).await;
-        assert!(matches!(outcome, ParseOutcome::ParseError(_)), "expected a parse error");
+        let (outcome, sources) = crate::parse::parse(
+            crate::parse::SpecKind::Process,
+            text.clone(),
+            Some(main_path),
+        )
+        .await;
+        assert!(
+            matches!(outcome, ParseOutcome::ParseError(_)),
+            "expected a parse error"
+        );
         let document = Document::new(text.clone(), 0, outcome, None, sources);
 
         // One diagnostic on broken.mcrl2 itself (the real syntax error) plus a companion
@@ -501,7 +623,10 @@ mod tests {
             broken_uri.as_str().ends_with("broken.mcrl2"),
             "expected broken.mcrl2, got {broken_uri}"
         );
-        assert_eq!(broken_diag.severity, Some(lsp_types::DiagnosticSeverity::ERROR));
+        assert_eq!(
+            broken_diag.severity,
+            Some(lsp_types::DiagnosticSeverity::ERROR)
+        );
 
         let (import_uri, import_diag) = diags
             .iter()
@@ -509,9 +634,18 @@ mod tests {
             .expect("expected a companion diagnostic on main.mcrl2's own %import line");
         assert_eq!(import_uri, &main_uri);
         let index = LineIndex::new(&text);
-        assert_eq!(import_diag.range.start, index.position(&text, text.find("%import").unwrap()));
-        assert_eq!(import_diag.range.end, index.position(&text, text.find("\ninit").unwrap()));
-        let related = import_diag.related_information.as_ref().expect("expected related_information linking to broken.mcrl2");
+        assert_eq!(
+            import_diag.range.start,
+            index.position(&text, text.find("%import").unwrap())
+        );
+        assert_eq!(
+            import_diag.range.end,
+            index.position(&text, text.find("\ninit").unwrap())
+        );
+        let related = import_diag
+            .related_information
+            .as_ref()
+            .expect("expected related_information linking to broken.mcrl2");
         assert_eq!(related.len(), 1);
         assert_eq!(&related[0].location.uri, broken_uri);
         assert_eq!(related[0].location.range, broken_diag.range);
@@ -537,22 +671,34 @@ mod tests {
         let common_uri = Url::from_file_path(&common_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let common_text = std::fs::read_to_string(&common_path).unwrap();
-        let expected_offset = common_text.find("!exists").expect("fixture contains '!exists'");
+        let expected_offset = common_text
+            .find("!exists")
+            .expect("fixture contains '!exists'");
         let expected = LineIndex::new(&common_text).position(&common_text, expected_offset);
 
-        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let (outcome, sources) =
+            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
             panic!("fixture failed to parse");
         };
         let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
-        let document = Document::new(text, 0, outcome, Some(CheckedOutcome::Process(checked)), sources);
+        let document = Document::new(
+            text,
+            0,
+            outcome,
+            Some(CheckedOutcome::Process(checked)),
+            sources,
+        );
 
         let diags = document.diagnostics(&main_uri);
         let (uri, ambiguity_diag) = diags
             .iter()
             .find(|(_, diag)| diag.source.as_deref() == Some("merc-lsp:ambiguity"))
             .expect("expected the ambiguous prefix conflict to be reported");
-        assert_eq!(uri, &common_uri, "should be published against common.mcrl2, at its own real location: {ambiguity_diag:?}");
+        assert_eq!(
+            uri, &common_uri,
+            "should be published against common.mcrl2, at its own real location: {ambiguity_diag:?}"
+        );
         assert_eq!(ambiguity_diag.range.start, expected);
     }
 
@@ -571,22 +717,34 @@ mod tests {
         let common_uri = Url::from_file_path(&common_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let common_text = std::fs::read_to_string(&common_path).unwrap();
-        let expected_offset = common_text.find("undeclared").expect("fixture contains 'undeclared'");
+        let expected_offset = common_text
+            .find("undeclared")
+            .expect("fixture contains 'undeclared'");
         let expected = LineIndex::new(&common_text).position(&common_text, expected_offset);
 
-        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let (outcome, sources) =
+            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
             panic!("fixture failed to parse");
         };
         let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
-        let document = Document::new(text, 0, outcome, Some(CheckedOutcome::Process(checked)), sources);
+        let document = Document::new(
+            text,
+            0,
+            outcome,
+            Some(CheckedOutcome::Process(checked)),
+            sources,
+        );
 
         let diags = document.diagnostics(&main_uri);
         let (uri, type_diag) = diags
             .iter()
             .find(|(_, diag)| diag.source.as_deref() == Some("merc-lsp:types"))
             .expect("expected the undeclared name to be reported");
-        assert_eq!(uri, &common_uri, "should be published against common.mcrl2, at its own real location: {type_diag:?}");
+        assert_eq!(
+            uri, &common_uri,
+            "should be published against common.mcrl2, at its own real location: {type_diag:?}"
+        );
         assert_eq!(type_diag.range.start, expected);
     }
 
@@ -608,7 +766,8 @@ mod tests {
         let text = std::fs::read_to_string(&main_path).unwrap();
         let common_text = std::fs::read_to_string(&common_path).unwrap();
 
-        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let (outcome, sources) =
+            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::ParseError(_) = &outcome else {
             panic!("fixture should fail to parse");
         };
@@ -622,11 +781,18 @@ mod tests {
             .iter()
             .find(|(uri, _)| uri == &common_uri)
             .expect("expected a diagnostic located against common.mcrl2 itself");
-        assert_eq!(uri, &common_uri, "should be published against common.mcrl2, at its own real location: {diag:?}");
+        assert_eq!(
+            uri, &common_uri,
+            "should be published against common.mcrl2, at its own real location: {diag:?}"
+        );
         assert_eq!(diag.source.as_deref(), Some("merc-lsp"));
-        let expected = LineIndex::new(&common_text).position(&common_text, common_text.find('\n').unwrap() - 1);
+        let expected = LineIndex::new(&common_text)
+            .position(&common_text, common_text.find('\n').unwrap() - 1);
         assert_eq!(diag.range.start, expected);
-        assert!(!diag.message.contains("-->"), "message should not contain pest's caret block: {diag:?}");
+        assert!(
+            !diag.message.contains("-->"),
+            "message should not contain pest's caret block: {diag:?}"
+        );
     }
 
     #[tokio::test]
@@ -638,14 +804,18 @@ mod tests {
         // deliberately not on the fixture's first line, so a diagnostic that actually landed at
         // (0,0) (the old, un-located fallback) would be distinguishable from one correctly
         // resolved to the directive's own line.
-        let dir = temp_project(&[("main.mcrl2", "act a: Bool;\n%import \"missing.mcrl2\"\ninit delta;\n")]);
+        let dir = temp_project(&[(
+            "main.mcrl2",
+            "act a: Bool;\n%import \"missing.mcrl2\"\ninit delta;\n",
+        )]);
         let main_path = dir.path().join("main.mcrl2");
         let main_uri = Url::from_file_path(&main_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let expected_offset = text.find("%import").expect("fixture contains '%import'");
         let expected = LineIndex::new(&text).position(&text, expected_offset);
 
-        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let (outcome, sources) =
+            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::ParseError(_) = &outcome else {
             panic!("fixture should fail to parse");
         };
@@ -654,7 +824,10 @@ mod tests {
         let diags = document.diagnostics(&main_uri);
         assert_eq!(diags.len(), 1);
         let (uri, diag) = &diags[0];
-        assert_eq!(uri, &main_uri, "should be published against main.mcrl2 itself: {diag:?}");
+        assert_eq!(
+            uri, &main_uri,
+            "should be published against main.mcrl2 itself: {diag:?}"
+        );
         assert_eq!(
             diag.range.start, expected,
             "should be located at the failing %import directive, not (0,0): {diag:?}"
@@ -669,7 +842,8 @@ mod tests {
         ]);
         let main_path = dir.path().join("main.mcrl2");
         let text = std::fs::read_to_string(&main_path).unwrap();
-        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let (outcome, sources) =
+            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let document = Document::new(text, 0, outcome, None, sources);
 
         assert!(!document.is_stale());
@@ -688,7 +862,8 @@ mod tests {
         let main_path = dir.path().join("main.mcrl2");
         let common_path = dir.path().join("common.mcrl2");
         let text = std::fs::read_to_string(&main_path).unwrap();
-        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+        let (outcome, sources) =
+            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let document = Document::new(text, 0, outcome, None, sources);
         assert!(!document.is_stale());
 
@@ -697,7 +872,10 @@ mod tests {
         // a filesystem with coarse mtime resolution.
         std::fs::write(&common_path, "act a, b: Nat;\n").unwrap();
         let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
-        std::fs::File::open(&common_path).unwrap().set_modified(future).unwrap();
+        std::fs::File::open(&common_path)
+            .unwrap()
+            .set_modified(future)
+            .unwrap();
 
         assert!(document.is_stale());
     }

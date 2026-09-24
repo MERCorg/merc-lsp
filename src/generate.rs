@@ -84,7 +84,13 @@ mod tests {
             _ => panic!("fixture failed to parse"),
         };
         let checked = crate::typecheck::typecheck_ignoring_sources(spec).await;
-        let document = Document::new(text, 0, parsed, Some(CheckedOutcome::Process(checked)), SourceMap::new());
+        let document = Document::new(
+            text,
+            0,
+            parsed,
+            Some(CheckedOutcome::Process(checked)),
+            SourceMap::new(),
+        );
 
         let documents = DocumentStore::default();
         let uri: Url = "file:///a.mcrl2".parse().unwrap();
@@ -106,8 +112,17 @@ mod tests {
             _ => panic!("fixture failed to parse"),
         };
         let checked = crate::typecheck::typecheck_ignoring_sources(spec).await;
-        assert!(matches!(checked, crate::typecheck::TypecheckOutcome::Error(_)));
-        let document = Document::new(text, 0, parsed, Some(CheckedOutcome::Process(checked)), SourceMap::new());
+        assert!(matches!(
+            checked,
+            crate::typecheck::TypecheckOutcome::Error(_)
+        ));
+        let document = Document::new(
+            text,
+            0,
+            parsed,
+            Some(CheckedOutcome::Process(checked)),
+            SourceMap::new(),
+        );
 
         let documents = DocumentStore::default();
         let uri: Url = "file:///ill-typed.mcrl2".parse().unwrap();

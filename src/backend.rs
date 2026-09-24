@@ -64,17 +64,12 @@ use crate::virtual_document::VirtualDocumentStore;
 
 /// Diagnostics published against a URI on some document's behalf because a span in its analysis
 /// actually landed there, keyed first by that target URI, then by which importing document
-/// currently contributes to it. The same file can be imported by multiple documents, and each
-/// importing document maintains its own set of diagnostics for that file.
+/// currently contributes to it. The same file can be imported by multiple documents.
 type ForeignDiagnostics = DashMap<Url, HashMap<Url, Vec<Diagnostic>>>;
 
 /// Per-connection server state backing the [`Router`] built by [`router`].
 ///
-/// `documents`, `virtual_documents`, and `foreign_diagnostics` are all `Arc`-wrapped because
-/// notification handlers can't `.await`, so parsing happens on a spawned task that outlives the
-/// handler call and needs its own shared handle to each store; `Backend` itself is `Clone` (cheap —
-/// every field is a handle) so a spawned task can take one bundled clone of everything it needs
-/// (see [`spawn_analyze`]/[`analyze`]) instead of each of those handles as its own parameter.
+/// Uses `Arc` to make cloning cheap.
 #[derive(Clone)]
 pub struct Backend {
     client: ClientSocket,
@@ -87,10 +82,6 @@ pub struct Backend {
 }
 
 /// Builds the request/notification router for a single connection to `client`.
-///
-/// Kept separate from the `tower::ServiceBuilder` layer stack (added by the caller, in
-/// [`crate::serve`]) so `tests/protocol.rs` can exercise the exact same router construction the
-/// real server runs, just without duplicating the layer stack.
 pub fn router(client: ClientSocket) -> Router<Backend> {
     let mut router = Router::new(Backend {
         client,
@@ -156,15 +147,12 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         })
         .notification::<notification::DidOpenTextDocument>(|state, params| {
             let doc = params.text_document;
-            // The document's first (and, until a save, only) analysis. No `refresh_views` nudge
-            // needed: the client's own initial `semanticTokens/full`/`inlayHint` requests come
-            // after this.
+            // The document's first (and, until a save, only) analysis.
             spawn_analyze(state, doc.uri, doc.text, doc.version, false);
             ControlFlow::Continue(())
         })
         .notification::<notification::DidChangeTextDocument>(|state, params| {
-            // Deliberately *not* a reparse: just records the latest buffer text/version on the
-            // existing document for whenever the next `did_save` comes in.
+            // Wait for the save to actually reparse the document.
             let uri = params.text_document.uri;
             if let Some(change) = params.content_changes.into_iter().next()
                 && let Some(mut document) = state.documents.get_mut(&uri)
@@ -175,10 +163,7 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
             ControlFlow::Continue(())
         })
         .notification::<notification::DidSaveTextDocument>(|state, params| {
-            // The buffer text at save time is whatever `did_change` last recorded as pending —
-            // `analyze` does the actual (re)parsing/type checking and publishes the result, then
-            // asks the client to re-pull semantic tokens, which (unlike a `did_change`) it has no
-            // other reason to do on its own for a save with no further edit after it.
+            // The buffer text at save time is whatever `did_change` last recorded as pending.
             let uri = params.text_document.uri;
             let pending = state
                 .documents
@@ -192,24 +177,29 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         .notification::<notification::DidCloseTextDocument>(|state, params| {
             // A closed document may have been the sole reason a broken `%import`ed file (or
             // another foreign URI) had diagnostics published against it at all — release just this
-            // document's own contribution (see `ForeignDiagnostics`'s doc comment) and republish
-            // whatever, if anything, other still-open importers still legitimately contribute.
+            // document's own contribution.
             if let Some((_, document)) = state.documents.remove(&params.text_document.uri) {
                 for target in document.published_foreign_uris {
-                    let remaining = release_foreign_diagnostics(&state.foreign_diagnostics, &target, &params.text_document.uri);
+                    let remaining = release_foreign_diagnostics(
+                        &state.foreign_diagnostics,
+                        &target,
+                        &params.text_document.uri,
+                    );
                     publish_diagnostics(&state.client, target, remaining, None);
                 }
             }
             ControlFlow::Continue(())
         })
         .notification::<notification::DidChangeWatchedFiles>(|state, params| {
-            // The client watches every `.mcrl2`/`.pbes`/`.pres`/`.mcf` file in the workspace (see
-            // `vscode-client/src/extension.ts`'s `synchronize.fileEvents`) and forwards every
-            // create/change/delete here. See `reanalyze_stale_documents` for what happens with it —
-            // done on a spawned task rather than blocking this notification handler, which can't
-            // `.await` anyway.
+            // The client watches every `.mcrl2`/`.pbes`/`.pres`/`.mcf`/`.rmcf`
+            // file in the workspace, but only stale open documents get
+            // analysed.
             let backend = state.clone();
-            let changed_paths: Vec<std::path::PathBuf> = params.changes.iter().filter_map(|change| change.uri.to_file_path().ok()).collect();
+            let changed_paths: Vec<std::path::PathBuf> = params
+                .changes
+                .iter()
+                .filter_map(|change| change.uri.to_file_path().ok())
+                .collect();
             tokio::spawn(reanalyze_stale_documents(backend, changed_paths));
             ControlFlow::Continue(())
         })
@@ -221,11 +211,7 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
     router
 }
 
-/// Registers merc-lsp's non-standard protocol extensions on `router`: `merc/virtualDocument`
-/// ([`crate::virtual_document`]) and `merc/generateFullSpec` ([`crate::generate`]). Gated behind
-/// the `lsp-extensions` Cargo feature (on by default, see `Cargo.toml`) — see `README.md`'s
-/// "VS Code LSP Extensions" section for what each does and why a plain LSP client works fine
-/// without either registered at all.
+/// Registers merc-lsp's non-standard protocol extensions on `router`.
 #[cfg(feature = "lsp-extensions")]
 fn register_lsp_extensions(router: &mut Router<Backend>) {
     router
@@ -244,9 +230,7 @@ fn register_lsp_extensions(router: &mut Router<Backend>) {
         });
 }
 
-/// No-op when `lsp-extensions` is disabled: a server built without it registers no handler for any
-/// of these methods, so they fall through to `router`'s own `unhandled_notification`/default
-/// "method not found" handling like any other request/notification it doesn't support.
+/// No-op when `lsp-extensions` is disabled.
 #[cfg(not(feature = "lsp-extensions"))]
 fn register_lsp_extensions(_router: &mut Router<Backend>) {}
 
@@ -259,18 +243,30 @@ fn document_symbol(
         return None;
     };
     let symbols = match spec {
-        Specification::Process(spec) => {
-            symbols::document_symbols(&document.text, &document.line_index, &document.sources, spec)
-        }
-        Specification::Pbes(spec) => {
-            symbols::pbes_symbols(&document.text, &document.line_index, &document.sources, spec)
-        }
-        Specification::Pres(spec) => {
-            symbols::pres_symbols(&document.text, &document.line_index, &document.sources, spec)
-        }
-        Specification::Modal(spec) => {
-            symbols::modal_symbols(&document.text, &document.line_index, &document.sources, spec)
-        }
+        Specification::Process(spec) => symbols::document_symbols(
+            &document.text,
+            &document.line_index,
+            &document.sources,
+            spec,
+        ),
+        Specification::Pbes(spec) => symbols::pbes_symbols(
+            &document.text,
+            &document.line_index,
+            &document.sources,
+            spec,
+        ),
+        Specification::Pres(spec) => symbols::pres_symbols(
+            &document.text,
+            &document.line_index,
+            &document.sources,
+            spec,
+        ),
+        Specification::Modal(spec) => symbols::modal_symbols(
+            &document.text,
+            &document.line_index,
+            &document.sources,
+            spec,
+        ),
     };
     Some(DocumentSymbolResponse::Nested(symbols))
 }
@@ -283,18 +279,15 @@ fn completion_request(
     let document = documents.get(uri)?;
     let position = params.text_document_position.position;
 
-    // Checked ahead of (and independently from) the AST-driven categories below, the same way
-    // `goto_definition_request` checks `import_directive_target` first — an `%import` directive
-    // isn't part of any of the four grammars this crate parses (see `parse.rs`'s module docs), so
-    // this needs no successful parse at all, unlike everything below it. Deliberately read off
-    // `pending_text` (the live buffer `did_change` last recorded), not `text` (the snapshot from
-    // whenever this document was last opened/saved/focused) — unlike everything below, which needs
-    // a fresh parse and so is stuck on that snapshot until the next `analyze` run, this needs
-    // nothing but the raw text, so there's no reason to make the user save just to see the
-    // directory listing for a path they're still typing.
+    // Checked ahead of (and independently from) the AST-driven categories below.
     let pending_line_index = LineIndex::new(&document.pending_text);
-    if let Some(items) = completion::import_path_completions(&document.pending_text, &pending_line_index, parse::path_of(uri).as_deref(), position) {
-        // `is_incomplete: true` (not a plain `Array`, which implies `false`) — an item's `label`
+    if let Some(items) = completion::import_path_completions(
+        &document.pending_text,
+        &pending_line_index,
+        parse::path_of(uri).as_deref(),
+        position,
+    ) {
+        // `is_incomplete: true` — an item's `label`
         // is a bare file/directory name (`"common.mcrl2"`, `"sub/"`), never prefixed with
         // whatever path segment the user already typed, so it only ever literally prefix-matches
         // client-side filtering by sheer coincidence (typing into an empty path, or the exact
@@ -302,10 +295,13 @@ fn completion_request(
         // isn't itself a name prefix, a client that filters this same list locally instead of
         // asking again finds nothing and the suggestions silently vanish; flagging the list
         // incomplete tells it to always re-request instead of ever reusing a stale one.
-        return Some(CompletionResponse::List(CompletionList { is_incomplete: true, items }));
+        return Some(CompletionResponse::List(CompletionList {
+            is_incomplete: true,
+            items,
+        }));
     }
 
-    // Same "no parse, nothing to offer" rule as `document_symbol`/`semantic_tokens_full`.
+    // Same "no parse, nothing to offer" rule.
     let ParseOutcome::Ok(spec) = &document.parsed else {
         return None;
     };
@@ -539,9 +535,19 @@ async fn reanalyze_stale_documents(backend: Backend, changed_paths: Vec<std::pat
         .iter()
         .filter(|entry| {
             let document = entry.value();
-            document.is_stale() || document.has_newly_available_import(parse::path_of(entry.key()).as_deref(), &changed_paths)
+            document.is_stale()
+                || document.has_newly_available_import(
+                    parse::path_of(entry.key()).as_deref(),
+                    &changed_paths,
+                )
         })
-        .map(|entry| (entry.key().clone(), entry.value().text.clone(), entry.value().version))
+        .map(|entry| {
+            (
+                entry.key().clone(),
+                entry.value().text.clone(),
+                entry.value().version,
+            )
+        })
         .collect();
     for (uri, text, version) in stale {
         tokio::spawn(analyze(backend.clone(), uri, text, version, true));
@@ -586,8 +592,9 @@ async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh
 
     // `path` is `None` for an untitled/unsaved buffer — `parse` falls back to a plain,
     // single-file parse for those.
+    let kind = SpecKind::from_uri(&uri);
     let path = parse::path_of(&uri);
-    let (outcome, sources) = parse::parse(SpecKind::from_uri(&uri), text.clone(), path).await;
+    let (outcome, sources) = parse::parse(kind, text.clone(), path).await;
 
     // Only meaningful once parsing succeeded.
     let (checked, sources) = match &outcome {
@@ -608,37 +615,36 @@ async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh
             sources,
         ),
         ParseOutcome::Ok(Specification::Modal(spec)) => {
-            let (result, sources) = typecheck::typecheck_modal((**spec).clone(), sources).await;
+            let (result, sources) =
+                typecheck::typecheck_modal((**spec).clone(), sources, kind.formula_type()).await;
             (Some(CheckedOutcome::Modal(result)), sources)
         }
         ParseOutcome::ParseError(_) | ParseOutcome::Internal(_) => (None, sources),
     };
 
-    // Registers this analysis's virtual (Appendix-B) content for `merc/virtualDocument` to serve
-    // later. Only when `lsp-extensions` is enabled — see `Backend::virtual_documents`.
+    // Registers this analysis's virtual (Appendix-B) content.
     #[cfg(feature = "lsp-extensions")]
     virtual_document::register(&virtual_documents, &sources);
 
     let mut document = Document::new(text, version, outcome, checked, sources);
     document.semantic_tokens = document.compute_semantic_tokens();
-    // Computed now, off `document` as just built, before it's handed to the map below. Grouped by
-    // the URI each diagnostic actually belongs to (see `Document::diagnostics`'s doc comment): a
-    // diagnostic about content this document `%import`s is published against that file's own URI,
-    // with its own real range, rather than mislocated against `uri` itself.
+
     let mut diags_by_uri: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
     for (target_uri, diagnostic) in document.diagnostics(&uri) {
         diags_by_uri.entry(target_uri).or_default().push(diagnostic);
     }
-    // Always publish (even if empty) against `uri` itself — an empty list is what clears any
-    // diagnostics left over from a previous, failing analysis.
+
+    // Always publish (even if empty) against `uri` itself.
     diags_by_uri.entry(uri.clone()).or_default();
-    let foreign_uris: Vec<Url> = diags_by_uri.keys().filter(|&target| target != &uri).cloned().collect();
+    let foreign_uris: Vec<Url> = diags_by_uri
+        .keys()
+        .filter(|&target| target != &uri)
+        .cloned()
+        .collect();
     document.published_foreign_uris = foreign_uris.clone();
 
     // Diagnostics from a previous analysis, published against a foreign URI that this one no
-    // longer has anything to say about, must be explicitly cleared (published as an empty list) —
-    // nothing else would ever tell the client to drop them, since they were never tied to `uri`'s
-    // own document version in the first place.
+    // longer has anything to say about, must be explicitly cleared.
     let mut stale_foreign_uris = Vec::new();
 
     // Discard this analysis if it's for an older version than what's already committed.
@@ -679,12 +685,13 @@ async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh
             publish_diagnostics(&client, target_uri, diagnostics, Some(version));
         } else {
             // Published as the union of every document currently contributing diagnostics to this
-            // foreign target (see `ForeignDiagnostics`'s doc comment) — not just this analysis's
-            // own, which would clobber another still-open importer's diagnostics for the same file.
-            let union = record_foreign_diagnostics(&foreign_diagnostics, &target_uri, &uri, diagnostics);
+            // foreign target.
+            let union =
+                record_foreign_diagnostics(&foreign_diagnostics, &target_uri, &uri, diagnostics);
             publish_diagnostics(&client, target_uri, union, None);
         }
     }
+
     for stale_uri in stale_foreign_uris {
         let remaining = release_foreign_diagnostics(&foreign_diagnostics, &stale_uri, &uri);
         publish_diagnostics(&client, stale_uri, remaining, None);
@@ -718,7 +725,12 @@ fn union_diagnostics<'a>(owners: impl Iterator<Item = &'a Vec<Diagnostic>>) -> V
 
 /// Records `owner`'s current contribution to `target`'s [`ForeignDiagnostics`], replacing whatever
 /// it contributed at its last analysis, and returns the union across every owner to publish.
-fn record_foreign_diagnostics(foreign_diagnostics: &ForeignDiagnostics, target: &Url, owner: &Url, diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
+fn record_foreign_diagnostics(
+    foreign_diagnostics: &ForeignDiagnostics,
+    target: &Url,
+    owner: &Url,
+    diagnostics: Vec<Diagnostic>,
+) -> Vec<Diagnostic> {
     let mut owners = foreign_diagnostics.entry(target.clone()).or_default();
     owners.insert(owner.clone(), diagnostics);
     union_diagnostics(owners.values())
@@ -727,7 +739,11 @@ fn record_foreign_diagnostics(foreign_diagnostics: &ForeignDiagnostics, target: 
 /// Removes `owner`'s own contribution to `target`'s [`ForeignDiagnostics`] — because `owner` closed
 /// or no longer produces anything for `target` — and returns the union of what every other owner
 /// still contributes, to republish in its place.
-fn release_foreign_diagnostics(foreign_diagnostics: &ForeignDiagnostics, target: &Url, owner: &Url) -> Vec<Diagnostic> {
+fn release_foreign_diagnostics(
+    foreign_diagnostics: &ForeignDiagnostics,
+    target: &Url,
+    owner: &Url,
+) -> Vec<Diagnostic> {
     let Some(mut owners) = foreign_diagnostics.get_mut(target) else {
         return Vec::new();
     };
@@ -774,10 +790,7 @@ fn request_semantic_tokens_refresh(client: &ClientSocket) {
 fn request_inlay_hint_refresh(client: &ClientSocket) {
     let client = client.clone();
     tokio::spawn(async move {
-        if let Err(error) = client
-            .request::<request::InlayHintRefreshRequest>(())
-            .await
-        {
+        if let Err(error) = client.request::<request::InlayHintRefreshRequest>(()).await {
             log::debug!("inlayHint/refresh request failed (client may not support it): {error}");
         }
     });

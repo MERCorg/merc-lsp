@@ -28,17 +28,11 @@ pub(crate) fn is_identifier_byte(byte: u8) -> bool {
 
 /// Maps byte offsets within a document's source text to and from LSP [`Position`]s.
 ///
-/// A thin adapter over the [`line_index`] crate (the same one rust-analyzer maintains and uses for
-/// this exact job) onto this crate's own [`Position`]/[`Span`] types — every method still takes
-/// `text` even though [`line_index::LineIndex`] itself doesn't need it, both so `text` must be the
-/// same text this index was built from stays load-bearing documentation at every call site, and
-/// because [`Self::offset`]'s own clamping (see its doc comment) needs the line's actual text to
-/// measure.
-///
 /// Built once per document version; re-built whenever the text changes.
 #[derive(Debug, Clone)]
 pub struct LineIndex {
     inner: line_index::LineIndex,
+
     /// Total length of the document in bytes, used to clamp out-of-range offsets.
     len: usize,
 }
@@ -56,21 +50,31 @@ impl LineIndex {
     /// [`Position`].
     ///
     /// `text` must be the same text this index was built from. Out-of-range
-    /// offsets are clamped to the end of the document rather than panicking,
-    /// since `merc_syntax` spans can be a synthetic [`Span::default`].
+    /// offsets are clamped to the end of the document rather than panicking.
     pub fn position(&self, text: &str, offset: usize) -> Position {
         let mut offset = offset.min(self.len);
         // A span boundary should always already sit on one, but clamping above can turn a valid
-        // offset into `self.len`, and nothing guarantees every caller's raw offset does either —
-        // walk back to the nearest one rather than let `try_line_col` reject it. `self.len` and `0`
-        // are always boundaries, so this is guaranteed to terminate.
+        // offset into `self.len`.
         while !text.is_char_boundary(offset) {
             offset -= 1;
         }
 
-        let line_col = self.inner.try_line_col(TextSize::from(offset as u32)).unwrap_or(LineCol { line: 0, col: 0 });
-        let wide = self.inner.to_wide(WideEncoding::Utf16, line_col).unwrap_or(WideLineCol { line: line_col.line, col: line_col.col });
-        Position { line: wide.line, character: wide.col }
+        let line_col = self
+            .inner
+            .try_line_col(TextSize::from(offset as u32))
+            .unwrap_or(LineCol { line: 0, col: 0 });
+        let wide = self
+            .inner
+            .to_wide(WideEncoding::Utf16, line_col)
+            .unwrap_or(WideLineCol {
+                line: line_col.line,
+                col: line_col.col,
+            });
+            
+        Position {
+            line: wide.line,
+            character: wide.col,
+        }
     }
 
     /// Converts a [`Span`] into this document to an LSP [`Range`].
@@ -92,10 +96,14 @@ impl LineIndex {
     /// cursor position names, for [`crate::completion_context`] to classify.
     pub fn offset(&self, text: &str, position: Position) -> Option<usize> {
         let line_range = self.inner.line(position.line)?;
-        let line_text = &text[usize::from(line_range.start())..usize::from(line_range.end()).min(text.len())];
+        let line_text =
+            &text[usize::from(line_range.start())..usize::from(line_range.end()).min(text.len())];
         let line_wide_len = WideEncoding::Utf16.measure(line_text) as u32;
 
-        let wide = WideLineCol { line: position.line, col: position.character.min(line_wide_len) };
+        let wide = WideLineCol {
+            line: position.line,
+            col: position.character.min(line_wide_len),
+        };
         let line_col = self.inner.to_utf8(WideEncoding::Utf16, wide)?;
         self.inner.offset(line_col).map(usize::from)
     }
@@ -106,13 +114,18 @@ pub(crate) const VIRTUAL_DOCUMENT_SCHEME: &str = "merc-builtin";
 
 /// Characters [`virtual_uri`] leaves unescaped — the URI-path "unreserved" set (RFC 3986):
 /// alphanumerics plus `-_.~`. Everything else, [`NON_ALPHANUMERIC`] would also escape.
-const VIRTUAL_NAME_UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
+const VIRTUAL_NAME_UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
 
 /// Encodes `name` — a virtual [`merc_syntax::SourceMap`] entry's own registered name, e.g.
 /// `<builtin>/nat.mcrl2` or `<generated>/struct/c1.mcrl2` — as a [`VIRTUAL_DOCUMENT_SCHEME`] URI.
 pub(crate) fn virtual_uri(name: &str) -> Url {
     let encoded = utf8_percent_encode(name, VIRTUAL_NAME_UNRESERVED);
-    Url::parse(&format!("{VIRTUAL_DOCUMENT_SCHEME}:///{encoded}")).expect("a percent-encoded name is always a valid URI path")
+    Url::parse(&format!("{VIRTUAL_DOCUMENT_SCHEME}:///{encoded}"))
+        .expect("a percent-encoded name is always a valid URI path")
 }
 
 /// The inverse of [`virtual_uri`]: recovers the original registered name from a
@@ -124,7 +137,10 @@ pub(crate) fn decode_virtual_uri(uri: &Url) -> Option<String> {
         return None;
     }
     let path = uri.path().trim_start_matches('/');
-    percent_decode_str(path).decode_utf8().ok().map(std::borrow::Cow::into_owned)
+    percent_decode_str(path)
+        .decode_utf8()
+        .ok()
+        .map(std::borrow::Cow::into_owned)
 }
 
 /// Resolves a global byte offset to the [`SourceId`] it falls in.
@@ -138,12 +154,21 @@ pub(crate) fn split(sources: &SourceMap, offset: usize) -> (SourceId, usize) {
 ///
 /// `None` only if `span`'s offset resolves to a file index past the end of
 /// `line_indexes`.
-pub(crate) fn location(sources: &SourceMap, line_indexes: &[LineIndex], span: &Span) -> Option<Location> {
+pub(crate) fn location(
+    sources: &SourceMap,
+    line_indexes: &[LineIndex],
+    span: &Span,
+) -> Option<Location> {
     let (id, local_start) = split(sources, span.start);
     // A span is never produced straddling two files, so rebasing `span.end` by
     // the *same* file's base offset is always correct.
     let local_end = span.end - sources.base_offset(id);
-    location_for(sources, line_indexes, id, &Span::new(local_start, local_end))
+    location_for(
+        sources,
+        line_indexes,
+        id,
+        &Span::new(local_start, local_end),
+    )
 }
 
 /// Builds an LSP [`Location`] for `local_span`, already known to belong to `id` — the other half
@@ -154,7 +179,12 @@ pub(crate) fn location(sources: &SourceMap, line_indexes: &[LineIndex], span: &S
 /// error at the end of a file immediately followed by an imported one).
 ///
 /// `None` only if `id` is a file index past the end of `line_indexes`.
-pub(crate) fn location_for(sources: &SourceMap, line_indexes: &[LineIndex], id: SourceId, local_span: &Span) -> Option<Location> {
+pub(crate) fn location_for(
+    sources: &SourceMap,
+    line_indexes: &[LineIndex],
+    id: SourceId,
+    local_span: &Span,
+) -> Option<Location> {
     let line_index = line_indexes.get(id.value())?;
     let range = line_index.range(sources.text(id), local_span);
     let uri = if sources.is_virtual(id) {
@@ -170,7 +200,11 @@ pub(crate) fn location_for(sources: &SourceMap, line_indexes: &[LineIndex], id: 
 /// `sources` has nothing loaded yet (the plain, single-file parse path — see `parse.rs`'s module
 /// docs — which never offsets a span at all), otherwise rebased through `sources` the same way
 /// [`location`] rebases one into a [`Range`].
-pub(crate) fn local_text_and_span<'a>(text: &'a str, sources: &'a SourceMap, span: &Span) -> (&'a str, Span) {
+pub(crate) fn local_text_and_span<'a>(
+    text: &'a str,
+    sources: &'a SourceMap,
+    span: &Span,
+) -> (&'a str, Span) {
     if sources.file_count() == 0 {
         return (text, span.clone());
     }
@@ -193,7 +227,13 @@ mod tests {
     fn start_of_document() {
         let text = "eqn f = x;";
         let index = LineIndex::new(text);
-        assert_eq!(index.position(text, 0), Position { line: 0, character: 0 });
+        assert_eq!(
+            index.position(text, 0),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
     }
 
     #[test]
@@ -201,7 +241,13 @@ mod tests {
         let text = "sort D;\nmap f: D;\neqn f = undeclared;";
         let start = text.rfind("undeclared").unwrap();
         let index = LineIndex::new(text);
-        assert_eq!(index.position(text, start), Position { line: 2, character: 8 });
+        assert_eq!(
+            index.position(text, start),
+            Position {
+                line: 2,
+                character: 8
+            }
+        );
     }
 
     #[test]
@@ -209,7 +255,13 @@ mod tests {
         let text = "sort D;\nmap f: D;";
         let index = LineIndex::new(text);
         let offset = text.len();
-        assert_eq!(index.position(text, offset), Position { line: 1, character: 9 });
+        assert_eq!(
+            index.position(text, offset),
+            Position {
+                line: 1,
+                character: 9
+            }
+        );
     }
 
     #[test]
@@ -220,7 +272,13 @@ mod tests {
         let text = "sort D;\r\nmap f: D;\r\n";
         let index = LineIndex::new(text);
         let offset = text.find("map").unwrap();
-        assert_eq!(index.position(text, offset), Position { line: 1, character: 0 });
+        assert_eq!(
+            index.position(text, offset),
+            Position {
+                line: 1,
+                character: 0
+            }
+        );
     }
 
     #[test]
@@ -230,14 +288,26 @@ mod tests {
         let text = "% naïve\nx";
         let index = LineIndex::new(text);
         let offset = text.rfind('x').unwrap();
-        assert_eq!(index.position(text, offset), Position { line: 1, character: 0 });
+        assert_eq!(
+            index.position(text, offset),
+            Position {
+                line: 1,
+                character: 0
+            }
+        );
 
         let text = "eqn é = x;";
         let index = LineIndex::new(text);
         let offset = text.rfind('x').unwrap();
         // char-counting (`Span::start_line_col`) gives column 9 (1-based) == character 8 (0-based).
         // Byte-counting gives character 9, since 'é' is 2 bytes but only 1 UTF-16 unit.
-        assert_eq!(index.position(text, offset), Position { line: 0, character: 8 });
+        assert_eq!(
+            index.position(text, offset),
+            Position {
+                line: 0,
+                character: 8
+            }
+        );
     }
 
     #[test]
@@ -248,20 +318,38 @@ mod tests {
         let text = "% 🎉 party\nx";
         let index = LineIndex::new(text);
         let offset = text.rfind('x').unwrap();
-        assert_eq!(index.position(text, offset), Position { line: 1, character: 0 });
+        assert_eq!(
+            index.position(text, offset),
+            Position {
+                line: 1,
+                character: 0
+            }
+        );
 
         let text = "eqn 🎉 = x;";
         let index = LineIndex::new(text);
         let offset = text.rfind('x').unwrap();
         // "eqn " (4) + "🎉" (2 UTF-16 units) + " = " (3) = 9.
-        assert_eq!(index.position(text, offset), Position { line: 0, character: 9 });
+        assert_eq!(
+            index.position(text, offset),
+            Position {
+                line: 0,
+                character: 9
+            }
+        );
     }
 
     #[test]
     fn empty_document() {
         let text = "";
         let index = LineIndex::new(text);
-        assert_eq!(index.position(text, 0), Position { line: 0, character: 0 });
+        assert_eq!(
+            index.position(text, 0),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
     }
 
     #[test]
@@ -277,7 +365,13 @@ mod tests {
         let text = "eqn f = 1;";
         let index = LineIndex::new(text);
         let span = Span::default();
-        assert_eq!(index.range(text, &span).start, Position { line: 0, character: 0 });
+        assert_eq!(
+            index.range(text, &span).start,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
     }
 
     #[test]
@@ -286,8 +380,13 @@ mod tests {
         let index = LineIndex::new(text);
         for (offset, _) in text.char_indices() {
             let position = index.position(text, offset);
-            let back = index.offset(text, position).expect("position should resolve back");
-            assert_eq!(back, offset, "offset {offset} did not round-trip via {position:?}");
+            let back = index
+                .offset(text, position)
+                .expect("position should resolve back");
+            assert_eq!(
+                back, offset,
+                "offset {offset} did not round-trip via {position:?}"
+            );
         }
     }
 
@@ -303,8 +402,14 @@ mod tests {
         assert_eq!(
             index.range(text, &span),
             Range {
-                start: Position { line: 0, character: 8 },
-                end: Position { line: 0, character: 18 },
+                start: Position {
+                    line: 0,
+                    character: 8
+                },
+                end: Position {
+                    line: 0,
+                    character: 18
+                },
             }
         );
     }

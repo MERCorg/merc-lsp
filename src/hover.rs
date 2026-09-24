@@ -1,5 +1,4 @@
-//! `textDocument/hover`: offset → [`TypedNode`] → hover text, built from a document's whole
-//! [`TypingInfo`] ([`crate::document::Document::typing_info`]).
+//! Provide hover text for every [`TypedNode`].
 
 use lsp_types::Hover;
 use lsp_types::HoverContents;
@@ -95,10 +94,21 @@ fn find_sort_declaration<'a>(spec: &'a Specification, name: &str) -> Option<&'a 
 /// identifier span is exactly `declaration_span` — the span a [`ResolvedName::PropositionalVariable`]
 /// occurrence's own `declaration` carries. `None` for a process specification or a modal formula,
 /// neither of which has any propositional-variable equation to find.
-fn find_prop_var_declaration<'a>(spec: &'a Specification, declaration_span: &Span) -> Option<&'a PropVarDecl> {
+fn find_prop_var_declaration<'a>(
+    spec: &'a Specification,
+    declaration_span: &Span,
+) -> Option<&'a PropVarDecl> {
     match spec {
-        Specification::Pbes(spec) => spec.equations.iter().map(|eqn| &eqn.variable).find(|decl| &decl.identifier.span == declaration_span),
-        Specification::Pres(spec) => spec.equations.iter().map(|eqn| &eqn.variable).find(|decl| &decl.identifier.span == declaration_span),
+        Specification::Pbes(spec) => spec
+            .equations
+            .iter()
+            .map(|eqn| &eqn.variable)
+            .find(|decl| &decl.identifier.span == declaration_span),
+        Specification::Pres(spec) => spec
+            .equations
+            .iter()
+            .map(|eqn| &eqn.variable)
+            .find(|decl| &decl.identifier.span == declaration_span),
         Specification::Process(_) | Specification::Modal(_) => None,
     }
 }
@@ -109,12 +119,20 @@ fn find_prop_var_declaration<'a>(spec: &'a Specification, declaration_span: &Spa
 /// comment upstream). Recurses through the formula tree by hand: unlike a PBES/PRES's `equations`,
 /// a modal formula's fixpoint variables aren't listed anywhere flat (mirrors `symbols.rs`'s own
 /// `collect_fixed_points` walk). `None` for anything but a modal formula.
-fn find_state_var_declaration<'a>(spec: &'a Specification, declaration_span: &Span) -> Option<&'a StateVarDecl> {
-    let Specification::Modal(spec) = spec else { return None };
+fn find_state_var_declaration<'a>(
+    spec: &'a Specification,
+    declaration_span: &Span,
+) -> Option<&'a StateVarDecl> {
+    let Specification::Modal(spec) = spec else {
+        return None;
+    };
     find_state_var_in_formula(&spec.formula, declaration_span)
 }
 
-fn find_state_var_in_formula<'a>(formula: &'a StateFrm, declaration_span: &Span) -> Option<&'a StateVarDecl> {
+fn find_state_var_in_formula<'a>(
+    formula: &'a StateFrm,
+    declaration_span: &Span,
+) -> Option<&'a StateVarDecl> {
     match &formula.node {
         StateFrmKind::FixedPoint { variable, body, .. } => {
             if &variable.span == declaration_span {
@@ -123,12 +141,18 @@ fn find_state_var_in_formula<'a>(formula: &'a StateFrm, declaration_span: &Span)
                 find_state_var_in_formula(body, declaration_span)
             }
         }
-        StateFrmKind::Unary { expr, .. } | StateFrmKind::Modality { expr, .. } => find_state_var_in_formula(expr, declaration_span),
-        StateFrmKind::Binary { lhs, rhs, .. } => {
-            find_state_var_in_formula(lhs, declaration_span).or_else(|| find_state_var_in_formula(rhs, declaration_span))
+        StateFrmKind::Unary { expr, .. } | StateFrmKind::Modality { expr, .. } => {
+            find_state_var_in_formula(expr, declaration_span)
         }
-        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => find_state_var_in_formula(body, declaration_span),
-        StateFrmKind::DataValExprLeftMult(_, expr) | StateFrmKind::DataValExprRightMult(expr, _) => find_state_var_in_formula(expr, declaration_span),
+        StateFrmKind::Binary { lhs, rhs, .. } => find_state_var_in_formula(lhs, declaration_span)
+            .or_else(|| find_state_var_in_formula(rhs, declaration_span)),
+        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => {
+            find_state_var_in_formula(body, declaration_span)
+        }
+        StateFrmKind::DataValExprLeftMult(_, expr)
+        | StateFrmKind::DataValExprRightMult(expr, _) => {
+            find_state_var_in_formula(expr, declaration_span)
+        }
         StateFrmKind::True
         | StateFrmKind::False
         | StateFrmKind::Delay(_)
@@ -141,7 +165,12 @@ fn find_state_var_in_formula<'a>(formula: &'a StateFrm, declaration_span: &Span)
 
 /// Renders the sort declaration as Markdown.
 fn sort_hover_markdown(ctx: &HoverContext, decl: &SortDecl) -> String {
-    let SortDecl { identifier, expr, span, .. } = decl;
+    let SortDecl {
+        identifier,
+        expr,
+        span,
+        ..
+    } = decl;
     let body = match expr {
         Some(expr) => format!("sort {identifier} = {expr};"),
         None => format!("sort {identifier};"),
@@ -156,7 +185,14 @@ fn sort_hover_markdown(ctx: &HoverContext, decl: &SortDecl) -> String {
 /// functions, one per `goto_def_link` call site, which is exactly what made both trip
 /// `clippy::too_many_arguments` once `sources`/`line_indexes` joined them).
 fn link_to(ctx: &HoverContext, span: &Span) -> String {
-    goto_def_link(span, ctx.doc_uri, ctx.sources, ctx.line_indexes, ctx.line_index, ctx.text)
+    goto_def_link(
+        span,
+        ctx.doc_uri,
+        ctx.sources,
+        ctx.line_indexes,
+        ctx.line_index,
+        ctx.text,
+    )
 }
 
 /// Renders `node` as Markdown. An optional "Go to definition" link is appended
@@ -165,14 +201,28 @@ fn link_to(ctx: &HoverContext, span: &Span) -> String {
 /// Uses `ctx.actions`/`ctx.processes` to look up the argument sorts for action/process
 /// references — see [`ResolvedName::Action`]'s docs.
 fn hover_markdown(ctx: &HoverContext, node: &TypedNode) -> String {
-    let &HoverContext { actions, processes, spec, .. } = ctx;
+    let &HoverContext {
+        actions,
+        processes,
+        spec,
+        ..
+    } = ctx;
 
     if let Some(ResolvedName::Action { name, declaration }) = &node.name {
-        let decl = declaration.as_ref().and_then(|span| actions.iter().find(|decl| &decl.identifier.span == span));
-        let link = declaration.as_ref().map_or(String::new(), |span| link_to(ctx, span));
+        let decl = declaration
+            .as_ref()
+            .and_then(|span| actions.iter().find(|decl| &decl.identifier.span == span));
+        let link = declaration
+            .as_ref()
+            .map_or(String::new(), |span| link_to(ctx, span));
         return match decl.filter(|decl| !decl.args.is_empty()) {
             Some(decl) => {
-                let sorts = decl.args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" # ");
+                let sorts = decl
+                    .args
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" # ");
                 format!("```mcrl2\n{name}: {sorts}\n```\naction{link}")
             }
             None => format!("```mcrl2\n{name}\n```\naction{link}"),
@@ -180,12 +230,21 @@ fn hover_markdown(ctx: &HoverContext, node: &TypedNode) -> String {
     }
 
     if let Some(ResolvedName::Process { name, declaration }) = &node.name {
-        let decl = declaration.as_ref().and_then(|span| processes.iter().find(|decl| &decl.identifier.span == span));
-        let link = declaration.as_ref().map_or(String::new(), |span| link_to(ctx, span));
+        let decl = declaration
+            .as_ref()
+            .and_then(|span| processes.iter().find(|decl| &decl.identifier.span == span));
+        let link = declaration
+            .as_ref()
+            .map_or(String::new(), |span| link_to(ctx, span));
         let kind = "process";
         return match decl.filter(|decl| !decl.params.is_empty()) {
             Some(decl) => {
-                let params = decl.params.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+                let params = decl
+                    .params
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("```mcrl2\n{name}({params})\n```\n{kind}{link}")
             }
             None => format!("```mcrl2\n{name}\n```\n{kind}{link}"),
@@ -193,12 +252,21 @@ fn hover_markdown(ctx: &HoverContext, node: &TypedNode) -> String {
     }
 
     if let Some(ResolvedName::PropositionalVariable { name, declaration }) = &node.name {
-        let decl = declaration.as_ref().and_then(|span| spec.and_then(|spec| find_prop_var_declaration(spec, span)));
-        let link = declaration.as_ref().map_or(String::new(), |span| link_to(ctx, span));
+        let decl = declaration
+            .as_ref()
+            .and_then(|span| spec.and_then(|spec| find_prop_var_declaration(spec, span)));
+        let link = declaration
+            .as_ref()
+            .map_or(String::new(), |span| link_to(ctx, span));
         let kind = "propositional variable";
         return match decl.filter(|decl| !decl.parameters.is_empty()) {
             Some(decl) => {
-                let params = decl.parameters.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+                let params = decl
+                    .parameters
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("```mcrl2\n{name}({params})\n```\n{kind}{link}")
             }
             None => format!("```mcrl2\n{name}\n```\n{kind}{link}"),
@@ -206,12 +274,21 @@ fn hover_markdown(ctx: &HoverContext, node: &TypedNode) -> String {
     }
 
     if let Some(ResolvedName::StateVariable { name, declaration }) = &node.name {
-        let decl = declaration.as_ref().and_then(|span| spec.and_then(|spec| find_state_var_declaration(spec, span)));
-        let link = declaration.as_ref().map_or(String::new(), |span| link_to(ctx, span));
+        let decl = declaration
+            .as_ref()
+            .and_then(|span| spec.and_then(|spec| find_state_var_declaration(spec, span)));
+        let link = declaration
+            .as_ref()
+            .map_or(String::new(), |span| link_to(ctx, span));
         let kind = "state variable";
         return match decl.filter(|decl| !decl.arguments.is_empty()) {
             Some(decl) => {
-                let params = decl.arguments.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+                let params = decl
+                    .arguments
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("```mcrl2\n{name}({params})\n```\n{kind}{link}")
             }
             None => format!("```mcrl2\n{name}\n```\n{kind}{link}"),
@@ -219,26 +296,38 @@ fn hover_markdown(ctx: &HoverContext, node: &TypedNode) -> String {
     }
 
     let named = match &node.name {
-        Some(ResolvedName::Variable { name, declaration }) => Some((name.as_str(), "variable", declaration.clone())),
-        Some(ResolvedName::Constructor { name, declaration, .. }) => Some((name.as_str(), "constructor", declaration.clone())),
-        Some(ResolvedName::Mapping { name, declaration, .. }) => Some((name.as_str(), "mapping", declaration.clone())),
+        Some(ResolvedName::Variable { name, declaration }) => {
+            Some((name.as_str(), "variable", declaration.clone()))
+        }
+        Some(ResolvedName::Constructor {
+            name, declaration, ..
+        }) => Some((name.as_str(), "constructor", declaration.clone())),
+        Some(ResolvedName::Mapping {
+            name, declaration, ..
+        }) => Some((name.as_str(), "mapping", declaration.clone())),
         // `declaration`, when present, is a span into Appendix B (system-defined/built-in)
         // content — a *virtual* file in `sources`' terms. `goto_def_link` resolves it through
         // `sources`/`line_indexes` the same as any other cross-file span, landing on the
         // `merc-builtin:` virtual document `crate::virtual_document` serves for it (mirrors
         // `goto_definition.rs`'s own built-in-sort test).
-        Some(ResolvedName::SystemDefined { name, declaration }) => Some((name.as_str(), "system-defined", declaration.clone())),
+        Some(ResolvedName::SystemDefined { name, declaration }) => {
+            Some((name.as_str(), "system-defined", declaration.clone()))
+        }
         Some(ResolvedName::Builtin { name }) => Some((name.as_str(), "built-in operator", None)),
         // `#[non_exhaustive]`: fall back to an unlabelled sort for any future variant.
         Some(_) | None => None,
     };
     match (named, &node.sort) {
         (Some((name, kind, decl)), Some(sort)) => {
-            let link = decl.as_ref().map_or(String::new(), |span| link_to(ctx, span));
+            let link = decl
+                .as_ref()
+                .map_or(String::new(), |span| link_to(ctx, span));
             format!("```mcrl2\n{name}: {sort}\n```\n{kind}{link}")
         }
         (Some((name, kind, decl)), None) => {
-            let link = decl.as_ref().map_or(String::new(), |span| link_to(ctx, span));
+            let link = decl
+                .as_ref()
+                .map_or(String::new(), |span| link_to(ctx, span));
             format!("```mcrl2\n{name}\n```\n{kind}{link}")
         }
         (None, Some(sort)) => format!("```mcrl2\n{sort}\n```"),
@@ -259,7 +348,14 @@ fn hover_markdown(ctx: &HoverContext, node: &TypedNode) -> String {
 /// URI for it: an untitled/unsaved buffer has no on-disk path of its own to build one from, and a
 /// unit-test fixture that hand-builds a `HoverContext` without going through
 /// `crate::document::Document` (so with nothing loaded into `sources` at all) hits the same case.
-fn goto_def_link(span: &Span, doc_uri: Option<&Url>, sources: &SourceMap, line_indexes: &[LineIndex], line_index: &LineIndex, text: &str) -> String {
+fn goto_def_link(
+    span: &Span,
+    doc_uri: Option<&Url>,
+    sources: &SourceMap,
+    line_indexes: &[LineIndex],
+    line_index: &LineIndex,
+    text: &str,
+) -> String {
     let Some(doc_uri) = doc_uri else {
         return String::new();
     };
@@ -274,7 +370,12 @@ fn goto_def_link(span: &Span, doc_uri: Option<&Url>, sources: &SourceMap, line_i
         );
     }
     let pos = line_index.position(text, span.start);
-    format!("\n\n[Go to definition]({}#L{}:{})", doc_uri.as_str(), pos.line + 1, pos.character + 1)
+    format!(
+        "\n\n[Go to definition]({}#L{}:{})",
+        doc_uri.as_str(),
+        pos.line + 1,
+        pos.character + 1
+    )
 }
 
 #[cfg(test)]
@@ -287,7 +388,9 @@ mod tests {
     use crate::typecheck::TypecheckOutcome;
     use crate::typecheck::typecheck_ignoring_sources as typecheck;
 
-    async fn typing_info_for(text: &str) -> (TypingInfo, Vec<ActDecl>, Vec<ProcDecl>, Specification) {
+    async fn typing_info_for(
+        text: &str,
+    ) -> (TypingInfo, Vec<ActDecl>, Vec<ProcDecl>, Specification) {
         let spec = match parse(SpecKind::Process, text.to_string()).await {
             ParseOutcome::Ok(Specification::Process(spec)) => *spec,
             _ => panic!("fixture failed to parse"),
@@ -301,7 +404,9 @@ mod tests {
                 raw,
             ),
             TypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
-            TypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+            TypecheckOutcome::Internal(message) => {
+                panic!("internal error typechecking fixture: {message}")
+            }
         }
     }
 
@@ -310,7 +415,17 @@ mod tests {
         let text = "sort D;\ncons c: D;\nmap f: D -> D;\nvar x: D;\neqn f(x) = x;\ninit delta;";
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: None,
+        };
 
         let offset = text.find("f(x) = x").unwrap();
         let position = line_index.position(text, offset);
@@ -320,7 +435,11 @@ mod tests {
             panic!("expected markup content");
         };
         // `SortExpression`'s `Display` parenthesizes a function sort's arrow.
-        assert!(content.value.contains("f: (D -> D)"), "unexpected hover text: {}", content.value);
+        assert!(
+            content.value.contains("f: (D -> D)"),
+            "unexpected hover text: {}",
+            content.value
+        );
         assert!(content.value.contains("mapping"));
     }
 
@@ -329,7 +448,17 @@ mod tests {
         let text = "sort D;\ninit delta;";
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: None,
+        };
 
         let position = line_index.position(text, 0);
         assert!(hover(&ctx, position).is_none());
@@ -340,7 +469,17 @@ mod tests {
         let text = "act a: Nat;\nproc P(n: Nat) = a(n);\ninit P(1);";
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: None,
+        };
 
         let offset = text.find("n);").unwrap();
         let position = line_index.position(text, offset);
@@ -349,7 +488,11 @@ mod tests {
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
         };
-        assert!(content.value.contains("n: Nat"), "unexpected hover text: {}", content.value);
+        assert!(
+            content.value.contains("n: Nat"),
+            "unexpected hover text: {}",
+            content.value
+        );
         assert!(content.value.contains("variable"));
     }
 
@@ -358,7 +501,17 @@ mod tests {
         let text = "act a: Nat # Bool;\nproc P(n: Nat, b: Bool) = a(n, b);\ninit P(1, true);";
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: None,
+        };
 
         let offset = text.find("a(n, b)").unwrap();
         let position = line_index.position(text, offset);
@@ -367,7 +520,11 @@ mod tests {
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
         };
-        assert!(content.value.contains("a: Nat # Bool"), "unexpected hover text: {}", content.value);
+        assert!(
+            content.value.contains("a: Nat # Bool"),
+            "unexpected hover text: {}",
+            content.value
+        );
         assert!(content.value.contains("action"));
     }
 
@@ -376,7 +533,17 @@ mod tests {
         let text = "act a;\ninit a;";
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: None,
+        };
 
         let offset = text.find("init a;").unwrap() + "init ".len();
         let position = line_index.position(text, offset);
@@ -385,7 +552,11 @@ mod tests {
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
         };
-        assert!(content.value.contains("```mcrl2\na\n```"), "unexpected hover text: {}", content.value);
+        assert!(
+            content.value.contains("```mcrl2\na\n```"),
+            "unexpected hover text: {}",
+            content.value
+        );
         assert!(content.value.contains("action"));
     }
 
@@ -394,7 +565,17 @@ mod tests {
         let text = "proc P(n: Nat, b: Bool) = delta;\ninit P(1, true);";
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: None,
+        };
 
         let offset = text.find("P(1, true)").unwrap();
         let position = line_index.position(text, offset);
@@ -416,7 +597,17 @@ mod tests {
         let text = "proc Q = delta;\ninit Q();";
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: None,
+        };
 
         let offset = text.find("Q()").unwrap();
         let position = line_index.position(text, offset);
@@ -425,7 +616,11 @@ mod tests {
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
         };
-        assert!(content.value.contains("```mcrl2\nQ\n```"), "unexpected hover text: {}", content.value);
+        assert!(
+            content.value.contains("```mcrl2\nQ\n```"),
+            "unexpected hover text: {}",
+            content.value
+        );
         assert!(content.value.contains("process"));
     }
 
@@ -435,7 +630,17 @@ mod tests {
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
         let uri = Url::parse("file:///test.mcrl2").unwrap();
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: Some(&uri) };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: Some(&uri),
+        };
 
         let offset = text.find("a(n)").unwrap();
         let position = line_index.position(text, offset);
@@ -445,7 +650,9 @@ mod tests {
             panic!("expected markup content");
         };
         assert!(
-            content.value.contains("[Go to definition](file:///test.mcrl2#"),
+            content
+                .value
+                .contains("[Go to definition](file:///test.mcrl2#"),
             "unexpected hover text: {}",
             content.value
         );
@@ -457,7 +664,17 @@ mod tests {
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
         let uri = Url::parse("file:///test.mcrl2").unwrap();
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: Some(&uri) };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: Some(&uri),
+        };
 
         let offset = text.find("P()").unwrap();
         let position = line_index.position(text, offset);
@@ -467,7 +684,9 @@ mod tests {
             panic!("expected markup content");
         };
         assert!(
-            content.value.contains("[Go to definition](file:///test.mcrl2#"),
+            content
+                .value
+                .contains("[Go to definition](file:///test.mcrl2#"),
             "unexpected hover text: {}",
             content.value
         );
@@ -478,7 +697,17 @@ mod tests {
         let text = "act a: Nat;\nproc P(n: Nat) = a(n);\ninit P(1);";
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: None,
+        };
 
         let offset = text.find("a(n)").unwrap();
         let position = line_index.position(text, offset);
@@ -499,7 +728,17 @@ mod tests {
         let text = "sort D = struct c1(a: Bool) | c2;\nmap f: D -> D;\ninit delta;";
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: None,
+        };
 
         // The domain `D` in `map f: D -> D;`: not part of any checked `DataExpr`, so this only
         // resolves via the sort-reference fallback.
@@ -524,7 +763,17 @@ mod tests {
         let (typing_info, actions, processes, spec) = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
         let uri = Url::parse("file:///test.mcrl2").unwrap();
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &actions, processes: &processes, spec: Some(&spec), sources: &SourceMap::new(), line_indexes: &[], doc_uri: Some(&uri) };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &actions,
+            processes: &processes,
+            spec: Some(&spec),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: Some(&uri),
+        };
 
         let offset = text.rfind("D;").unwrap();
         let position = line_index.position(text, offset);
@@ -534,7 +783,9 @@ mod tests {
             panic!("expected markup content");
         };
         assert!(
-            content.value.contains("[Go to definition](file:///test.mcrl2#"),
+            content
+                .value
+                .contains("[Go to definition](file:///test.mcrl2#"),
             "unexpected hover text: {}",
             content.value
         );
@@ -552,8 +803,12 @@ mod tests {
         let text = "map f: Bool;\ninit delta;";
         let mut document = document_for(text, None).await;
         let typing_info = document.typing_info().expect("fixture should type check");
-        let actions = document.checked_process_specification().map_or(&[][..], |spec| spec.action_declarations());
-        let processes = document.checked_process_specification().map_or(&[][..], |spec| spec.process_declarations());
+        let actions = document
+            .checked_process_specification()
+            .map_or(&[][..], |spec| spec.action_declarations());
+        let processes = document
+            .checked_process_specification()
+            .map_or(&[][..], |spec| spec.process_declarations());
         let line_index = document.line_index.clone();
         let uri = Url::parse("file:///test.mcrl2").unwrap();
         let ctx = HoverContext {
@@ -590,13 +845,28 @@ mod tests {
             ParseOutcome::Ok(spec @ Specification::Pbes(_)) => spec,
             _ => panic!("fixture failed to parse"),
         };
-        let typing_info = match crate::typecheck::typecheck_pbes((*raw.as_pbes().unwrap()).clone()).await {
-            crate::typecheck::PbesTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
-            crate::typecheck::PbesTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
-            crate::typecheck::PbesTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
-        };
+        let typing_info =
+            match crate::typecheck::typecheck_pbes((*raw.as_pbes().unwrap()).clone()).await {
+                crate::typecheck::PbesTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
+                crate::typecheck::PbesTypecheckOutcome::Error(error) => {
+                    panic!("fixture failed to typecheck: {error}")
+                }
+                crate::typecheck::PbesTypecheckOutcome::Internal(message) => {
+                    panic!("internal error typechecking fixture: {message}")
+                }
+            };
         let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &[], processes: &[], spec: Some(&raw), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &[],
+            processes: &[],
+            spec: Some(&raw),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: None,
+        };
 
         let offset = text.find("X(true)").unwrap();
         let position = line_index.position(text, offset);
@@ -605,7 +875,11 @@ mod tests {
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
         };
-        assert!(content.value.contains("X(n: Bool)"), "unexpected hover text: {}", content.value);
+        assert!(
+            content.value.contains("X(n: Bool)"),
+            "unexpected hover text: {}",
+            content.value
+        );
         assert!(content.value.contains("propositional variable"));
     }
 
@@ -616,13 +890,31 @@ mod tests {
             ParseOutcome::Ok(spec @ Specification::Modal(_)) => spec,
             _ => panic!("fixture failed to parse"),
         };
-        let typing_info = match crate::typecheck::typecheck_modal_ignoring_sources((*raw.as_modal().unwrap()).clone()).await {
+        let typing_info = match crate::typecheck::typecheck_modal_ignoring_sources(
+            (*raw.as_modal().unwrap()).clone(),
+        )
+        .await
+        {
             crate::typecheck::ModalTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
-            crate::typecheck::ModalTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
-            crate::typecheck::ModalTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+            crate::typecheck::ModalTypecheckOutcome::Error(error) => {
+                panic!("fixture failed to typecheck: {error}")
+            }
+            crate::typecheck::ModalTypecheckOutcome::Internal(message) => {
+                panic!("internal error typechecking fixture: {message}")
+            }
         };
         let line_index = LineIndex::new(text);
-        let ctx = HoverContext { text, line_index: &line_index, typing_info: &typing_info, actions: &[], processes: &[], spec: Some(&raw), sources: &SourceMap::new(), line_indexes: &[], doc_uri: None };
+        let ctx = HoverContext {
+            text,
+            line_index: &line_index,
+            typing_info: &typing_info,
+            actions: &[],
+            processes: &[],
+            spec: Some(&raw),
+            sources: &SourceMap::new(),
+            line_indexes: &[],
+            doc_uri: None,
+        };
 
         let offset = text.rfind("X(n)").unwrap();
         let position = line_index.position(text, offset);
@@ -631,7 +923,11 @@ mod tests {
         let HoverContents::Markup(content) = hover.contents else {
             panic!("expected markup content");
         };
-        assert!(content.value.contains("X(n : Nat = 0)"), "unexpected hover text: {}", content.value);
+        assert!(
+            content.value.contains("X(n : Nat = 0)"),
+            "unexpected hover text: {}",
+            content.value
+        );
         assert!(content.value.contains("state variable"));
     }
 
@@ -652,14 +948,24 @@ mod tests {
     /// As `goto_definition.rs`'s own `document_for`: keeps the real `Document` (with its
     /// `sources`/`line_indexes`), needed by any fixture whose hover link might resolve outside
     /// the current document.
-    async fn document_for(text: &str, path: Option<std::path::PathBuf>) -> crate::document::Document {
-        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.to_string(), path).await;
+    async fn document_for(
+        text: &str,
+        path: Option<std::path::PathBuf>,
+    ) -> crate::document::Document {
+        let (outcome, sources) =
+            crate::parse::parse(SpecKind::Process, text.to_string(), path).await;
         let (checked, sources) = match &outcome {
             ParseOutcome::Ok(Specification::Process(spec)) => {
-                let (result, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
-                (Some(crate::document::CheckedOutcome::Process(result)), sources)
+                let (result, sources) =
+                    crate::typecheck::typecheck((**spec).clone(), sources).await;
+                (
+                    Some(crate::document::CheckedOutcome::Process(result)),
+                    sources,
+                )
             }
-            ParseOutcome::Ok(_) => panic!("fixture parsed as something other than a process specification"),
+            ParseOutcome::Ok(_) => {
+                panic!("fixture parsed as something other than a process specification")
+            }
             ParseOutcome::ParseError(error) => panic!("fixture failed to parse: {error}"),
             ParseOutcome::Internal(message) => panic!("internal error parsing fixture: {message}"),
         };
@@ -677,11 +983,14 @@ mod tests {
             ("common.mcrl2", "act a;\n"),
         ]);
         let main_path = dir.path().join("main.mcrl2");
-        let doc_uri = Url::from_file_path(&main_path).expect("temp path should be a valid file URL");
+        let doc_uri =
+            Url::from_file_path(&main_path).expect("temp path should be a valid file URL");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let mut document = document_for(&text, Some(main_path)).await;
         let typing_info = document.typing_info().expect("fixture should type check");
-        let actions = document.checked_process_specification().map_or(&[][..], |spec| spec.action_declarations());
+        let actions = document
+            .checked_process_specification()
+            .map_or(&[][..], |spec| spec.action_declarations());
         let line_index = document.line_index.clone();
         let ctx = HoverContext {
             text: &document.text,

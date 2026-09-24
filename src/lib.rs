@@ -43,7 +43,7 @@ use tower::ServiceBuilder;
 
 /// Runs the server over `input`/`output` until the client disconnects (`exit` notification) or a
 /// transport error occurs.
-pub async fn serve(input: impl AsyncRead, output: impl AsyncWrite) {
+pub async fn serve<R: AsyncRead, W: AsyncWrite>(input: R, output: W) {
     let (mainloop, _client) = async_lsp::MainLoop::new_server(|client| {
         let router = backend::router(client.clone());
         ServiceBuilder::new()

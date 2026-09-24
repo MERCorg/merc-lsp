@@ -52,7 +52,10 @@ pub fn definition_locations(
         Some(ResolvedName::ActionSet { declarations, .. }) => declarations.clone(),
         _ => Vec::new(),
     };
-    declarations.iter().filter_map(|declaration| convert::location(sources, line_indexes, declaration)).collect()
+    declarations
+        .iter()
+        .filter_map(|declaration| convert::location(sources, line_indexes, declaration))
+        .collect()
 }
 
 /// If `position` sits on an `%import "relative/path"` directive's own quoted path, resolves
@@ -63,12 +66,17 @@ pub fn definition_locations(
 /// `None` when `position` isn't on a directive's path, or `doc_path` is `None` — an
 /// untitled/unsaved buffer has no directory a relative import path could resolve against, the same
 /// condition under which `parse.rs` doesn't resolve `%import` at all.
-pub fn import_directive_target(text: &str, line_index: &LineIndex, doc_path: Option<&Path>, position: Position) -> Option<LocationLink> {
+pub fn import_directive_target(
+    text: &str,
+    line_index: &LineIndex,
+    doc_path: Option<&Path>,
+    position: Position,
+) -> Option<LocationLink> {
     let doc_path = doc_path?;
     let offset = line_index.offset(text, position)?;
-    let directive = scan_imports(text)
-        .into_iter()
-        .find(|directive| (directive.node.path_span.start..=directive.node.path_span.end).contains(&offset))?;
+    let directive = scan_imports(text).into_iter().find(|directive| {
+        (directive.node.path_span.start..=directive.node.path_span.end).contains(&offset)
+    })?;
 
     let directory = doc_path.parent().unwrap_or_else(|| Path::new("."));
     let target = directory.join(&directive.node.path);
@@ -111,16 +119,28 @@ mod tests {
 
     /// Test convenience: [`definition_locations`] against a single-file `SourceMap` built from
     /// `text` alone.
-    fn definition_ranges(text: &str, line_index: &LineIndex, typing_info: &TypingInfo, position: Position) -> Vec<Range> {
+    fn definition_ranges(
+        text: &str,
+        line_index: &LineIndex,
+        typing_info: &TypingInfo,
+        position: Position,
+    ) -> Vec<Range> {
         let mut sources = SourceMap::new();
         // An absolute-looking (if fake) path: `convert::location` builds a `file://` URI via
         // `Url::from_file_path`, which requires one.
         sources.add_text("/test.mcrl2", text.to_string());
         let line_indexes = vec![line_index.clone()];
-        definition_locations(text, line_index, &sources, &line_indexes, typing_info, position)
-            .into_iter()
-            .map(|location| location.range)
-            .collect()
+        definition_locations(
+            text,
+            line_index,
+            &sources,
+            &line_indexes,
+            typing_info,
+            position,
+        )
+        .into_iter()
+        .map(|location| location.range)
+        .collect()
     }
 
     async fn typing_info_for(text: &str) -> TypingInfo {
@@ -131,21 +151,33 @@ mod tests {
         match typecheck(spec).await {
             TypecheckOutcome::Ok(mut checked) => checked.typing_info(),
             TypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
-            TypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+            TypecheckOutcome::Internal(message) => {
+                panic!("internal error typechecking fixture: {message}")
+            }
         }
     }
 
     /// As [`typing_info_for`], but keeping the real `Document` instead of
     /// discarding everything but the `TypingInfo` — needed by any fixture whose
     /// declaration might resolve outside the current document.
-    async fn document_for(text: &str, path: Option<std::path::PathBuf>) -> crate::document::Document {
-        let (outcome, sources) = crate::parse::parse(SpecKind::Process, text.to_string(), path).await;
+    async fn document_for(
+        text: &str,
+        path: Option<std::path::PathBuf>,
+    ) -> crate::document::Document {
+        let (outcome, sources) =
+            crate::parse::parse(SpecKind::Process, text.to_string(), path).await;
         let (checked, sources) = match &outcome {
             ParseOutcome::Ok(Specification::Process(spec)) => {
-                let (result, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
-                (Some(crate::document::CheckedOutcome::Process(result)), sources)
+                let (result, sources) =
+                    crate::typecheck::typecheck((**spec).clone(), sources).await;
+                (
+                    Some(crate::document::CheckedOutcome::Process(result)),
+                    sources,
+                )
             }
-            ParseOutcome::Ok(_) => panic!("fixture parsed as something other than a process specification"),
+            ParseOutcome::Ok(_) => {
+                panic!("fixture parsed as something other than a process specification")
+            }
             ParseOutcome::ParseError(error) => panic!("fixture failed to parse: {error}"),
             ParseOutcome::Internal(message) => panic!("internal error parsing fixture: {message}"),
         };
@@ -219,7 +251,8 @@ mod tests {
 
     #[tokio::test]
     async fn jumps_from_a_struct_recogniser_use_to_its_own_name() {
-        let text = "sort D = struct c1(a: Bool)?is_c1 | c2;\neqn true = is_c1(c1(true));\ninit delta;";
+        let text =
+            "sort D = struct c1(a: Bool)?is_c1 | c2;\neqn true = is_c1(c1(true));\ninit delta;";
         let typing_info = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
 
@@ -299,7 +332,8 @@ mod tests {
             panic!("expected exactly one definition, got {locations:?}");
         };
         assert_eq!(location.uri.scheme(), convert::VIRTUAL_DOCUMENT_SCHEME);
-        let decoded = convert::decode_virtual_uri(&location.uri).expect("should decode back to the registered name");
+        let decoded = convert::decode_virtual_uri(&location.uri)
+            .expect("should decode back to the registered name");
         assert!(
             decoded.contains("bool.mcrl2"),
             "expected Bool to resolve into its own bundled template, got: {decoded}"
@@ -323,7 +357,8 @@ mod tests {
 
     #[tokio::test]
     async fn jumps_from_an_allow_multi_action_name_to_its_declaration() {
-        let text = "act a: Nat;\nact b: Nat;\nproc P(n: Nat) = a(n)|b(n);\ninit allow({a|b}, P(1));";
+        let text =
+            "act a: Nat;\nact b: Nat;\nproc P(n: Nat) = a(n)|b(n);\ninit allow({a|b}, P(1));";
         let typing_info = typing_info_for(text).await;
         let line_index = LineIndex::new(text);
 
@@ -369,11 +404,16 @@ mod tests {
     #[tokio::test]
     async fn jumps_from_a_propositional_variable_use_to_its_equation() {
         let text = "pbes mu X(n: Bool) = val(n);\ninit X(true);";
-        let spec = merc_syntax::UntypedPbes::parse(text).unwrap_or_else(|error| panic!("fixture failed to parse: {error}"));
+        let spec = merc_syntax::UntypedPbes::parse(text)
+            .unwrap_or_else(|error| panic!("fixture failed to parse: {error}"));
         let typing_info = match crate::typecheck::typecheck_pbes(spec).await {
             crate::typecheck::PbesTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
-            crate::typecheck::PbesTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
-            crate::typecheck::PbesTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+            crate::typecheck::PbesTypecheckOutcome::Error(error) => {
+                panic!("fixture failed to typecheck: {error}")
+            }
+            crate::typecheck::PbesTypecheckOutcome::Internal(message) => {
+                panic!("internal error typechecking fixture: {message}")
+            }
         };
         let line_index = LineIndex::new(text);
 
@@ -389,11 +429,16 @@ mod tests {
     #[tokio::test]
     async fn jumps_from_a_state_variable_use_to_its_fixpoint_declaration() {
         let text = "act a: Nat;\nform nu X(n: Nat = 0) . [a(n)]X(n);";
-        let spec = merc_syntax::UntypedStateFrmSpec::parse(text).unwrap_or_else(|error| panic!("fixture failed to parse: {error}"));
+        let spec = merc_syntax::UntypedStateFrmSpec::parse(text)
+            .unwrap_or_else(|error| panic!("fixture failed to parse: {error}"));
         let typing_info = match crate::typecheck::typecheck_modal_ignoring_sources(spec).await {
             crate::typecheck::ModalTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
-            crate::typecheck::ModalTypecheckOutcome::Error(error) => panic!("fixture failed to typecheck: {error}"),
-            crate::typecheck::ModalTypecheckOutcome::Internal(message) => panic!("internal error typechecking fixture: {message}"),
+            crate::typecheck::ModalTypecheckOutcome::Error(error) => {
+                panic!("fixture failed to typecheck: {error}")
+            }
+            crate::typecheck::ModalTypecheckOutcome::Internal(message) => {
+                panic!("internal error typechecking fixture: {message}")
+            }
         };
         let line_index = LineIndex::new(text);
 
@@ -450,7 +495,13 @@ mod tests {
             "expected the action's declaration to resolve into common.mcrl2, got: {}",
             location.uri
         );
-        assert_eq!(location.range.start, Position { line: 0, character: 4 });
+        assert_eq!(
+            location.range.start,
+            Position {
+                line: 0,
+                character: 4
+            }
+        );
     }
 
     #[tokio::test]
@@ -465,8 +516,8 @@ mod tests {
 
         let path_offset = text.find("common.mcrl2").unwrap();
         let position = line_index.position(&text, path_offset);
-        let link =
-            import_directive_target(&text, &line_index, Some(main_path.as_path()), position).expect("should resolve the import path");
+        let link = import_directive_target(&text, &line_index, Some(main_path.as_path()), position)
+            .expect("should resolve the import path");
 
         assert_eq!(link.target_uri.scheme(), "file");
         assert!(
@@ -493,8 +544,8 @@ mod tests {
         let path_start = text.find("sub/common.mcrl2").unwrap();
         let path_end = path_start + "sub/common.mcrl2".len();
         let position = line_index.position(&text, path_start + 1);
-        let link =
-            import_directive_target(&text, &line_index, Some(main_path.as_path()), position).expect("should resolve the import path");
+        let link = import_directive_target(&text, &line_index, Some(main_path.as_path()), position)
+            .expect("should resolve the import path");
 
         assert_eq!(
             link.origin_selection_range,
@@ -508,14 +559,20 @@ mod tests {
 
     #[tokio::test]
     async fn no_import_target_when_the_cursor_is_outside_the_directives_path() {
-        let dir = temp_project(&[("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"), ("common.mcrl2", "")]);
+        let dir = temp_project(&[
+            ("main.mcrl2", "%import \"common.mcrl2\"\ninit delta;\n"),
+            ("common.mcrl2", ""),
+        ]);
         let main_path = dir.path().join("main.mcrl2");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let line_index = LineIndex::new(&text);
 
         // On `%import` itself, not the quoted path.
         let position = line_index.position(&text, 0);
-        assert!(import_directive_target(&text, &line_index, Some(main_path.as_path()), position).is_none());
+        assert!(
+            import_directive_target(&text, &line_index, Some(main_path.as_path()), position)
+                .is_none()
+        );
     }
 
     #[tokio::test]

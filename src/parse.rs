@@ -3,7 +3,7 @@
 //! # `%import` and the returned [`SourceMap`]
 //!
 //! A process specification or modal formula backed by a real `file://` path (see
-//! [`SpecKind::Process`]/[`SpecKind::Modal`] below) is parsed via
+//! [`SpecKind::Process`]/[`SpecKind::Modal`]/[`SpecKind::RealModal`] below) is parsed via
 //! `UntypedProcessSpecification::parse_with_imports`/`UntypedStateFrmSpec::parse_with_imports`
 //! instead of a plain `T::parse`, resolving every `%import "relative/path"` directive the file (or
 //! anything it transitively imports) contains. Every other case falls back to a plain,
@@ -20,18 +20,22 @@ use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
+use merc_typecheck::FormulaType;
 use merc_typecheck::disambiguate_process_specification;
 use merc_utilities::MercError;
 
-/// Which of `merc_syntax`'s three top-level grammar entry points a document should be parsed
-/// with, decided from its file extension.
+/// Which of `merc_syntax`'s top-level grammar entry points a document should be parsed with,
+/// decided from its file extension.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpecKind {
     /// A plain `.mcrl2` process specification, and the default.
     Process,
     Pbes,
     Pres,
+    /// A `.mcf` boolean modal (mu-calculus) formula.
     Modal,
+    /// A `.rmcf` real-valued (quantitative) modal formula.
+    RealModal,
 }
 
 impl SpecKind {
@@ -46,7 +50,17 @@ impl SpecKind {
             Some("pbes") => SpecKind::Pbes,
             Some("pres") => SpecKind::Pres,
             Some("mcf") => SpecKind::Modal,
+            Some("rmcf") => SpecKind::RealModal,
             _ => SpecKind::Process,
+        }
+    }
+
+    pub fn formula_type(&self) -> FormulaType {
+        match self {
+            SpecKind::RealModal => FormulaType::Real,
+            SpecKind::Process | SpecKind::Pbes | SpecKind::Pres | SpecKind::Modal => {
+                FormulaType::Bool
+            }
         }
     }
 }
@@ -131,7 +145,7 @@ pub async fn parse(
             })
             .await
         }
-        (SpecKind::Modal, Some(path)) => {
+        (SpecKind::Modal | SpecKind::RealModal, Some(path)) => {
             run(move || {
                 let mut sources = SourceMap::new();
                 let result = UntypedStateFrmSpec::parse_with_imports(&path, &text, &mut sources)
@@ -171,7 +185,7 @@ async fn run_single_file(
             SpecKind::Pres => {
                 UntypedPres::parse(&text).map(|spec| Specification::Pres(Box::new(spec)))
             }
-            SpecKind::Modal => {
+            SpecKind::Modal | SpecKind::RealModal => {
                 UntypedStateFrmSpec::parse(&text).map(|spec| Specification::Modal(Box::new(spec)))
             }
         };
@@ -270,6 +284,19 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn parses_well_formed_real_modal_formula() {
+        // Same grammar as a plain `.mcf` — `SpecKind::RealModal` only changes how it's later
+        // type checked.
+        let text = "act a: Nat;\nform nu X . val(2) * [a(0)]X;".to_string();
+        match parse(SpecKind::RealModal, text, None).await {
+            (ParseOutcome::Ok(Specification::Modal(_)), _) => {}
+            (ParseOutcome::Ok(_), _) => panic!("expected a Modal specification"),
+            (ParseOutcome::ParseError(error), _) => panic!("unexpected parse error: {error}"),
+            (ParseOutcome::Internal(message), _) => panic!("unexpected internal error: {message}"),
+        }
+    }
+
     #[test]
     fn spec_kind_from_uri_extension() {
         assert_eq!(
@@ -287,6 +314,10 @@ mod tests {
         assert_eq!(
             SpecKind::from_uri(&"file:///a/b.mcf".parse().unwrap()),
             SpecKind::Modal
+        );
+        assert_eq!(
+            SpecKind::from_uri(&"file:///a/b.rmcf".parse().unwrap()),
+            SpecKind::RealModal
         );
         assert_eq!(
             SpecKind::from_uri(&"file:///a/b".parse().unwrap()),
@@ -312,6 +343,16 @@ mod tests {
             SpecKind::from_uri(&"file:///a/Spec.MCF".parse().unwrap()),
             SpecKind::Modal
         );
+        assert_eq!(
+            SpecKind::from_uri(&"file:///a/Spec.RMCF".parse().unwrap()),
+            SpecKind::RealModal
+        );
+    }
+
+    #[test]
+    fn spec_kind_formula_type() {
+        assert_eq!(SpecKind::Modal.formula_type(), FormulaType::Bool);
+        assert_eq!(SpecKind::RealModal.formula_type(), FormulaType::Real);
     }
 
     #[test]
