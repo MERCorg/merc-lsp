@@ -19,9 +19,9 @@ use merc_typecheck::ResolvedName;
 use merc_typecheck::TypedNode;
 use merc_typecheck::TypingInfo;
 
-use crate::convert;
-use crate::convert::LineIndex;
-use crate::parse::Specification;
+use crate::analysis::convert;
+use crate::analysis::convert::LineIndex;
+use crate::analysis::parse::Specification;
 
 /// Everything [`hover`] needs that doesn't vary per request, bundled together.
 /// `position` stays a separate argument to [`hover`] since it's the one input
@@ -308,7 +308,7 @@ fn hover_markdown(ctx: &HoverContext, node: &TypedNode) -> String {
         // `declaration`, when present, is a span into Appendix B (system-defined/built-in)
         // content — a *virtual* file in `sources`' terms. `goto_def_link` resolves it through
         // `sources`/`line_indexes` the same as any other cross-file span, landing on the
-        // `merc-builtin:` virtual document `crate::virtual_document` serves for it (mirrors
+        // `merc-builtin:` virtual document `crate::features::virtual_document` serves for it (mirrors
         // `goto_definition.rs`'s own built-in-sort test).
         Some(ResolvedName::SystemDefined { name, declaration }) => {
             Some((name.as_str(), "system-defined", declaration.clone()))
@@ -339,7 +339,7 @@ fn hover_markdown(ctx: &HoverContext, node: &TypedNode) -> String {
 /// `doc_uri` is unavailable (the same "no link without a URI" convention every caller above
 /// already followed).
 ///
-/// `span` is a *global* offset (see `crate::document::Document`'s doc comment), so it may fall
+/// `span` is a *global* offset (see `crate::server::document::Document`'s doc comment), so it may fall
 /// outside the currently open document entirely — into an `%import`ed file, or into virtual
 /// (Appendix-B/built-in) content — the same cross-file case `goto_definition::definition_locations`
 /// already handles via [`convert::location`]. Resolving through `sources`/`line_indexes` first
@@ -347,7 +347,7 @@ fn hover_markdown(ctx: &HoverContext, node: &TypedNode) -> String {
 /// local to `doc_uri` itself — needed whenever `convert::location` can't build a real `file://`
 /// URI for it: an untitled/unsaved buffer has no on-disk path of its own to build one from, and a
 /// unit-test fixture that hand-builds a `HoverContext` without going through
-/// `crate::document::Document` (so with nothing loaded into `sources` at all) hits the same case.
+/// `crate::server::document::Document` (so with nothing loaded into `sources` at all) hits the same case.
 fn goto_def_link(
     span: &Span,
     doc_uri: Option<&Url>,
@@ -381,12 +381,12 @@ fn goto_def_link(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ParseOutcome;
-    use crate::parse::SpecKind;
-    use crate::parse::Specification;
-    use crate::parse::parse_ignoring_sources as parse;
-    use crate::typecheck::TypecheckOutcome;
-    use crate::typecheck::typecheck_ignoring_sources as typecheck;
+    use crate::analysis::parse::ParseOutcome;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::Specification;
+    use crate::analysis::parse::parse_ignoring_sources as parse;
+    use crate::analysis::typecheck::TypecheckOutcome;
+    use crate::analysis::typecheck::typecheck_ignoring_sources as typecheck;
 
     async fn typing_info_for(
         text: &str,
@@ -797,7 +797,7 @@ mod tests {
         // resolves to `ResolvedName::SystemDefined`, not `Sort`. Its declaration span lands in
         // Appendix B (system-defined/built-in) content — a *virtual* `SourceMap` entry —
         // `goto_def_link` resolves the same way it resolves a span into a real `%import`ed file:
-        // into a `merc-builtin:` URI serving that content (see `crate::virtual_document`). Needs
+        // into a `merc-builtin:` URI serving that content (see `crate::features::virtual_document`). Needs
         // `document_for` (real `sources`/`line_indexes`, not a hand-built, sourceless
         // `HoverContext`) to actually reach that content.
         let text = "map f: Bool;\ninit delta;";
@@ -846,12 +846,16 @@ mod tests {
             _ => panic!("fixture failed to parse"),
         };
         let typing_info =
-            match crate::typecheck::typecheck_pbes((*raw.as_pbes().unwrap()).clone()).await {
-                crate::typecheck::PbesTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
-                crate::typecheck::PbesTypecheckOutcome::Error(error) => {
+            match crate::analysis::typecheck::typecheck_pbes((*raw.as_pbes().unwrap()).clone())
+                .await
+            {
+                crate::analysis::typecheck::PbesTypecheckOutcome::Ok(mut checked) => {
+                    checked.typing_info()
+                }
+                crate::analysis::typecheck::PbesTypecheckOutcome::Error(error) => {
                     panic!("fixture failed to typecheck: {error}")
                 }
-                crate::typecheck::PbesTypecheckOutcome::Internal(message) => {
+                crate::analysis::typecheck::PbesTypecheckOutcome::Internal(message) => {
                     panic!("internal error typechecking fixture: {message}")
                 }
             };
@@ -890,16 +894,18 @@ mod tests {
             ParseOutcome::Ok(spec @ Specification::Modal(_)) => spec,
             _ => panic!("fixture failed to parse"),
         };
-        let typing_info = match crate::typecheck::typecheck_modal_ignoring_sources(
+        let typing_info = match crate::analysis::typecheck::typecheck_modal_ignoring_sources(
             (*raw.as_modal().unwrap()).clone(),
         )
         .await
         {
-            crate::typecheck::ModalTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
-            crate::typecheck::ModalTypecheckOutcome::Error(error) => {
+            crate::analysis::typecheck::ModalTypecheckOutcome::Ok(mut checked) => {
+                checked.typing_info()
+            }
+            crate::analysis::typecheck::ModalTypecheckOutcome::Error(error) => {
                 panic!("fixture failed to typecheck: {error}")
             }
-            crate::typecheck::ModalTypecheckOutcome::Internal(message) => {
+            crate::analysis::typecheck::ModalTypecheckOutcome::Internal(message) => {
                 panic!("internal error typechecking fixture: {message}")
             }
         };
@@ -951,15 +957,15 @@ mod tests {
     async fn document_for(
         text: &str,
         path: Option<std::path::PathBuf>,
-    ) -> crate::document::Document {
+    ) -> crate::server::document::Document {
         let (outcome, sources) =
-            crate::parse::parse(SpecKind::Process, text.to_string(), path).await;
+            crate::analysis::parse::parse(SpecKind::Process, text.to_string(), path).await;
         let (checked, sources) = match &outcome {
             ParseOutcome::Ok(Specification::Process(spec)) => {
                 let (result, sources) =
-                    crate::typecheck::typecheck((**spec).clone(), sources).await;
+                    crate::analysis::typecheck::typecheck((**spec).clone(), sources).await;
                 (
-                    Some(crate::document::CheckedOutcome::Process(result)),
+                    Some(crate::server::document::CheckedOutcome::Process(result)),
                     sources,
                 )
             }
@@ -969,7 +975,7 @@ mod tests {
             ParseOutcome::ParseError(error) => panic!("fixture failed to parse: {error}"),
             ParseOutcome::Internal(message) => panic!("internal error parsing fixture: {message}"),
         };
-        crate::document::Document::new(text.to_string(), 0, outcome, checked, sources)
+        crate::server::document::Document::new(text.to_string(), 0, outcome, checked, sources)
     }
 
     #[tokio::test]

@@ -14,7 +14,7 @@
 //! precedence as plain data, and [`check_prefix_shape`] is the one general
 //! check run against every node of every kind that defines them.
 //!
-//! `crate::diagnostics` turns each hit into a warning, and `crate::code_action`
+//! `crate::features::diagnostics` turns each hit into a warning, and `crate::features::code_action`
 //! turns it into a quick fix that parenthesizes the inner operator's own span.
 
 use std::ops::ControlFlow;
@@ -44,7 +44,7 @@ use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
 
-use crate::convert;
+use crate::analysis::convert;
 
 /// One occurrence of the ambiguous shape: `outer_span` is the outer (tighter-binding) prefix
 /// operator's own span.

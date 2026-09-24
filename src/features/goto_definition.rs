@@ -13,8 +13,8 @@ use merc_syntax::scan_imports;
 use merc_typecheck::ResolvedName;
 use merc_typecheck::TypingInfo;
 
-use crate::convert;
-use crate::convert::LineIndex;
+use crate::analysis::convert;
+use crate::analysis::convert::LineIndex;
 
 /// The declaration location(s) for the identifier at `position` — empty if it doesn't resolve to
 /// a declaration site at all, one for almost every [`ResolvedName`] variant, or more than one only
@@ -99,12 +99,12 @@ pub fn import_directive_target(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ParseOutcome;
-    use crate::parse::SpecKind;
-    use crate::parse::Specification;
-    use crate::parse::parse_ignoring_sources as parse;
-    use crate::typecheck::TypecheckOutcome;
-    use crate::typecheck::typecheck_ignoring_sources as typecheck;
+    use crate::analysis::parse::ParseOutcome;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::Specification;
+    use crate::analysis::parse::parse_ignoring_sources as parse;
+    use crate::analysis::typecheck::TypecheckOutcome;
+    use crate::analysis::typecheck::typecheck_ignoring_sources as typecheck;
 
     /// Asserts `ranges` resolves to exactly one range and returns it — every fixture below has a
     /// single declaration to jump to (an `ActionSet` naming several `act` declarations at once is
@@ -163,15 +163,15 @@ mod tests {
     async fn document_for(
         text: &str,
         path: Option<std::path::PathBuf>,
-    ) -> crate::document::Document {
+    ) -> crate::server::document::Document {
         let (outcome, sources) =
-            crate::parse::parse(SpecKind::Process, text.to_string(), path).await;
+            crate::analysis::parse::parse(SpecKind::Process, text.to_string(), path).await;
         let (checked, sources) = match &outcome {
             ParseOutcome::Ok(Specification::Process(spec)) => {
                 let (result, sources) =
-                    crate::typecheck::typecheck((**spec).clone(), sources).await;
+                    crate::analysis::typecheck::typecheck((**spec).clone(), sources).await;
                 (
-                    Some(crate::document::CheckedOutcome::Process(result)),
+                    Some(crate::server::document::CheckedOutcome::Process(result)),
                     sources,
                 )
             }
@@ -181,7 +181,7 @@ mod tests {
             ParseOutcome::ParseError(error) => panic!("fixture failed to parse: {error}"),
             ParseOutcome::Internal(message) => panic!("internal error parsing fixture: {message}"),
         };
-        crate::document::Document::new(text.to_string(), 0, outcome, checked, sources)
+        crate::server::document::Document::new(text.to_string(), 0, outcome, checked, sources)
     }
 
     #[tokio::test]
@@ -406,12 +406,14 @@ mod tests {
         let text = "pbes mu X(n: Bool) = val(n);\ninit X(true);";
         let spec = merc_syntax::UntypedPbes::parse(text)
             .unwrap_or_else(|error| panic!("fixture failed to parse: {error}"));
-        let typing_info = match crate::typecheck::typecheck_pbes(spec).await {
-            crate::typecheck::PbesTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
-            crate::typecheck::PbesTypecheckOutcome::Error(error) => {
+        let typing_info = match crate::analysis::typecheck::typecheck_pbes(spec).await {
+            crate::analysis::typecheck::PbesTypecheckOutcome::Ok(mut checked) => {
+                checked.typing_info()
+            }
+            crate::analysis::typecheck::PbesTypecheckOutcome::Error(error) => {
                 panic!("fixture failed to typecheck: {error}")
             }
-            crate::typecheck::PbesTypecheckOutcome::Internal(message) => {
+            crate::analysis::typecheck::PbesTypecheckOutcome::Internal(message) => {
                 panic!("internal error typechecking fixture: {message}")
             }
         };
@@ -431,15 +433,18 @@ mod tests {
         let text = "act a: Nat;\nform nu X(n: Nat = 0) . [a(n)]X(n);";
         let spec = merc_syntax::UntypedStateFrmSpec::parse(text)
             .unwrap_or_else(|error| panic!("fixture failed to parse: {error}"));
-        let typing_info = match crate::typecheck::typecheck_modal_ignoring_sources(spec).await {
-            crate::typecheck::ModalTypecheckOutcome::Ok(mut checked) => checked.typing_info(),
-            crate::typecheck::ModalTypecheckOutcome::Error(error) => {
-                panic!("fixture failed to typecheck: {error}")
-            }
-            crate::typecheck::ModalTypecheckOutcome::Internal(message) => {
-                panic!("internal error typechecking fixture: {message}")
-            }
-        };
+        let typing_info =
+            match crate::analysis::typecheck::typecheck_modal_ignoring_sources(spec).await {
+                crate::analysis::typecheck::ModalTypecheckOutcome::Ok(mut checked) => {
+                    checked.typing_info()
+                }
+                crate::analysis::typecheck::ModalTypecheckOutcome::Error(error) => {
+                    panic!("fixture failed to typecheck: {error}")
+                }
+                crate::analysis::typecheck::ModalTypecheckOutcome::Internal(message) => {
+                    panic!("internal error typechecking fixture: {message}")
+                }
+            };
         let line_index = LineIndex::new(text);
 
         let use_offset = text.rfind("X(n)").unwrap();

@@ -20,15 +20,15 @@ use merc_typecheck::PresSpecification;
 use merc_typecheck::ProcessSpecification;
 use merc_typecheck::TypingInfo;
 
-use crate::convert::LineIndex;
-use crate::diagnostics;
-use crate::parse::ParseOutcome;
-use crate::parse::Specification;
-use crate::semantic_tokens;
-use crate::typecheck::ModalTypecheckOutcome;
-use crate::typecheck::PbesTypecheckOutcome;
-use crate::typecheck::PresTypecheckOutcome;
-use crate::typecheck::TypecheckOutcome;
+use crate::analysis::convert::LineIndex;
+use crate::analysis::parse::ParseOutcome;
+use crate::analysis::parse::Specification;
+use crate::analysis::typecheck::ModalTypecheckOutcome;
+use crate::analysis::typecheck::PbesTypecheckOutcome;
+use crate::analysis::typecheck::PresTypecheckOutcome;
+use crate::analysis::typecheck::TypecheckOutcome;
+use crate::features::diagnostics;
+use crate::features::semantic_tokens;
 
 /// A single open (or otherwise tracked) document.
 pub struct Document {
@@ -51,14 +51,14 @@ pub struct Document {
     /// Every URI besides this document's own that `backend::analyze` published diagnostics
     /// against as of the last analysis.
     pub published_foreign_uris: Vec<Url>,
-    
+
     /// The latest buffer `did_change` has recorded.
     pub pending_text: String,
     pub pending_version: i32,
 }
 
 /// The result of type checking a document, tagged by which kind of specification it checked —
-/// mirrors [`crate::parse::Specification`] one level down, one variant per document kind.
+/// mirrors [`crate::analysis::parse::Specification`] one level down, one variant per document kind.
 pub enum CheckedOutcome {
     Process(TypecheckOutcome),
     Pbes(PbesTypecheckOutcome),
@@ -278,13 +278,13 @@ impl Document {
         diags
     }
 
-    /// The checked process specification backing [`crate::hover`], [`crate::goto_definition`], and
-    /// [`crate::inlay_hints`], if one is available.
+    /// The checked process specification backing [`crate::features::hover`], [`crate::features::goto_definition`], and
+    /// [`crate::features::inlay_hints`], if one is available.
     ///
     /// `None` whenever the whole process specification currently fails to type check — even if
     /// the failure is in an unrelated `act`/`proc`/`init` declaration and the data specification
     /// itself would check fine on its own. `ProcessSpecification::from_untyped` (see
-    /// [`crate::typecheck`]) has no partial-success entry point that would let these features keep
+    /// [`crate::analysis::typecheck`]) has no partial-success entry point that would let these features keep
     /// working on the data-specification subtree alone while the rest of the document is still
     /// broken — so, for now, they simply go quiet document-wide until the whole thing checks
     /// again. `None` for a PBES/PRES/modal-formula document too — see
@@ -297,10 +297,10 @@ impl Document {
         }
     }
 
-    /// As [`Self::checked_process_specification`], for a PBES document. [`crate::hover`] and
-    /// [`crate::goto_definition`] don't need this directly — both are generic over `TypingInfo`
+    /// As [`Self::checked_process_specification`], for a PBES document. [`crate::features::hover`] and
+    /// [`crate::features::goto_definition`] don't need this directly — both are generic over `TypingInfo`
     /// (via [`Self::typing_info`]) and don't otherwise care which kind of specification produced
-    /// it, so PBES hover/goto-def works without it. Used by [`crate::inlay_hints::pbes_inlay_hints`]
+    /// it, so PBES hover/goto-def works without it. Used by [`crate::features::inlay_hints::pbes_inlay_hints`]
     /// (which does need the checked spec itself, for its equations' parameter names), the PBES
     /// counterpart of [`Self::checked_process_specification`].
     pub fn checked_pbes_specification(&self) -> Option<&PbesSpecification> {
@@ -311,7 +311,7 @@ impl Document {
     }
 
     /// As [`Self::checked_pbes_specification`], for a PRES document — backs
-    /// [`crate::inlay_hints::pres_inlay_hints`]'s equation-parameter-name lookup.
+    /// [`crate::features::inlay_hints::pres_inlay_hints`]'s equation-parameter-name lookup.
     pub fn checked_pres_specification(&self) -> Option<&PresSpecification> {
         match &self.checked {
             Some(CheckedOutcome::Pres(PresTypecheckOutcome::Ok(spec))) => Some(spec),
@@ -320,8 +320,8 @@ impl Document {
     }
 
     /// As [`Self::checked_pbes_specification`], for a modal-formula document — backs
-    /// [`crate::hover`]'s action-declaration lookup and
-    /// [`crate::inlay_hints::modal_inlay_hints`]'s fixpoint-variable-parameter-name lookup.
+    /// [`crate::features::hover`]'s action-declaration lookup and
+    /// [`crate::features::inlay_hints::modal_inlay_hints`]'s fixpoint-variable-parameter-name lookup.
     pub fn checked_modal_specification(&self) -> Option<&ModalSpecification> {
         match &self.checked {
             Some(CheckedOutcome::Modal(ModalTypecheckOutcome::Ok(spec))) => Some(spec),
@@ -329,7 +329,7 @@ impl Document {
         }
     }
 
-    /// The *raw*, un-type-checked process specification backing [`crate::inlay_hints::inlay_hints`]'s
+    /// The *raw*, un-type-checked process specification backing [`crate::features::inlay_hints::inlay_hints`]'s
     /// struct-field-name lookup.
     ///
     /// Type checking desugars a `struct` sort declaration in place — [`ProcessSpecification`]'s
@@ -347,7 +347,7 @@ impl Document {
     }
 
     /// As [`Self::parsed_process_specification`], for a PBES document — backs
-    /// [`crate::inlay_hints::pbes_inlay_hints`]'s struct-field-name lookup the same way.
+    /// [`crate::features::inlay_hints::pbes_inlay_hints`]'s struct-field-name lookup the same way.
     pub fn parsed_pbes_specification(&self) -> Option<&UntypedPbes> {
         match &self.parsed {
             ParseOutcome::Ok(spec) => spec.as_pbes(),
@@ -434,13 +434,13 @@ pub type DocumentStore = DashMap<Url, Document>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ParseOutcome;
-    use crate::parse::SpecKind;
-    use crate::parse::Specification;
-    use crate::parse::parse_ignoring_sources as parse;
-    use crate::typecheck::typecheck_modal_ignoring_sources as typecheck_modal;
-    use crate::typecheck::typecheck_pbes;
-    use crate::typecheck::typecheck_pres;
+    use crate::analysis::parse::ParseOutcome;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::Specification;
+    use crate::analysis::parse::parse_ignoring_sources as parse;
+    use crate::analysis::typecheck::typecheck_modal_ignoring_sources as typecheck_modal;
+    use crate::analysis::typecheck::typecheck_pbes;
+    use crate::analysis::typecheck::typecheck_pres;
 
     async fn pbes_document_for(text: &str) -> Document {
         let outcome = parse(SpecKind::Pbes, text.to_string()).await;
@@ -554,11 +554,12 @@ mod tests {
             .expect("fixture contains 'undeclared'");
         let expected = LineIndex::new(&text).position(&text, expected_offset);
         let (outcome, sources) =
-            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+            crate::analysis::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
             panic!("fixture failed to parse");
         };
-        let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
+        let (checked, sources) =
+            crate::analysis::typecheck::typecheck((**spec).clone(), sources).await;
         let document = Document::new(
             text,
             0,
@@ -597,8 +598,8 @@ mod tests {
         let main_path = dir.path().join("main.mcrl2");
         let main_uri = Url::from_file_path(&main_path).expect("valid file path");
         let text = std::fs::read_to_string(&main_path).unwrap();
-        let (outcome, sources) = crate::parse::parse(
-            crate::parse::SpecKind::Process,
+        let (outcome, sources) = crate::analysis::parse::parse(
+            crate::analysis::parse::SpecKind::Process,
             text.clone(),
             Some(main_path),
         )
@@ -677,11 +678,12 @@ mod tests {
         let expected = LineIndex::new(&common_text).position(&common_text, expected_offset);
 
         let (outcome, sources) =
-            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+            crate::analysis::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
             panic!("fixture failed to parse");
         };
-        let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
+        let (checked, sources) =
+            crate::analysis::typecheck::typecheck((**spec).clone(), sources).await;
         let document = Document::new(
             text,
             0,
@@ -723,11 +725,12 @@ mod tests {
         let expected = LineIndex::new(&common_text).position(&common_text, expected_offset);
 
         let (outcome, sources) =
-            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+            crate::analysis::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
             panic!("fixture failed to parse");
         };
-        let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
+        let (checked, sources) =
+            crate::analysis::typecheck::typecheck((**spec).clone(), sources).await;
         let document = Document::new(
             text,
             0,
@@ -767,7 +770,7 @@ mod tests {
         let common_text = std::fs::read_to_string(&common_path).unwrap();
 
         let (outcome, sources) =
-            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+            crate::analysis::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::ParseError(_) = &outcome else {
             panic!("fixture should fail to parse");
         };
@@ -815,7 +818,7 @@ mod tests {
         let expected = LineIndex::new(&text).position(&text, expected_offset);
 
         let (outcome, sources) =
-            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+            crate::analysis::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::ParseError(_) = &outcome else {
             panic!("fixture should fail to parse");
         };
@@ -843,7 +846,7 @@ mod tests {
         let main_path = dir.path().join("main.mcrl2");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let (outcome, sources) =
-            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+            crate::analysis::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let document = Document::new(text, 0, outcome, None, sources);
 
         assert!(!document.is_stale());
@@ -863,7 +866,7 @@ mod tests {
         let common_path = dir.path().join("common.mcrl2");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let (outcome, sources) =
-            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+            crate::analysis::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let document = Document::new(text, 0, outcome, None, sources);
         assert!(!document.is_stale());
 

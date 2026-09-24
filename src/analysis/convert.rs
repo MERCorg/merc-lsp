@@ -70,7 +70,7 @@ impl LineIndex {
                 line: line_col.line,
                 col: line_col.col,
             });
-            
+
         Position {
             line: wide.line,
             character: wide.col,
@@ -93,7 +93,7 @@ impl LineIndex {
     /// how most LSP clients send positions that are momentarily out of sync with the server.
     ///
     /// Used by `backend::completion_request` to find the byte offset a completion request's
-    /// cursor position names, for [`crate::completion_context`] to classify.
+    /// cursor position names, for [`crate::features::completion_context`] to classify.
     pub fn offset(&self, text: &str, position: Position) -> Option<usize> {
         let line_range = self.inner.line(position.line)?;
         let line_text =
@@ -130,7 +130,7 @@ pub(crate) fn virtual_uri(name: &str) -> Url {
 
 /// The inverse of [`virtual_uri`]: recovers the original registered name from a
 /// [`VIRTUAL_DOCUMENT_SCHEME`] URI. Only used by `merc/virtualDocument`'s handler
-/// ([`crate::virtual_document`]), gated behind the `lsp-extensions` Cargo feature.
+/// ([`crate::features::virtual_document`]), gated behind the `lsp-extensions` Cargo feature.
 #[cfg(feature = "lsp-extensions")]
 pub(crate) fn decode_virtual_uri(uri: &Url) -> Option<String> {
     if uri.scheme() != VIRTUAL_DOCUMENT_SCHEME {
@@ -173,7 +173,7 @@ pub(crate) fn location(
 
 /// Builds an LSP [`Location`] for `local_span`, already known to belong to `id` — the other half
 /// of [`location`], split out for a caller that resolved `id` some other way than looking up a
-/// global offset (see [`crate::diagnostics::parse_error_diagnostic`], where a parse error's own
+/// global offset (see [`crate::features::diagnostics::parse_error_diagnostic`], where a parse error's own
 /// [`merc_syntax::ImportError::Parse`] names the failing file directly, which a global-offset
 /// lookup can't reliably do for an offset that sits exactly on a file boundary — e.g. a syntax
 /// error at the end of a file immediately followed by an imported one).

@@ -1,5 +1,5 @@
 //! Classifies a completion request's cursor offset against the raw parsed AST, so
-//! [`crate::completion`] can offer only the kind of name actually expected there — a declared
+//! [`crate::features::completion`] can offer only the kind of name actually expected there — a declared
 //! sort while completing a sort expression, an action or process name in a process body, and so
 //! on.
 
@@ -361,7 +361,7 @@ pub fn pbes_category(spec: &UntypedPbes, offset: usize) -> CompletionCategory {
             return CompletionCategory::Sort;
         }
     }
-    
+
     for eqn in &spec.equations {
         for param in &eqn.variable.parameters {
             if contains(&param.sort.span, offset) {
@@ -555,17 +555,17 @@ fn multi_action_category(multi_action: &MultiAction, offset: usize) -> Completio
             }
         }
     }
-    
+
     CompletionCategory::Action
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ParseOutcome;
-    use crate::parse::SpecKind;
-    use crate::parse::Specification;
-    use crate::parse::parse_ignoring_sources as parse;
+    use crate::analysis::parse::ParseOutcome;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::Specification;
+    use crate::analysis::parse::parse_ignoring_sources as parse;
 
     async fn process_spec_for(text: &str) -> UntypedProcessSpecification {
         match parse(SpecKind::Process, text.to_string()).await {

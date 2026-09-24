@@ -4,7 +4,7 @@
 //! An undeclared-name error additionally gets a "did you mean '...'?" suffix,
 //! built by searching the document's own declared names scoped to the same
 //! category of name the error is about, the same categories
-//! [`crate::completion_context`] classifies a cursor position into.
+//! [`crate::features::completion_context`] classifies a cursor position into.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -38,18 +38,18 @@ use merc_utilities::MercError;
 use pest::error::Error as PestError;
 use pest::error::InputLocation;
 
-use crate::ambiguity;
-use crate::ambiguity::AmbiguousPrefixConflict;
-use crate::convert;
-use crate::convert::LineIndex;
-use crate::convert::is_identifier_byte;
-use crate::edit_distance;
-use crate::names;
-use crate::parse::ParseOutcome;
-use crate::typecheck::ModalTypecheckOutcome;
-use crate::typecheck::PbesTypecheckOutcome;
-use crate::typecheck::PresTypecheckOutcome;
-use crate::typecheck::TypecheckOutcome;
+use crate::analysis::ambiguity;
+use crate::analysis::ambiguity::AmbiguousPrefixConflict;
+use crate::analysis::convert;
+use crate::analysis::convert::LineIndex;
+use crate::analysis::convert::is_identifier_byte;
+use crate::analysis::edit_distance;
+use crate::analysis::names;
+use crate::analysis::parse::ParseOutcome;
+use crate::analysis::typecheck::ModalTypecheckOutcome;
+use crate::analysis::typecheck::PbesTypecheckOutcome;
+use crate::analysis::typecheck::PresTypecheckOutcome;
+use crate::analysis::typecheck::TypecheckOutcome;
 
 const SOURCE: &str = "merc-lsp";
 
@@ -221,7 +221,7 @@ pub fn modal_type_diagnostics(
 }
 
 /// Warnings for every [`AmbiguousPrefixConflict`] in a process specification (see
-/// `crate::ambiguity`'s module doc comment) — purely syntactic, so (unlike [`type_diagnostics`])
+/// `crate::analysis::ambiguity`'s module doc comment) — purely syntactic, so (unlike [`type_diagnostics`])
 /// this runs on any successful parse, whether or not type checking also succeeded.
 pub fn ambiguity_diagnostics_process(
     text: &str,
@@ -352,7 +352,7 @@ fn identifier_span(span: &Span, name: &str) -> Span {
 /// arity mismatch, which no typo fix would address).
 ///
 /// Shared by [`suggestion_for_process_error`], which turns the candidate into the diagnostic's
-/// "did you mean '...'?" message suffix, and [`crate::code_action`], which turns the pair into a
+/// "did you mean '...'?" message suffix, and [`crate::features::code_action`], which turns the pair into a
 /// "change to '...'" quick fix.
 ///
 /// One arm per undeclared-name-shaped variant, matched through the `WellTyped`/`Inference`
@@ -903,8 +903,8 @@ fn widen_to_token_end(text: &str, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::SpecKind;
-    use crate::parse::parse_ignoring_sources as parse;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::parse_ignoring_sources as parse;
 
     fn test_uri() -> Url {
         Url::parse("file:///test.mcrl2").expect("valid URL")
@@ -983,7 +983,7 @@ mod tests {
 
     async fn process_specification_for(text: &str) -> merc_syntax::UntypedProcessSpecification {
         match parse(SpecKind::Process, text.to_string()).await {
-            ParseOutcome::Ok(crate::parse::Specification::Process(spec)) => *spec,
+            ParseOutcome::Ok(crate::analysis::parse::Specification::Process(spec)) => *spec,
             _ => panic!("fixture failed to parse"),
         }
     }
@@ -992,7 +992,7 @@ mod tests {
     async fn well_typed_specification_yields_no_type_diagnostics() {
         let text = "sort D;\ncons c: D;\ninit delta;";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
+        let outcome = crate::analysis::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         assert!(
             type_diagnostics(
@@ -1012,7 +1012,7 @@ mod tests {
     async fn ill_typed_specification_produces_a_located_type_diagnostic_with_a_distinct_source() {
         let text = "map f: Bool;\neqn f = undeclared;\ninit delta;";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
+        let outcome = crate::analysis::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let root_uri = test_uri();
         let diags = type_diagnostics(
@@ -1041,7 +1041,7 @@ mod tests {
         // `a` is not declared as an action anywhere.
         let text = "init a;";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
+        let outcome = crate::analysis::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = type_diagnostics(
             text,
@@ -1063,7 +1063,7 @@ mod tests {
     async fn undeclared_sort_gets_a_did_you_mean_suggestion() {
         let text = "sort Bool2;\nmap f: Bol;\ninit delta;";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
+        let outcome = crate::analysis::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = type_diagnostics(
             text,
@@ -1088,7 +1088,7 @@ mod tests {
     async fn undeclared_action_gets_a_did_you_mean_suggestion() {
         let text = "act ready: Bool;\ninit redy(true);";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
+        let outcome = crate::analysis::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = type_diagnostics(
             text,
@@ -1112,7 +1112,7 @@ mod tests {
     async fn no_suggestion_when_nothing_is_close_enough() {
         let text = "init xyzzy;";
         let spec = process_specification_for(text).await;
-        let outcome = crate::typecheck::typecheck_ignoring_sources(spec.clone()).await;
+        let outcome = crate::analysis::typecheck::typecheck_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = type_diagnostics(
             text,
@@ -1139,7 +1139,7 @@ mod tests {
             Ok(spec) => spec,
             Err(error) => panic!("fixture failed to parse: {error}"),
         };
-        let outcome = crate::typecheck::typecheck_pbes(spec.clone()).await;
+        let outcome = crate::analysis::typecheck::typecheck_pbes(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = pbes_type_diagnostics(
             text,
@@ -1166,7 +1166,7 @@ mod tests {
             Ok(spec) => spec,
             Err(error) => panic!("fixture failed to parse: {error}"),
         };
-        let outcome = crate::typecheck::typecheck_pres(spec.clone()).await;
+        let outcome = crate::analysis::typecheck::typecheck_pres(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = pres_type_diagnostics(
             text,
@@ -1193,7 +1193,8 @@ mod tests {
             Ok(spec) => spec,
             Err(error) => panic!("fixture failed to parse: {error}"),
         };
-        let outcome = crate::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await;
+        let outcome =
+            crate::analysis::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = modal_type_diagnostics(
             text,
@@ -1220,7 +1221,8 @@ mod tests {
             Ok(spec) => spec,
             Err(error) => panic!("fixture failed to parse: {error}"),
         };
-        let outcome = crate::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await;
+        let outcome =
+            crate::analysis::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await;
         let line_index = LineIndex::new(text);
         let diags = modal_type_diagnostics(
             text,

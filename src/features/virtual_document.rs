@@ -8,7 +8,7 @@ use merc_syntax::SourceMap;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::convert;
+use crate::analysis::convert;
 
 /// The server-wide registry [`register`] populates and [`VirtualDocument`]'s handler reads.
 pub type VirtualDocumentStore = DashMap<String, String>;

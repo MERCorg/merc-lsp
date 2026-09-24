@@ -1,8 +1,8 @@
-//! `textDocument/codeAction`: quick fixes for [`crate::ambiguity`]'s lint, parenthesizing the
+//! `textDocument/codeAction`: quick fixes for [`crate::analysis::ambiguity`]'s lint, parenthesizing the
 //! flagged expression so it reads the same regardless of which parser's precedence table a reader
 //! (or the real mCRL2 toolset) applies — and a "change to '...'" quick fix for an undeclared-name
 //! type error close enough to a declared name to suggest a typo fix (see
-//! [`crate::edit_distance::closest`]), the same candidate [`crate::diagnostics`] already names in
+//! [`crate::analysis::edit_distance::closest`]), the same candidate [`crate::features::diagnostics`] already names in
 //! that error's own "did you mean '...'?" message.
 
 use std::collections::HashMap;
@@ -17,20 +17,20 @@ use lsp_types::TextEdit;
 use lsp_types::Url;
 use lsp_types::WorkspaceEdit;
 
-use crate::ambiguity;
-use crate::ambiguity::AmbiguousPrefixConflict;
-use crate::convert;
-use crate::convert::LineIndex;
-use crate::diagnostics;
-use crate::document::CheckedOutcome;
-use crate::document::Document;
-use crate::document::DocumentStore;
-use crate::parse::ParseOutcome;
-use crate::parse::Specification;
-use crate::typecheck::ModalTypecheckOutcome;
-use crate::typecheck::PbesTypecheckOutcome;
-use crate::typecheck::PresTypecheckOutcome;
-use crate::typecheck::TypecheckOutcome;
+use crate::analysis::ambiguity;
+use crate::analysis::ambiguity::AmbiguousPrefixConflict;
+use crate::analysis::convert;
+use crate::analysis::convert::LineIndex;
+use crate::analysis::parse::ParseOutcome;
+use crate::analysis::parse::Specification;
+use crate::analysis::typecheck::ModalTypecheckOutcome;
+use crate::analysis::typecheck::PbesTypecheckOutcome;
+use crate::analysis::typecheck::PresTypecheckOutcome;
+use crate::analysis::typecheck::TypecheckOutcome;
+use crate::features::diagnostics;
+use crate::server::document::CheckedOutcome;
+use crate::server::document::Document;
+use crate::server::document::DocumentStore;
 
 /// Every quick fix available at `params.range`: [`parenthesize_quick_fix`] for each
 /// [`AmbiguousPrefixConflict`] overlapping it, plus [`rename_quick_fix`] for the document's own
@@ -210,9 +210,9 @@ mod tests {
     use merc_syntax::SourceMap;
 
     use super::*;
-    use crate::document::Document;
-    use crate::parse::SpecKind;
-    use crate::parse::parse_ignoring_sources as parse;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::parse_ignoring_sources as parse;
+    use crate::server::document::Document;
 
     async fn document_for(text: &str) -> Document {
         let outcome = parse(SpecKind::Process, text.to_string()).await;
@@ -227,7 +227,7 @@ mod tests {
             panic!("fixture failed to parse");
         };
         let checked = CheckedOutcome::Process(
-            crate::typecheck::typecheck_ignoring_sources((**spec).clone()).await,
+            crate::analysis::typecheck::typecheck_ignoring_sources((**spec).clone()).await,
         );
         Document::new(
             text.to_string(),

@@ -32,35 +32,35 @@ use lsp_types::request;
 use merc_typecheck::ModalSpecification;
 use merc_typecheck::ProcessSpecification;
 
-use crate::capabilities::server_capabilities;
-use crate::code_action;
-use crate::completion;
-use crate::completion::CompletionCategory;
-use crate::completion_context;
-use crate::convert;
-use crate::convert::LineIndex;
-use crate::document::CheckedOutcome;
-use crate::document::Document;
-use crate::document::DocumentStore;
+use crate::analysis::convert;
+use crate::analysis::convert::LineIndex;
+use crate::analysis::parse;
+use crate::analysis::parse::ParseOutcome;
+use crate::analysis::parse::SpecKind;
+use crate::analysis::parse::Specification;
+use crate::analysis::typecheck;
+use crate::features::code_action;
+use crate::features::completion;
+use crate::features::completion::CompletionCategory;
+use crate::features::completion_context;
 #[cfg(feature = "lsp-extensions")]
-use crate::generate;
+use crate::features::generate;
 #[cfg(feature = "lsp-extensions")]
-use crate::generate::GenerateFullSpec;
-use crate::goto_definition;
-use crate::hover;
-use crate::inlay_hints;
-use crate::parse;
-use crate::parse::ParseOutcome;
-use crate::parse::SpecKind;
-use crate::parse::Specification;
-use crate::symbols;
-use crate::typecheck;
+use crate::features::generate::GenerateFullSpec;
+use crate::features::goto_definition;
+use crate::features::hover;
+use crate::features::inlay_hints;
+use crate::features::symbols;
 #[cfg(feature = "lsp-extensions")]
-use crate::virtual_document;
+use crate::features::virtual_document;
 #[cfg(feature = "lsp-extensions")]
-use crate::virtual_document::VirtualDocument;
+use crate::features::virtual_document::VirtualDocument;
 #[cfg(feature = "lsp-extensions")]
-use crate::virtual_document::VirtualDocumentStore;
+use crate::features::virtual_document::VirtualDocumentStore;
+use crate::server::capabilities::server_capabilities;
+use crate::server::document::CheckedOutcome;
+use crate::server::document::Document;
+use crate::server::document::DocumentStore;
 
 /// Diagnostics published against a URI on some document's behalf because a span in its analysis
 /// actually landed there, keyed first by that target URI, then by which importing document
@@ -74,7 +74,7 @@ type ForeignDiagnostics = DashMap<Url, HashMap<Url, Vec<Diagnostic>>>;
 pub struct Backend {
     client: ClientSocket,
     documents: Arc<DocumentStore>,
-    /// See [`crate::virtual_document`]'s module doc comment. Only present when the
+    /// See [`crate::features::virtual_document`]'s module doc comment. Only present when the
     /// `lsp-extensions` Cargo feature (see `Cargo.toml`) is enabled.
     #[cfg(feature = "lsp-extensions")]
     virtual_documents: Arc<VirtualDocumentStore>,
@@ -558,7 +558,7 @@ async fn reanalyze_stale_documents(backend: Backend, changed_paths: Vec<std::pat
 /// `.await` past this (synchronous) notification handler's borrow of `state`. `refresh_views` is
 /// threaded straight through to [`analyze`] — see there for what it controls.
 fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refresh_views: bool) {
-    // A `merc-builtin:` virtual document (see `crate::virtual_document`'s module doc comment) has
+    // A `merc-builtin:` virtual document (see `crate::features::virtual_document`'s module doc comment) has
     // no `%import`s and is never itself a real, standalone specification — it's a fragment of one
     // (e.g. `Bool`'s declaration), extracted for display. Parsing and type checking it as if it
     // were a whole document would spuriously report every name it doesn't itself declare as
@@ -574,7 +574,7 @@ fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refr
 
 /// Parses `text` at `version` for `uri` (as whichever [`SpecKind`] its
 /// extension selects), type checks it if parsing succeeded (every kind has a
-/// type checker now — see [`crate::typecheck`]), and commits the result — text,
+/// type checker now — see [`crate::analysis::typecheck`]), and commits the result — text,
 /// parse, type check, and semantic tokens alike — as the document's new
 /// analyzed snapshot, then publishes its diagnostics.
 ///

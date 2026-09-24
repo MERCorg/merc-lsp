@@ -19,9 +19,9 @@ use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
 
-use crate::convert;
-use crate::convert::LineIndex;
-use crate::diagnostics;
+use crate::analysis::convert;
+use crate::analysis::convert::LineIndex;
+use crate::features::diagnostics;
 
 /// Builds the full, hierarchical outline for `spec`, ordered by source position.
 ///
@@ -694,10 +694,10 @@ impl ImportGroups {
 mod tests {
     use super::*;
 
-    use crate::parse::ParseOutcome;
-    use crate::parse::SpecKind;
-    use crate::parse::Specification;
-    use crate::parse::parse;
+    use crate::analysis::parse::ParseOutcome;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::Specification;
+    use crate::analysis::parse::parse;
 
     async fn symbols_for(text: &str) -> Vec<DocumentSymbol> {
         let (outcome, sources) = parse(SpecKind::Process, text.to_string(), None).await;

@@ -39,8 +39,8 @@ use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
 
-use crate::convert::LineIndex;
-use crate::convert::is_identifier_byte;
+use crate::analysis::convert::LineIndex;
+use crate::analysis::convert::is_identifier_byte;
 
 /// A token's semantic type, as an index into the legend returned by [`legend`] — the two must be
 /// kept in lock-step, since only this numeric index (not a name) is sent over the wire.
@@ -189,7 +189,7 @@ pub fn pbes_semantic_tokens(
 }
 
 /// As [`pbes_semantic_tokens`], for a parsed PRES — [`UntypedPres`] has the identical shape one
-/// level down (see [`crate::completion::pres_completions`]'s doc comment), so this differs only in
+/// level down (see [`crate::features::completion::pres_completions`]'s doc comment), so this differs only in
 /// walking [`PresExpr`] instead of [`PbesExpr`] for each equation's formula.
 pub fn pres_semantic_tokens(
     text: &str,
@@ -932,7 +932,7 @@ fn walk_multi_action(
 }
 
 /// Every word-like mCRL2 keyword relevant to a process/data specification, for [`tag_keywords`]
-/// (and, `pub(crate)`, for [`crate::completion`]'s keyword completion items). Built-in sort names
+/// (and, `pub(crate)`, for [`crate::features::completion`]'s keyword completion items). Built-in sort names
 /// (`Bool`, `List`, …) are deliberately not here: [`walk_sort_expression`] already tags those.
 pub(crate) const KEYWORDS: &[&str] = &[
     "sort", "cons", "map", "glob", "act", "proc", "init", "var", "eqn", "struct", "whr", "end",
@@ -985,10 +985,10 @@ fn tag_keywords(text: &str, builder: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ParseOutcome;
-    use crate::parse::SpecKind;
-    use crate::parse::Specification;
-    use crate::parse::parse_ignoring_sources as parse;
+    use crate::analysis::parse::ParseOutcome;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::Specification;
+    use crate::analysis::parse::parse_ignoring_sources as parse;
 
     async fn tokens_for(text: &str) -> Vec<SemanticToken> {
         let outcome = parse(SpecKind::Process, text.to_string()).await;
@@ -1146,7 +1146,7 @@ mod tests {
         // bogus second `Condition`. Only the chain's last branch ended up parsed (and therefore
         // tagged) as real process-algebra structure; every earlier branch's `e`/`P` calls and `x`
         // condition read as generic data-expression tokens instead of `Event`/`Method`/`Parameter`.
-        // `crate::parse::parse` now runs `disambiguate_process_specification` on every parsed process
+        // `crate::analysis::parse::parse` now runs `disambiguate_process_specification` on every parsed process
         // specification before handing it to any consumer, which reconstructs the intended
         // structure from the declared action/process names alone — this checks every branch, not
         // just the last one, gets the right token kind.

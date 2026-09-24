@@ -145,7 +145,7 @@ pub async fn typecheck_modal(
 }
 
 /// Test convenience: [`typecheck`] against a fresh `SourceMap`, discarding the one that comes
-/// back — mirrors [`crate::parse::parse_ignoring_sources`]'s own reasoning.
+/// back — mirrors [`crate::analysis::parse::parse_ignoring_sources`]'s own reasoning.
 #[cfg(test)]
 pub(crate) async fn typecheck_ignoring_sources(
     spec: UntypedProcessSpecification,
@@ -166,12 +166,12 @@ pub(crate) async fn typecheck_modal_ignoring_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ParseOutcome;
-    use crate::parse::SpecKind;
-    use crate::parse::Specification;
-    use crate::parse::parse_ignoring_sources as parse;
-    use crate::typecheck::typecheck_ignoring_sources as typecheck;
-    use crate::typecheck::typecheck_modal_ignoring_sources as typecheck_modal;
+    use crate::analysis::parse::ParseOutcome;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::Specification;
+    use crate::analysis::parse::parse_ignoring_sources as parse;
+    use crate::analysis::typecheck::typecheck_ignoring_sources as typecheck;
+    use crate::analysis::typecheck::typecheck_modal_ignoring_sources as typecheck_modal;
 
     async fn process_specification_for(text: &str) -> UntypedProcessSpecification {
         match parse(SpecKind::Process, text.to_string()).await {

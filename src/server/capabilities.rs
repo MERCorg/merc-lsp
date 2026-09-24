@@ -15,7 +15,7 @@ use lsp_types::TextDocumentSyncKind;
 use lsp_types::TextDocumentSyncOptions;
 use lsp_types::TextDocumentSyncSaveOptions;
 
-use crate::semantic_tokens;
+use crate::features::semantic_tokens;
 
 /// Capabilities advertised by this LSP.
 pub fn server_capabilities() -> ServerCapabilities {
@@ -43,12 +43,12 @@ pub fn server_capabilities() -> ServerCapabilities {
         definition_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
         // No `resolve` step has anything extra to add. `"` and `/` are listed as trigger
-        // characters purely for `crate::completion::import_path_completions`.
+        // characters purely for `crate::features::completion::import_path_completions`.
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec!["\"".to_string(), "/".to_string()]),
             ..CompletionOptions::default()
         }),
-        // Currently just `crate::code_action`'s two quick fixes (the `crate::ambiguity`
+        // Currently just `crate::features::code_action`'s two quick fixes (the `crate::analysis::ambiguity`
         // parenthesization fix and the undeclared-name rename fix), so scoped to `quickfix`
         // rather than advertising kinds we don't offer.
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {

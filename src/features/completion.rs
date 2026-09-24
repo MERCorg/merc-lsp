@@ -1,7 +1,7 @@
 //! `textDocument/completion`: the names a document declares (sorts, constructors, mappings,
 //! actions/processes or propositional-/state-variable equations, global/equation/bound variables),
 //! plus mCRL2's reserved keywords and built-in sort names — filtered by [`CompletionCategory`] to
-//! just the kind of name expected at the cursor (see [`crate::completion_context`]). Covers all
+//! just the kind of name expected at the cursor (see [`crate::features::completion_context`]). Covers all
 //! four grammars this server parses — process specifications, PBES, PRES, and modal formulas —
 //! same as hover/goto-definition/inlay-hints. Unlike those, completion needs no *checked*
 //! specification (see below), so it keeps offering something even for a kind whose type checker
@@ -30,10 +30,10 @@ use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
 
-use crate::completion_context;
-pub use crate::completion_context::CompletionCategory;
-use crate::convert::LineIndex;
-use crate::names::SYSTEM_SORTS;
+use crate::analysis::convert::LineIndex;
+use crate::analysis::names::SYSTEM_SORTS;
+use crate::features::completion_context;
+pub use crate::features::completion_context::CompletionCategory;
 
 /// Completion items listing the `.mcrl2` files (and subdirectories) available at the `%import`
 /// path the cursor is currently sitting in.
@@ -116,7 +116,7 @@ const STATE_FORMULA_KEYWORDS: &[&str] = &[
     "true", "false", "val", "forall", "exists", "inf", "sup", "sum", "mu", "nu", "delay", "yaled",
 ];
 
-/// The keywords relevant to `category` — a subset of [`crate::semantic_tokens::KEYWORDS`], except
+/// The keywords relevant to `category` — a subset of [`crate::features::semantic_tokens::KEYWORDS`], except
 /// for [`CompletionCategory::Unscoped`], which offers all of them (matching this module's
 /// behavior before cursor context existed).
 fn keywords_for(category: CompletionCategory) -> &'static [&'static str] {
@@ -129,7 +129,7 @@ fn keywords_for(category: CompletionCategory) -> &'static [&'static str] {
         CompletionCategory::PropositionalVariable => FORMULA_KEYWORDS,
         CompletionCategory::Action => ACTION_KEYWORDS,
         CompletionCategory::StateVariable => STATE_FORMULA_KEYWORDS,
-        CompletionCategory::Unscoped => crate::semantic_tokens::KEYWORDS,
+        CompletionCategory::Unscoped => crate::features::semantic_tokens::KEYWORDS,
     }
 }
 
@@ -464,10 +464,10 @@ fn item(label: &str, kind: CompletionItemKind, detail: Option<String>) -> Comple
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ParseOutcome;
-    use crate::parse::SpecKind;
-    use crate::parse::Specification;
-    use crate::parse::parse_ignoring_sources as parse;
+    use crate::analysis::parse::ParseOutcome;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::Specification;
+    use crate::analysis::parse::parse_ignoring_sources as parse;
 
     async fn completions_for(text: &str) -> Vec<CompletionItem> {
         match parse(SpecKind::Process, text.to_string()).await {

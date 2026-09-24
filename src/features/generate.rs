@@ -7,7 +7,7 @@
 //! binary/unary/quantifier/lambda/conditional, so the text this produces is always unambiguous —
 //! deliberately more heavily parenthesized than the real mCRL2 toolset's own pretty printer, which
 //! only adds parens precedence actually requires. That's the point, not a shortcoming: it's exactly
-//! what sidesteps the divergence [`crate::ambiguity`] documents between merc's Pratt parser and
+//! what sidesteps the divergence [`crate::analysis::ambiguity`] documents between merc's Pratt parser and
 //! mCRL2's real dparser-based one on "deep priority conflicts" — a parenthesized group is read the
 //! same way by both grammars, so output from here is safe to feed into the real mCRL2 tools even
 //! where the two parsers would otherwise disagree.
@@ -25,14 +25,14 @@
 //! This whole module is gated behind the `lsp-extensions` Cargo feature (on by default, see
 //! `Cargo.toml`): a plain LSP client has no way to invoke `merc/generateFullSpec` on its own, so
 //! there is nothing for a server built without the feature to lose by not registering it — see
-//! [`crate::backend::router`]'s own `#[cfg(feature = "lsp-extensions")]` registration.
+//! [`crate::server::backend::router`]'s own `#[cfg(feature = "lsp-extensions")]` registration.
 
 use lsp_types::Url;
 use lsp_types::request::Request;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::document::DocumentStore;
+use crate::server::document::DocumentStore;
 
 /// Request parameters: the document whose merged specification should be rendered.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -68,12 +68,12 @@ mod tests {
     use merc_syntax::SourceMap;
 
     use super::*;
-    use crate::document::CheckedOutcome;
-    use crate::document::Document;
-    use crate::parse::ParseOutcome;
-    use crate::parse::SpecKind;
-    use crate::parse::Specification;
-    use crate::parse::parse_ignoring_sources;
+    use crate::analysis::parse::ParseOutcome;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::Specification;
+    use crate::analysis::parse::parse_ignoring_sources;
+    use crate::server::document::CheckedOutcome;
+    use crate::server::document::Document;
 
     #[tokio::test]
     async fn renders_a_well_typed_process_specification() {
@@ -83,7 +83,7 @@ mod tests {
             ParseOutcome::Ok(Specification::Process(spec)) => (**spec).clone(),
             _ => panic!("fixture failed to parse"),
         };
-        let checked = crate::typecheck::typecheck_ignoring_sources(spec).await;
+        let checked = crate::analysis::typecheck::typecheck_ignoring_sources(spec).await;
         let document = Document::new(
             text,
             0,
@@ -111,10 +111,10 @@ mod tests {
             ParseOutcome::Ok(Specification::Process(spec)) => (**spec).clone(),
             _ => panic!("fixture failed to parse"),
         };
-        let checked = crate::typecheck::typecheck_ignoring_sources(spec).await;
+        let checked = crate::analysis::typecheck::typecheck_ignoring_sources(spec).await;
         assert!(matches!(
             checked,
-            crate::typecheck::TypecheckOutcome::Error(_)
+            crate::analysis::typecheck::TypecheckOutcome::Error(_)
         ));
         let document = Document::new(
             text,

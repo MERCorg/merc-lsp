@@ -1,8 +1,8 @@
 //! Declared-name extraction from the raw parsed AST, broken down by category — the candidate
-//! lists [`crate::edit_distance::closest`] searches to build a "did you mean '...'?" suggestion
-//! for an undeclared-name diagnostic (see [`crate::diagnostics`]) and, filtered the same way, what
-//! [`crate::completion`] offers once it knows what kind of name the cursor sits where a name is
-//! expected (see [`crate::completion_context`]).
+//! lists [`crate::analysis::edit_distance::closest`] searches to build a "did you mean '...'?" suggestion
+//! for an undeclared-name diagnostic (see [`crate::features::diagnostics`]) and, filtered the same way, what
+//! [`crate::features::completion`] offers once it knows what kind of name the cursor sits where a name is
+//! expected (see [`crate::features::completion_context`]).
 
 use merc_syntax::StateFrm;
 use merc_syntax::StateFrmKind;
@@ -25,7 +25,7 @@ pub fn sort_names(data: &UntypedDataSpecification) -> impl Iterator<Item = &str>
 }
 
 /// Names usable as a data *value*: constructors, maps, and equation-bound variables — everything
-/// [`crate::completion`]'s `push_data_value_items` offers, minus the global variables, which a
+/// [`crate::features::completion`]'s `push_data_value_items` offers, minus the global variables, which a
 /// process specification, a PBES, and a PRES each declare at their own top level rather than
 /// inside the shared data specification (see [`process_data_value_names`]/[`pbes_data_value_names`]).
 fn data_value_names(data: &UntypedDataSpecification) -> impl Iterator<Item = &str> {
@@ -191,10 +191,10 @@ fn collect_state_variable_names<'a>(formula: &'a StateFrm, names: &mut Vec<&'a s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ParseOutcome;
-    use crate::parse::SpecKind;
-    use crate::parse::Specification;
-    use crate::parse::parse_ignoring_sources as parse;
+    use crate::analysis::parse::ParseOutcome;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::Specification;
+    use crate::analysis::parse::parse_ignoring_sources as parse;
 
     async fn process_spec_for(text: &str) -> UntypedProcessSpecification {
         match parse(SpecKind::Process, text.to_string()).await {

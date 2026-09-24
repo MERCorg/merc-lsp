@@ -10,28 +10,9 @@
 //! by the client. All logging goes to stderr via `env_logger`.
 #![deny(clippy::print_stdout)]
 
-mod ambiguity;
-mod backend;
-mod capabilities;
-mod code_action;
-mod completion;
-mod completion_context;
-mod convert;
-mod diagnostics;
-mod document;
-mod edit_distance;
-#[cfg(feature = "lsp-extensions")]
-mod generate;
-mod goto_definition;
-mod hover;
-mod inlay_hints;
-mod names;
-mod parse;
-mod semantic_tokens;
-mod symbols;
-mod typecheck;
-#[cfg(feature = "lsp-extensions")]
-mod virtual_document;
+mod analysis;
+mod features;
+mod server;
 
 use async_lsp::client_monitor::ClientProcessMonitorLayer;
 use async_lsp::concurrency::ConcurrencyLayer;
@@ -45,7 +26,7 @@ use tower::ServiceBuilder;
 /// transport error occurs.
 pub async fn serve<R: AsyncRead, W: AsyncWrite>(input: R, output: W) {
     let (mainloop, _client) = async_lsp::MainLoop::new_server(|client| {
-        let router = backend::router(client.clone());
+        let router = server::backend::router(client.clone());
         ServiceBuilder::new()
             .layer(LifecycleLayer::default())
             .layer(CatchUnwindLayer::default())

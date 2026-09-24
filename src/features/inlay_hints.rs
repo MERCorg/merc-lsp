@@ -46,8 +46,8 @@ use merc_typecheck::ProcessSpecification;
 use merc_typecheck::ResolvedName;
 use merc_typecheck::TypingInfo;
 
-use crate::convert;
-use crate::convert::LineIndex;
+use crate::analysis::convert;
+use crate::analysis::convert::LineIndex;
 
 /// Everything threaded unchanged through every helper below, bundled so none of them has to spell
 /// out four parameters just to pass them on. Deliberately holds neither a `ProcessSpecification`
@@ -56,7 +56,7 @@ use crate::convert::LineIndex;
 /// callee's parameter names itself (see [`resolved_process_param_names`]/[`propvarinst_param_names`])
 /// before handing the result to the shared [`emit_call_hints`]. `sort_declarations` is the *raw*,
 /// un-type-checked specification's own sort declarations — see
-/// [`crate::document::Document::parsed_process_specification`] for why struct field names have to
+/// [`crate::server::document::Document::parsed_process_specification`] for why struct field names have to
 /// come from there rather than from a checked specification. `hints` is the accumulator every
 /// emitting helper pushes into.
 struct Ctx<'a> {
@@ -716,14 +716,14 @@ fn within_range(position: Position, range: Range) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ParseOutcome;
-    use crate::parse::SpecKind;
-    use crate::parse::Specification;
-    use crate::parse::parse_ignoring_sources as parse;
-    use crate::typecheck::PbesTypecheckOutcome;
-    use crate::typecheck::TypecheckOutcome;
-    use crate::typecheck::typecheck_ignoring_sources as typecheck;
-    use crate::typecheck::typecheck_pbes;
+    use crate::analysis::parse::ParseOutcome;
+    use crate::analysis::parse::SpecKind;
+    use crate::analysis::parse::Specification;
+    use crate::analysis::parse::parse_ignoring_sources as parse;
+    use crate::analysis::typecheck::PbesTypecheckOutcome;
+    use crate::analysis::typecheck::TypecheckOutcome;
+    use crate::analysis::typecheck::typecheck_ignoring_sources as typecheck;
+    use crate::analysis::typecheck::typecheck_pbes;
 
     async fn hints_for(text: &str) -> (Vec<InlayHint>, LineIndex) {
         let spec = match parse(SpecKind::Process, text.to_string()).await {
@@ -815,16 +815,19 @@ mod tests {
             _ => panic!("fixture failed to parse"),
         };
         let sort_declarations = spec.data_specification.sort_declarations.clone();
-        let mut checked =
-            match crate::typecheck::typecheck_modal_ignoring_sources(spec.clone()).await {
-                crate::typecheck::ModalTypecheckOutcome::Ok(checked) => checked,
-                crate::typecheck::ModalTypecheckOutcome::Error(error) => {
-                    panic!("fixture failed to typecheck: {error}")
-                }
-                crate::typecheck::ModalTypecheckOutcome::Internal(message) => {
-                    panic!("internal error typechecking fixture: {message}")
-                }
-            };
+        let mut checked = match crate::analysis::typecheck::typecheck_modal_ignoring_sources(
+            spec.clone(),
+        )
+        .await
+        {
+            crate::analysis::typecheck::ModalTypecheckOutcome::Ok(checked) => checked,
+            crate::analysis::typecheck::ModalTypecheckOutcome::Error(error) => {
+                panic!("fixture failed to typecheck: {error}")
+            }
+            crate::analysis::typecheck::ModalTypecheckOutcome::Internal(message) => {
+                panic!("internal error typechecking fixture: {message}")
+            }
+        };
         let line_index = LineIndex::new(text);
         let typing_info = checked.typing_info();
         let whole_document = Range {
@@ -1098,12 +1101,13 @@ mod tests {
         let main_path = dir.path().join("main.mcrl2");
         let text = std::fs::read_to_string(&main_path).unwrap();
         let (outcome, sources) =
-            crate::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
+            crate::analysis::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let ParseOutcome::Ok(Specification::Process(spec)) = &outcome else {
             panic!("fixture failed to parse");
         };
         let sort_declarations = spec.data_specification.sort_declarations.clone();
-        let (checked, sources) = crate::typecheck::typecheck((**spec).clone(), sources).await;
+        let (checked, sources) =
+            crate::analysis::typecheck::typecheck((**spec).clone(), sources).await;
         let TypecheckOutcome::Ok(mut checked) = checked else {
             panic!("fixture failed to typecheck");
         };
