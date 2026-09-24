@@ -156,14 +156,16 @@ function startClient(context: ExtensionContext): LanguageClient {
 			{ scheme: 'file', language: 'merc-pbes' },
 			{ scheme: 'file', language: 'merc-pres' },
 			{ scheme: 'file', language: 'merc-mcf' },
+			{ scheme: 'file', language: 'merc-rmcf' },
 			{ scheme: VIRTUAL_DOCUMENT_SCHEME, language: 'merc' },
 			{ scheme: VIRTUAL_DOCUMENT_SCHEME, language: 'merc-pbes' },
 			{ scheme: VIRTUAL_DOCUMENT_SCHEME, language: 'merc-pres' },
-			{ scheme: VIRTUAL_DOCUMENT_SCHEME, language: 'merc-mcf' }
+			{ scheme: VIRTUAL_DOCUMENT_SCHEME, language: 'merc-mcf' },
+			{ scheme: VIRTUAL_DOCUMENT_SCHEME, language: 'merc-rmcf' }
 		],
 		synchronize: {
 			// Matches `package.json`'s `languages` contribution's own `extensions`.
-			fileEvents: workspace.createFileSystemWatcher('**/*.{mcrl2,pbes,pres,mcf}')
+			fileEvents: workspace.createFileSystemWatcher('**/*.{mcrl2,pbes,pres,mcf,rmcf}')
 		}
 	};
 

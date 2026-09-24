@@ -88,6 +88,17 @@
 					".mcf"
 				],
 				"configuration": "./language-configuration.json"
+			},
+			{
+				"id": "merc-rmcf",
+				"aliases": [
+					"Real-valued modal formula",
+					"rmcf"
+				],
+				"extensions": [
+					".rmcf"
+				],
+				"configuration": "./language-configuration.json"
 			}
 		],
 		"grammars": [
@@ -108,6 +119,11 @@
 			},
 			{
 				"language": "merc-mcf",
+				"scopeName": "source.merc",
+				"path": "./syntaxes/merc.tmLanguage.json"
+			},
+			{
+				"language": "merc-rmcf",
 				"scopeName": "source.merc",
 				"path": "./syntaxes/merc.tmLanguage.json"
 			}
@@ -164,6 +180,19 @@
 					"parameter": ["variable.parameter"],
 					"keyword": ["keyword.control"]
 				}
+			},
+			{
+				"language": "merc-rmcf",
+				"scopes": {
+					"type": ["entity.name.type"],
+					"type.defaultLibrary": ["support.type"],
+					"variable": ["variable.other"],
+					"method": ["entity.name.function"],
+					"event": ["entity.name.tag"],
+					"enumMember": ["variable.other.enummember"],
+					"parameter": ["variable.parameter"],
+					"keyword": ["keyword.control"]
+				}
 			}
 		],
 		"configuration": {
@@ -198,6 +227,9 @@
 				"editor.quickSuggestions": { "strings": true }
 			},
 			"[merc-mcf]": {
+				"editor.quickSuggestions": { "strings": true }
+			},
+			"[merc-rmcf]": {
 				"editor.quickSuggestions": { "strings": true }
 			}
 		}

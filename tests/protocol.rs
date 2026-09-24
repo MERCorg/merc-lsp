@@ -886,6 +886,49 @@ async fn did_open_with_ill_typed_modal_document_publishes_a_type_diagnostic() {
     );
 }
 
+/// A `.rmcf` document is parsed the same way as a `.mcf` one (`SpecKind::Modal`/
+/// `SpecKind::RealModal` share a grammar entry point), but type checked against
+/// `FormulaType::Real` rather than `FormulaType::Bool` — a quantitative formula (here, a constant
+/// multiplier on a fixed point, only legal for a `Real` formula) should parse and type check
+/// cleanly.
+#[tokio::test]
+async fn did_open_with_well_formed_real_modal_document_publishes_no_diagnostics() {
+    let (server, _result, mut rx) = start().await;
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            uri("well-formed.rmcf"),
+            "act a: Nat;\nform val(2) * (mu X . [a(0)]X);",
+        ))
+        .expect("didOpen should be queued");
+
+    let diagnostics = next_diagnostics(&mut rx).await;
+    assert!(diagnostics.diagnostics.is_empty());
+}
+
+/// The same quantitative formula as above, opened as a plain `.mcf` instead: `FormulaType::Bool`
+/// rejects a constant multiplier outright (`ModalError::ConstantMultiplyInBooleanFormula`), so
+/// this should publish a type diagnostic — proof the extension, not just the text, decides which
+/// `FormulaType` a modal document is checked against.
+#[tokio::test]
+async fn did_open_with_a_quantitative_formula_as_plain_mcf_publishes_a_type_diagnostic() {
+    let (server, _result, mut rx) = start().await;
+
+    server
+        .notify::<notification::DidOpenTextDocument>(did_open(
+            uri("quantitative.mcf"),
+            "act a: Nat;\nform val(2) * (mu X . [a(0)]X);",
+        ))
+        .expect("didOpen should be queued");
+
+    let diagnostics = next_diagnostics(&mut rx).await;
+    assert_eq!(diagnostics.diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics.diagnostics[0].source.as_deref(),
+        Some("merc-lsp:types")
+    );
+}
+
 /// mCRL2 PBES text used by the hover/goto-definition tests below: an equation `X` with a parameter
 /// `n`, referencing itself with `n` as the argument — the same "argument resolves back to its own
 /// binder" shape [`WITH_A_MAPPING`] exercises for a process specification.
