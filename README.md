@@ -3,7 +3,7 @@
 `merc-lsp` is a Language Server (built on `async-lsp`) for mCRL2 specifications,
 plus a thin VS Code client that spawns it, using the `merc` toolset. Supports
 plain process specifications (`.mcrl2`), PBES (`.pbes`), PRES (`.pres`), and
-modal (mu-calculus) state formulas (`.mcf`).
+modal (mu-calculus) state formulas — plain boolean (`.mcf`) or real-valued/quantitative (`.rmcf`).
 
 ## Current status
 
@@ -37,7 +37,7 @@ of its own. This is what `workspace/didChangeWatchedFiles` (standard LSP) is for
 watches project files itself and forwards create/change/delete events, and `backend::router`'s
 handler for it (`reanalyze_stale_documents`, via `Document::is_stale`/
 `has_newly_available_import`) reanalyzes every open document that leaves stale. The VS Code client
-registers one over `**/*.{mcrl2,pbes,pres,mcf}` (`vscode-client/src/extension.ts`'s
+registers one over `**/*.{mcrl2,pbes,pres,mcf,rmcf}` (`vscode-client/src/extension.ts`'s
 `synchronize.fileEvents`) — `vscode-languageclient` forwards its events as this notification
 automatically. Relies on the client both supporting dynamic file-watcher registration and watching
 broadly enough to cover every `%import` target; deliberately left to the client/IDE to provide
