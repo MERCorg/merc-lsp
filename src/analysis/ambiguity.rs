@@ -1,21 +1,20 @@
-//! Detects an ambiguous prefix-operator shape in expression trees: a prefix
-//! operator whose direct operand is itself a looser-precedence prefix
-//! operator, where that operand's own subtree eventually reaches an infix
-//! operator. In this shape, a different reading of the same source text could
-//! plausibly attach the infix operator to the outer prefix operator instead
-//! of the inner one, so the expression is ambiguous on the page even though
-//! it always parses one particular way.
+//! Detects an ambiguous prefix-operator shape: a prefix operator whose direct operand is itself a
+//! looser-precedence prefix operator whose own subtree eventually reaches an infix operator. A
+//! different reading could plausibly attach that infix operator to the outer prefix instead of the
+//! inner one, so the expression looks ambiguous even though it always parses one particular way.
 //!
-//! A chain of several looser prefixes in a row (`exists d: D . mu X . A && B`)
-//! is the identical shape, just discovered by unwinding through more than one
-//! of them; see [`swallows_infix`].
+//! A chain of several looser prefixes (`exists d: D . mu X . A && B`) is the identical shape,
+//! found by unwinding through more than one of them; see [`swallows_infix`].
 //!
-//! [`PrefixShape`] and [`IsInfix`] describe each expression kind's own
-//! precedence as plain data, and [`check_prefix_shape`] is the one general
-//! check run against every node of every kind that defines them.
+//! `StateFrmKind::DataValExprRightMult` (`StateFrm * DataValExpr`) and
+//! `PresExprKind::RightConstantMultiply` are `Fixity::Postfix` per the grammar, but sit in the
+//! middle of their precedence table and genuinely compete for the root the same way `&&`/`=>` do
+//! (unlike a true postfix suffix like `Application`/`Update`, always tightest, never competing).
+//! `statefrm_is_infix`/`presexpr_is_infix` count them as infix on top of `Fixity`, so e.g.
+//! `[a(true)]mu X . X * val(1)` is flagged the same as `[a(true)]mu X . true && X`.
 //!
-//! `crate::features::diagnostics` turns each hit into a warning, and `crate::features::code_action`
-//! turns it into a quick fix that parenthesizes the inner operator's own span.
+//! [`PrefixShape`] and [`IsInfix`] describe each kind's own precedence as plain data, and
+//! [`check_prefix_shape`] is the one general check run against every node of every kind.
 
 use std::ops::ControlFlow;
 
@@ -65,26 +64,88 @@ impl AmbiguousPrefixConflict {
     }
 }
 
-/// Returns `node`'s own outer-prefix precedence level and the single child it wraps, if `node` was
-/// built by a *prefix* operator — `None` for a primary, an infix application, or a genuine postfix
-/// one. A postfix operator's "operand" is whatever already-parsed expression precedes it, not
-/// something freshly parsed as a fresh subexpression, so it can never be the *looser* half of this
-/// shape, and it can never compete for the root position the way an infix connective can. Some
-/// operators look postfix-shaped (a value trailing an expression) but are genuine infix competitors
-/// in disguise; those are handled by [`IsInfix`] instead — see [`statefrm_is_infix`] and
-/// [`presexpr_is_infix`].
+/// Every process declaration's body, `init`, and the data specification's equations. `text`/
+/// `sources` are the root document's text and [`SourceMap`] (empty for a plain parse), letting
+/// [`is_already_parenthesized`] resolve spans that came from an `%import`ed document.
+pub fn find_in_process_specification(
+    spec: &UntypedProcessSpecification,
+    text: &str,
+    sources: &SourceMap,
+) -> Vec<AmbiguousPrefixConflict> {
+    let mut hits = Vec::new();
+
+    for decl in &spec.process_declarations {
+        walk_process_expr(&decl.body, text, sources, &mut hits);
+    }
+
+    if let Some(init) = &spec.init {
+        walk_process_expr(init, text, sources, &mut hits);
+    }
+
+    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
+    hits
+}
+
+/// As [`find_in_process_specification`], for a PBES: every equation's formula, `init`'s own
+/// arguments, and the data specification's equations.
+pub fn find_in_pbes_specification(
+    spec: &UntypedPbes,
+    text: &str,
+    sources: &SourceMap,
+) -> Vec<AmbiguousPrefixConflict> {
+    let mut hits = Vec::new();
+
+    for eqn in &spec.equations {
+        walk_pbes_expr(&eqn.formula, text, sources, &mut hits);
+    }
+
+    for argument in &spec.init.node.arguments {
+        find_in_dataexpr(argument, text, sources, &mut hits);
+    }
+
+    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
+    hits
+}
+
+/// As [`find_in_pbes_specification`], for a PRES.
+pub fn find_in_pres_specification(
+    spec: &UntypedPres,
+    text: &str,
+    sources: &SourceMap,
+) -> Vec<AmbiguousPrefixConflict> {
+    let mut hits = Vec::new();
+
+    for eqn in &spec.equations {
+        walk_pres_expr(&eqn.formula, text, sources, &mut hits);
+    }
+
+    for argument in &spec.init.node.arguments {
+        find_in_dataexpr(argument, text, sources, &mut hits);
+    }
+
+    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
+    hits
+}
+
+/// As [`find_in_process_specification`], for a modal (mu-calculus) formula.
+pub fn find_in_modal_specification(
+    spec: &UntypedStateFrmSpec,
+    text: &str,
+    sources: &SourceMap,
+) -> Vec<AmbiguousPrefixConflict> {
+    let mut hits = Vec::new();
+    walk_state_frm(&spec.formula, text, sources, &mut hits);
+    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
+    hits
+}
+
+/// `node`'s prefix precedence level and the child it wraps, or `None` if it isn't a prefix op.
 type PrefixShape<K> = fn(&K) -> Option<(u8, &Spanned<K>)>;
 
-/// Returns whether `node`'s own outermost connective is a genuine infix operator — a competitor for
-/// the "root" position against an enclosing prefix operator (see the module doc comment). One
-/// implementation per node kind. That's `Binary` alone for `DataExpr`/`PbesExpr`/`ActFrm`, but
-/// `StateFrm`/`PresExpr` each have one more: `DataValExprRightMult`/`RightConstantMultiply` look
-/// postfix-shaped (a value trailing an expression) but behave as genuine infix competitors — see
-/// [`PrefixShape`]'s doc comment.
+/// Whether `node`'s own outermost connective is a genuine infix operator.
 type IsInfix<K> = fn(&K) -> bool;
 
-/// Generic [`PrefixShape`] for any [`Operator`]-implementing kind: `node` is prefix-shaped exactly
-/// when [`Operator::fixity`] says so, at whatever level and operand [`Operator::operand`] reports.
+/// Generic [`PrefixShape`] for any [`Operator`]-implementing kind.
 fn prefix_shape<K: Operator>(kind: &K) -> Option<(u8, &Spanned<K>)> {
     match kind.fixity() {
         Fixity::Prefix(level) => kind.operand().map(|operand| (level, operand)),
@@ -92,37 +153,21 @@ fn prefix_shape<K: Operator>(kind: &K) -> Option<(u8, &Spanned<K>)> {
     }
 }
 
-/// Generic [`IsInfix`] for any [`Operator`]-implementing kind — see [`IsInfix`]'s doc comment for
-/// the two node kinds ([`StateFrmKind`], [`PresExprKind`]) that need an extra case on top of this.
+/// Generic [`IsInfix`] for any [`Operator`]-implementing kind.
 fn is_infix<K: Operator>(kind: &K) -> bool {
     matches!(kind.fixity(), Fixity::Infix(..))
 }
 
 fn statefrm_is_infix(kind: &StateFrmKind) -> bool {
-    // `DataValExprRightMult` (`StateFrm * DataValExpr`) isn't just a suffix on an already-parsed
-    // primary the way `DataExpr`'s `Update`/`Application` are (see `PrefixShape`'s doc comment) — it
-    // is a genuine infix competitor for the root position, the same as `&&`/`=>`, even though
-    // `merc_syntax` itself classifies it as `Fixity::Postfix` (it does sit in the middle of
-    // `StateFrmKind`'s own precedence table, not at the absolute tightest level the way a fixed
-    // suffix would). Missing it here would silently under-detect: a strictly looser prefix
-    // (`mu`/`nu`) whose body reaches a `* val(...)` still competes for the root position exactly
-    // the way it would against `&&`.
     is_infix(kind) || matches!(kind, StateFrmKind::DataValExprRightMult(..))
 }
 
 fn presexpr_is_infix(kind: &PresExprKind) -> bool {
-    // As `statefrm_is_infix`: `RightConstantMultiply` (`PresExpr * DataValExpr`) is a genuine infix
-    // competitor for the root position, not a fixed-tightest suffix.
+    // As `statefrm_is_infix`.
     is_infix(kind) || matches!(kind, PresExprKind::RightConstantMultiply { .. })
 }
 
-/// Whether `node`'s own subtree eventually reaches a genuine infix application without first
-/// escaping through anything but more prefix operators — i.e., whether *something* ends up
-/// swallowed into `node`'s body the way the module doc comment describes, however many looser
-/// prefixes deep it takes to reach it (`exists d: D . mu X . A && B`: `exists` doesn't touch `&&`
-/// directly, `mu` does, but `exists`'s own body is still `mu X . (A && B)` — this is what lets the
-/// outer `check_prefix_shape` call for `exists` see through the intervening `mu` to the `&&` it
-/// would otherwise be blind to).
+/// Whether `node`'s subtree reaches a genuine infix application through prefix operators alone.
 fn swallows_infix<K>(
     node: &Spanned<K>,
     prefix_shape: PrefixShape<K>,
@@ -133,22 +178,9 @@ fn swallows_infix<K>(
             .is_some_and(|(_, child)| swallows_infix(child, prefix_shape, is_infix))
 }
 
-/// The one check shared by every node kind: is `node` itself a prefix application (`prefix_shape`)
-/// whose immediate operand is *also* a prefix application, at a strictly looser precedence level,
-/// whose own subtree swallows an infix operator (`swallows_infix`)? If so — and the looser operand
-/// isn't already parenthesized by hand — that's the shape the module doc comment describes, and
-/// `hits` gets a new [`AmbiguousPrefixConflict`] for it.
-///
-/// Deliberately `<`, not `<=`: two prefixes sharing one precedence *level* (as `DataExpr` does for
-/// `Minus`/`Negation`/`Size`, or for `Forall`/`Exists`/`Lambda`) never reproduce this shape. The
-/// tight end of a precedence level (`Unary`-style operators) never reaches an infix operator to
-/// begin with, since its own precedence is tighter than every infix operator in the same kind. And
-/// the loose end (quantifiers/binders) is always the unique loosest precedence in its kind — looser
-/// than every infix operator (and, in `PresExpr`/`StateFrm`, every right-constant-multiply too, see
-/// [`statefrm_is_infix`]/[`presexpr_is_infix`]) — so a same-level chain of binders always wins the
-/// root competition outright and swallows the whole thing, exactly like a single one does; there is
-/// no looser rival for it to lose to. So a same-level chain is a proven non-issue, not an unverified
-/// one, and no `<=` is needed.
+/// The one check shared by every node kind: is `node` a prefix application whose operand is also a
+/// strictly looser prefix application that swallows an infix operator, and isn't already
+/// parenthesized? If so, `hits` gets a new [`AmbiguousPrefixConflict`].
 fn check_prefix_shape<K>(
     node: &Spanned<K>,
     prefix_shape: PrefixShape<K>,
@@ -160,9 +192,12 @@ fn check_prefix_shape<K>(
     let Some((outer_level, child)) = prefix_shape(&node.node) else {
         return;
     };
+
     let Some((inner_level, _)) = prefix_shape(&child.node) else {
         return;
     };
+
+    // Strictly smaller level — same-level prefixes aren't an issue.
     if inner_level < outer_level
         && swallows_infix(child, prefix_shape, is_infix)
         && !is_already_parenthesized(text, sources, &child.span)
@@ -175,10 +210,8 @@ fn check_prefix_shape<K>(
 }
 
 /// True when `span` is already wrapped in a matching `(...)` in its own source text. Parentheses
-/// are transparent to the parsed tree — an operator the author already disambiguated by hand looks
-/// identical, node-for-node, to one that wasn't — so this is the only place that distinction can
-/// still be recovered, by checking the raw source text immediately around `span` instead of the
-/// tree.
+/// are transparent to the parsed tree, so this is the only way to recover whether the author
+/// already disambiguated by hand.
 fn is_already_parenthesized(text: &str, sources: &SourceMap, span: &Span) -> bool {
     let (text, span) = convert::local_text_and_span(text, sources, span);
     text[..span.start].trim_end().ends_with('(') && text[span.end..].trim_start().starts_with(')')
@@ -197,79 +230,8 @@ fn find_in_dataexpr(
     });
 }
 
-/// As [`find_in_dataexpr`], across a whole process specification: every process declaration's
-/// body, `init`, and the data specification's own equations. `text` is the root document's own
-/// text and `sources` its [`SourceMap`] (empty for a plain, import-free parse) — together they let
-/// [`is_already_parenthesized`] resolve a node's span correctly even when that node came from
-/// something the document `%import`s rather than from `text` itself.
-pub fn find_in_process_specification(
-    spec: &UntypedProcessSpecification,
-    text: &str,
-    sources: &SourceMap,
-) -> Vec<AmbiguousPrefixConflict> {
-    let mut hits = Vec::new();
-    for decl in &spec.process_declarations {
-        walk_process_expr(&decl.body, text, sources, &mut hits);
-    }
-    if let Some(init) = &spec.init {
-        walk_process_expr(init, text, sources, &mut hits);
-    }
-    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
-    hits
-}
-
-/// As [`find_in_process_specification`], for a PBES: every equation's formula, `init`'s own
-/// arguments, and the data specification's equations.
-pub fn find_in_pbes_specification(
-    spec: &UntypedPbes,
-    text: &str,
-    sources: &SourceMap,
-) -> Vec<AmbiguousPrefixConflict> {
-    let mut hits = Vec::new();
-    for eqn in &spec.equations {
-        walk_pbes_expr(&eqn.formula, text, sources, &mut hits);
-    }
-    for argument in &spec.init.node.arguments {
-        find_in_dataexpr(argument, text, sources, &mut hits);
-    }
-    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
-    hits
-}
-
-/// As [`find_in_pbes_specification`], for a PRES.
-pub fn find_in_pres_specification(
-    spec: &UntypedPres,
-    text: &str,
-    sources: &SourceMap,
-) -> Vec<AmbiguousPrefixConflict> {
-    let mut hits = Vec::new();
-    for eqn in &spec.equations {
-        walk_pres_expr(&eqn.formula, text, sources, &mut hits);
-    }
-    for argument in &spec.init.node.arguments {
-        find_in_dataexpr(argument, text, sources, &mut hits);
-    }
-    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
-    hits
-}
-
-/// As [`find_in_process_specification`], for a modal (mu-calculus) formula.
-pub fn find_in_modal_specification(
-    spec: &UntypedStateFrmSpec,
-    text: &str,
-    sources: &SourceMap,
-) -> Vec<AmbiguousPrefixConflict> {
-    let mut hits = Vec::new();
-    walk_state_frm(&spec.formula, text, sources, &mut hits);
-    walk_data_specification(&spec.data_specification, text, sources, &mut hits);
-    hits
-}
-
-/// Walks every `ProcessExpr` in `expr`'s subtree, picking out each node's `DataExpr`-bearing
-/// fields — the ones a plain traversal won't reach on its own — and checking them.
-/// Process-algebra operators themselves (`.`/`+`/`||`/...) are out of scope for this module, so
-/// `ProcessExprKind` gets no `check_prefix_shape` call of its own here, only the `DataExpr`s nested
-/// inside it.
+/// As [`walk_pbes_expr`], for a [`ProcessExpr`] tree (`Sum`/`Dist` are prefix, `Choice`/`Parallel`/
+/// `Sequence`/... are infix, `Condition`'s guard is the same shape as elsewhere).
 fn walk_process_expr(
     expr: &ProcessExpr,
     text: &str,
@@ -277,6 +239,7 @@ fn walk_process_expr(
     hits: &mut Vec<AmbiguousPrefixConflict>,
 ) {
     expr.visit::<(), _>(|node| {
+        check_prefix_shape(node, prefix_shape, is_infix, text, sources, hits);
         match &node.node {
             ProcessExprKind::Action(_, args) => {
                 for arg in args {
@@ -301,9 +264,7 @@ fn walk_process_expr(
     });
 }
 
-/// As [`walk_process_expr`], for a [`PbesExpr`] tree — `.visit()` also runs [`check_prefix_shape`]
-/// on every `PbesExpr` node along the way (see the module doc comment), not just the `DataExpr`s
-/// nested inside it.
+/// As [`walk_process_expr`], for a [`PbesExpr`] tree.
 fn walk_pbes_expr(
     expr: &PbesExpr,
     text: &str,
@@ -351,12 +312,10 @@ fn walk_pres_expr(
     });
 }
 
-/// As [`walk_pbes_expr`], for a modal (mu-calculus) state formula — `.visit()` supplies the descent
-/// into every same-typed child (a `Unary`/`Binary`/`Quantifier`/`Bound`/`FixedPoint`/`Modality`'s
-/// own `StateFrm` operand) for free, including running [`check_prefix_shape`] on each one, so this
-/// only has to reach into the *other*-typed fields `Traverse` won't cross into on its own: a
-/// `DataExpr` (`Delay`/`Yaled`'s time, `Id`/`Resolved`'s arguments, `DataValExpr(LeftMult)`, a
-/// `FixedPoint` variable's initial values) or a `RegFrm` (a `Modality`'s own formula).
+/// As [`walk_pbes_expr`], for a modal (mu-calculus) state formula. Reaches into each node's
+/// non-`StateFrm` fields: a `DataExpr` (`Delay`/`Yaled`'s time, `Id`/`Resolved`'s arguments,
+/// `DataValExpr`/`DataValExprLeftMult`/`DataValExprRightMult`'s constant, a `FixedPoint` variable's
+/// initial values) or a `RegFrm` (a `Modality`'s own formula).
 fn walk_state_frm(
     formula: &StateFrm,
     text: &str,
@@ -395,13 +354,8 @@ fn walk_state_frm(
     });
 }
 
-/// As [`walk_state_frm`], for a modality's regular formula (`[a*]X`'s `a*`) — reaches into the
-/// `ActFrm` a `RegFrmKind::Action` carries, the one `RegFrm` field `Traverse` won't cross into on
-/// its own; `Iteration`/`Plus`/`Sequence`/`Choice`'s own `RegFrm` children need no walking here
-/// since nothing in this module treats `RegFrmKind` as a prefix-shaped kind of its own (`*` and `+`
-/// are postfix, `.`/`+` in the regular-formula sense are infix — see [`prefix_shape`]'s doc comment
-/// on why postfix operators are out of scope, and there's no *prefix* regular-formula operator to
-/// even compete with them in the first place).
+/// A modality's regular formula (`[a*]X`'s `a*`). No `check_prefix_shape` call: `RegFrmKind` has no
+/// prefix operator for `*`/`+`/`.`/`+` to compete with.
 fn walk_reg_frm(
     formula: &RegFrm,
     text: &str,
@@ -496,8 +450,7 @@ mod tests {
 
     #[test]
     fn flags_a_unary_minus_wrapping_a_lambda() {
-        // Same kind, a different pairing: `Minus`/`Negation`/`Size` are the tight prefix level,
-        // `Lambda` the loose one — not just `!`/`exists`.
+        // Minus (tight) wrapping Lambda (loose), not `!`/`exists`.
         let text =
             "sort D;\nmap f: (D -> Nat) -> Nat;\ninit (f(-lambda d: D . d + d) == 0) -> delta;";
         assert_eq!(hits(text).len(), 1);
@@ -505,14 +458,8 @@ mod tests {
 
     #[test]
     fn flags_through_a_chain_of_same_level_looser_prefixes_before_the_infix() {
-        // `exists` doesn't directly touch `&&` — `lambda` does — but `exists`'s own body is still
-        // `lambda e: D . (d == e && q)`, so the outer `!` still sees a swallowed infix through
-        // `lambda` (see `swallows_infix`'s doc comment for exactly this chained-unwrap case).
-        // `exists`/`lambda` themselves aren't a *second* hit here: they share one precedence level,
-        // and `check_prefix_shape` only flags a *strictly* looser child
-        // (see its own doc comment) — same reasoning as
-        // `does_not_flag_two_prefixes_sharing_one_precedence_level`, just on the loose end of the
-        // table instead of the tight end.
+        // `!` sees through `exists`/`lambda` (same level, so not a second hit) to the `&&` `lambda`
+        // wraps directly.
         let text =
             "sort D;\nmap q: Bool;\ninit (!exists d: D . lambda e: D . d == e && q) -> delta;";
         assert_eq!(hits(text).len(), 1);
@@ -520,11 +467,7 @@ mod tests {
 
     #[test]
     fn does_not_flag_a_quantifier_with_no_infix_body() {
-        // `d` alone (no infix operator at all) and `!d` (a `Unary`, not `Binary`) both bound the
-        // quantifier's body the same way in both grammars — see the module doc comment on why only
-        // a `Binary` body creates the competing-infix shape. `d == d` would *not* belong here:
-        // `==` is itself the infix operator this lint looks for, so that shape is a true positive
-        // (see `flags_negated_exists_with_a_binary_body`), not a case to assert empty on.
+        // No infix body (`d`) or a unary one (`!e`) — neither creates the competing shape.
         let text =
             "sort D;\ninit (!exists d: D . d) -> delta;\nproc Q = (!exists e: D . !e) -> delta;";
         assert!(hits(text).is_empty());
@@ -544,8 +487,7 @@ mod tests {
 
     #[test]
     fn does_not_flag_two_prefixes_sharing_one_precedence_level() {
-        // `Minus` and `Negation` share DataExpr's tight prefix level — not a case this checks (see
-        // `check_prefix_shape`'s doc comment on why `<`, not `<=`).
+        // `Minus`/`Negation` share DataExpr's tight prefix level.
         let text = "sort D;\nmap q: Bool;\ninit (-!q == 0) -> delta;";
         assert!(hits(text).is_empty());
     }
@@ -559,18 +501,15 @@ mod tests {
 
     #[test]
     fn flags_a_state_formula_modality_over_a_fixed_point() {
-        // `Modality` (tighter) directly wrapping `FixedPoint` (the loosest StateFrm prefix) whose
-        // own body reaches `&&` — the same shape, different pair, in the same grammar.
+        // `Modality` (tighter) directly wrapping `FixedPoint` (loosest) whose body reaches `&&`.
         let text = "act a: Bool;\nform [a(true)]mu X . true && X;";
         assert_eq!(modal_hits(text).len(), 1);
     }
 
     #[test]
     fn does_not_flag_a_bare_chain_of_same_level_quantifiers_with_no_enclosing_prefix() {
-        // Proof, not assumption (see `check_prefix_shape`'s doc comment): `exists` is already the
-        // unique loosest-precedence connective among `DataExpr`'s own operators, so with nothing
-        // tighter enclosing it, `exists` always wins the root competition against `&&` on its own —
-        // the parse is unambiguous without any `!` to create the divergence.
+        // `exists` is the unique loosest StateFrm connective, so with nothing tighter enclosing it,
+        // it always wins the root competition against `&&` unambiguously.
         let text =
             "sort D;\nmap q: Bool;\ninit (exists d: D . lambda e: D . d == e && q) -> delta;";
         assert!(hits(text).is_empty());
@@ -578,27 +517,27 @@ mod tests {
 
     #[test]
     fn flags_a_state_formula_modality_over_a_fixed_point_reaching_a_right_constant_multiply() {
-        // `DataValExprRightMult` (`StateFrm * DataValExpr`) is a genuine infix competitor for the
-        // root position, not a fixed-tightest suffix like `DataExpr`'s `Application`/`Update` — so
-        // `statefrm_is_infix` must count it, the same way it already counts `&&`/`=>`/etc. Without
-        // that, this fixture would produce zero hits even though the shape is identical to
-        // `flags_a_state_formula_modality_over_a_fixed_point`, just with a `*` in place of `&&`.
+        // `DataValExprRightMult` is `Fixity::Postfix` per the grammar but a genuine infix
+        // competitor in practice (see the module doc comment) — `statefrm_is_infix` must count it.
         let text = "act a: Bool;\nform [a(true)]mu X . X * val(1);";
         assert_eq!(modal_hits(text).len(), 1);
     }
 
     #[test]
     fn flags_a_pres_negation_over_a_bound_reaching_a_right_constant_multiply() {
-        // As the `StateFrm` case above, but for `PresExpr`'s `RightConstantMultiply`
-        // (`PresExpr * DataValExpr`): negation is the tightest prefix (level 2), directly wrapping
-        // `sup` (loosest, level 0) whose own body reaches the `* val(...)`. Unlike every other
-        // expression kind here (Data/StateFrm/ActFrm/Pbes), PRES's own negation token is `-`, not
-        // `!` (`PresExprNegation = { "-" }` in the grammar).
+        // As above, for `PresExpr`'s `RightConstantMultiply`. PRES negation is `-`, not `!`.
         let text = "pres mu X = -sup n: Nat . X * val(n); init X;";
         let spec = merc_syntax::UntypedPres::parse(text).expect("fixture should parse");
         assert_eq!(
             find_in_pres_specification(&spec, text, &SourceMap::new()).len(),
             1
         );
+    }
+
+    #[test]
+    fn flags_a_process_condition_wrapping_a_sum_reaching_a_choice() {
+        // `Condition` (level 4) directly wrapping `Sum` (level 1, loosest) whose body reaches `+`.
+        let text = "act a: Bool;\ninit true -> sum d: Bool . a(d) . delta + delta;";
+        assert_eq!(hits(text).len(), 1);
     }
 }
