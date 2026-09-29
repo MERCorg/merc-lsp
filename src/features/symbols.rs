@@ -349,7 +349,7 @@ fn collect_fixed_points(
             let detail = format!("{operator} {variable}");
             let target = SpanTarget::Local { text, line_index };
             out.push(symbol_at(
-                variable.identifier.clone(),
+                variable.identifier.to_string(),
                 Some(detail),
                 SymbolKind::FUNCTION,
                 target,

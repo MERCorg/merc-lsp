@@ -1,31 +1,19 @@
-//! Serves the `merc/generateFullSpec` request: renders a process specification's already-merged
-//! (see `parse.rs`'s "`%import` and the returned `SourceMap`" section — every `%import`, however
-//! deeply nested, is resolved and flattened before this ever runs) [`UntypedProcessSpecification`]
-//! back to mCRL2 source text via its `Display` impl.
+//! Serves the `merc/generateFullSpec` request: renders a process
+//! specification's already-merged (see `parse.rs`'s "`%import` and the returned
+//! `SourceMap`" section — every `%import`, however deeply nested, is resolved
+//! and flattened before this ever runs) [`UntypedProcessSpecification`] back to
+//! mCRL2 source text via its `Display` impl.
 //!
-//! That `Display` impl (in `merc_syntax::syntax_tree_display`) unconditionally parenthesizes every
-//! binary/unary/quantifier/lambda/conditional, so the text this produces is always unambiguous —
-//! deliberately more heavily parenthesized than the real mCRL2 toolset's own pretty printer, which
-//! only adds parens precedence actually requires. That's the point, not a shortcoming: it's exactly
-//! what sidesteps the divergence [`crate::analysis::ambiguity`] documents between merc's Pratt parser and
-//! mCRL2's real dparser-based one on "deep priority conflicts" — a parenthesized group is read the
-//! same way by both grammars, so output from here is safe to feed into the real mCRL2 tools even
-//! where the two parsers would otherwise disagree.
+//! That `Display` impl (in `merc_syntax::syntax_tree_display`) unconditionally
+//! parenthesizes every binary/unary/quantifier/lambda/conditional, so the text
+//! this produces is always unambiguous.
 //!
-//! Scoped to process specifications only: PBES/PRES don't resolve `%import` yet (see `parse.rs`),
-//! and a modal formula is consumed by mCRL2's tools alongside the process specification it's
-//! checked against, not as a standalone spec of its own, so there is nothing useful to inline for
-//! one.
+//! Scoped to process specifications only: PBES/PRES don't resolve `%import` yet
+//! (see `parse.rs`), and a modal formula is consumed by mCRL2's tools alongside
+//! the process specification it's checked against, not as a standalone spec of
+//! its own, so there is nothing useful to inline for one.
 //!
-//! Writing the result to disk (so `mcrl22lps`/`lpsxsim`/... can actually consume it) is the
-//! client's job, same as every other filesystem concern in this server — see
-//! `vscode-client/src/extension.ts`'s `merc-lsp.generateFullSpec` command, the client-side half of
-//! the VS Code **"Generate Full Specification"** command described in `README.md`.
-//!
-//! This whole module is gated behind the `lsp-extensions` Cargo feature (on by default, see
-//! `Cargo.toml`): a plain LSP client has no way to invoke `merc/generateFullSpec` on its own, so
-//! there is nothing for a server built without the feature to lose by not registering it — see
-//! [`crate::server::backend::router`]'s own `#[cfg(feature = "lsp-extensions")]` registration.
+//! This whole module is gated behind the `lsp-extensions` Cargo feature.
 
 use lsp_types::Url;
 use lsp_types::request::Request;

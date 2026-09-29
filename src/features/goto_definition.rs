@@ -16,15 +16,8 @@ use merc_typecheck::TypingInfo;
 use crate::analysis::convert;
 use crate::analysis::convert::LineIndex;
 
-/// The declaration location(s) for the identifier at `position` — empty if it doesn't resolve to
-/// a declaration site at all, one for almost every [`ResolvedName`] variant, or more than one only
-/// for a [`ResolvedName::ActionSet`] naming several `act` declarations at once (a bare action name
-/// inside a `hide`/`block`/`allow`/`comm`/`rename` action set, which can match more than one `act`
-/// declaration sharing that name). `sources`/`line_indexes` are `document.sources`/
-/// `document.line_indexes` — see
-/// [`convert::location`], which resolves each declaration span through them; a location a span
-/// resolves to but that [`convert::location`] can't build a `Location` for (shouldn't arise in
-/// practice — see its own doc comment) is silently dropped rather than shown wrong.
+/// The declaration location(s) for the identifier at `position` or empty if it
+/// doesn't resolve to a declaration site at all.
 pub fn definition_locations(
     text: &str,
     line_index: &LineIndex,
@@ -36,9 +29,11 @@ pub fn definition_locations(
     let Some(offset) = line_index.offset(text, position) else {
         return Vec::new();
     };
+
     let Some(node) = typing_info.at_offset(offset) else {
         return Vec::new();
     };
+
     let declarations: Vec<Span> = match &node.name {
         Some(ResolvedName::Constructor { declaration, .. })
         | Some(ResolvedName::Mapping { declaration, .. })
@@ -52,6 +47,7 @@ pub fn definition_locations(
         Some(ResolvedName::ActionSet { declarations, .. }) => declarations.clone(),
         _ => Vec::new(),
     };
+    
     declarations
         .iter()
         .filter_map(|declaration| convert::location(sources, line_indexes, declaration))

@@ -1,18 +1,11 @@
-//! `textDocument/completion`: the names a document declares (sorts, constructors, mappings,
-//! actions/processes or propositional-/state-variable equations, global/equation/bound variables),
-//! plus mCRL2's reserved keywords and built-in sort names — filtered by [`CompletionCategory`] to
-//! just the kind of name expected at the cursor (see [`crate::features::completion_context`]). Covers all
-//! four grammars this server parses — process specifications, PBES, PRES, and modal formulas —
-//! same as hover/goto-definition/inlay-hints. Unlike those, completion needs no *checked*
-//! specification (see below), so it keeps offering something even for a kind whose type checker
-//! hasn't run yet, or failed.
+//! Provides the names a document declares (sorts, constructors, mappings,
+//! actions/processes or propositional-/state-variable equations,
+//! global/equation/bound variables), plus mCRL2's reserved keywords and
+//! built-in sort names — filtered by [`CompletionCategory`] to just the kind of
+//! name expected at the cursor.
 //!
-//! Filtering by category is still not full lexical scoping: within a category, every declaration
-//! of that kind document-wide is offered, the same unscoped way this module always worked (see
-//! `completion_context.rs`'s module docs) — real scoping needs binder-stack bookkeeping nothing
-//! upstream exposes for process/PBES bodies. Built off the raw parsed AST, not a checked
-//! specification, so — unlike hover/goto-definition/inlay-hints — completions keep working while a
-//! document is transiently ill-typed or mid-edit.
+//! Filtering by category is still not full lexical scoping, and is purely
+//! syntactical.
 
 use std::path::Path;
 
@@ -22,6 +15,11 @@ use lsp_types::CompletionTextEdit;
 use lsp_types::Position;
 use lsp_types::Range;
 use lsp_types::TextEdit;
+use merc_syntax::ACT_FRM_KEYWORDS;
+use merc_syntax::DATA_EXPR_KEYWORDS;
+use merc_syntax::MODAL_KEYWORDS;
+use merc_syntax::PROC_EXPR_KEYWORDS;
+use merc_syntax::STATE_FRM_KEYWORDS;
 use merc_syntax::StateFrm;
 use merc_syntax::StateFrmKind;
 use merc_syntax::UntypedDataSpecification;
@@ -96,26 +94,6 @@ pub fn import_path_completions(
     Some(items)
 }
 
-/// Keywords that start or continue a data expression.
-const DATA_KEYWORDS: &[&str] = &["true", "false", "whr", "end", "forall", "exists", "lambda"];
-
-/// Keywords that start a process-algebra term.
-const PROCESS_KEYWORDS: &[&str] = &[
-    "delta", "tau", "sum", "dist", "hide", "block", "allow", "comm", "rename",
-];
-
-/// Keywords that start or continue a PBES/PRES formula.
-const FORMULA_KEYWORDS: &[&str] = &["true", "false", "val", "forall", "exists"];
-
-/// Keywords that start or continue a modal formula's action-formula position (inside a
-/// `[...]`/`<...>` modality).
-const ACTION_KEYWORDS: &[&str] = &["true", "false", "val", "forall", "exists"];
-
-/// Keywords that start or continue a modal (mu-calculus) state formula.
-const STATE_FORMULA_KEYWORDS: &[&str] = &[
-    "true", "false", "val", "forall", "exists", "inf", "sup", "sum", "mu", "nu", "delay", "yaled",
-];
-
 /// The keywords relevant to `category` — a subset of [`crate::features::semantic_tokens::KEYWORDS`], except
 /// for [`CompletionCategory::Unscoped`], which offers all of them (matching this module's
 /// behavior before cursor context existed).
@@ -124,11 +102,11 @@ fn keywords_for(category: CompletionCategory) -> &'static [&'static str] {
         // No keywords beyond the built-in sort names themselves, which are offered separately
         // (see `SYSTEM_SORTS`).
         CompletionCategory::Sort => &[],
-        CompletionCategory::Data => DATA_KEYWORDS,
-        CompletionCategory::ActionOrProcess => PROCESS_KEYWORDS,
-        CompletionCategory::PropositionalVariable => FORMULA_KEYWORDS,
-        CompletionCategory::Action => ACTION_KEYWORDS,
-        CompletionCategory::StateVariable => STATE_FORMULA_KEYWORDS,
+        CompletionCategory::Data => DATA_EXPR_KEYWORDS,
+        CompletionCategory::ActionOrProcess => PROC_EXPR_KEYWORDS,
+        CompletionCategory::PropositionalVariable => MODAL_KEYWORDS,
+        CompletionCategory::Action => ACT_FRM_KEYWORDS,
+        CompletionCategory::StateVariable => STATE_FRM_KEYWORDS,
         CompletionCategory::Unscoped => crate::features::semantic_tokens::KEYWORDS,
     }
 }
