@@ -187,6 +187,7 @@ pub fn pbes_completions(spec: &UntypedPbes, category: CompletionCategory) -> Vec
     ) {
         push_sort_items(&spec.data_specification, &mut items);
     }
+
     if matches!(
         category,
         CompletionCategory::Data | CompletionCategory::Unscoped
@@ -200,6 +201,7 @@ pub fn pbes_completions(spec: &UntypedPbes, category: CompletionCategory) -> Vec
             ));
         }
     }
+    
     if matches!(
         category,
         CompletionCategory::PropositionalVariable | CompletionCategory::Unscoped

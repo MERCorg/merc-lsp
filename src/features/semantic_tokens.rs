@@ -13,10 +13,10 @@ use lsp_types::SemanticToken;
 use lsp_types::SemanticTokenModifier;
 use lsp_types::SemanticTokenType;
 use lsp_types::SemanticTokensLegend;
-use merc_syntax::ActFrm;
 use merc_syntax::ActFrmKind;
 use merc_syntax::DataExpr;
 use merc_syntax::DataExprKind;
+use merc_syntax::MixedNode;
 use merc_syntax::MultiAction;
 use merc_syntax::PbesExpr;
 use merc_syntax::PbesExprKind;
@@ -26,7 +26,6 @@ use merc_syntax::ProcessExpr;
 use merc_syntax::ProcessExprKind;
 use merc_syntax::PropVarInst;
 use merc_syntax::RegFrm;
-use merc_syntax::RegFrmKind;
 use merc_syntax::SortExpression;
 use merc_syntax::SortExpressionKind;
 use merc_syntax::Span;
@@ -242,9 +241,8 @@ pub fn pres_semantic_tokens(
 /// recursive descent rather than a `Traverse::visit` closure (which flattens the whole subtree into
 /// one callback with no way to change `current_params` partway through, the same limitation
 /// `completion_context.rs`'s module docs describe for its own cursor-context walk); the `RegFrm`/
-/// `ActFrm` a modality (`[...]`/`<...>`) carries are walked by hand for the same reason `Traverse`
-/// stops at a `RegFrmKind::Action` node (see `merc_syntax::traverse`'s own tests) rather than
-/// descending into it.
+/// `ActFrm` a modality (`[...]`/`<...>`) carries are walked by [`walk_reg_frm`] with
+/// `Traverse::visit_mixed`, which unlike `Traverse::visit` crosses into the `ActFrm`.
 pub fn modal_semantic_tokens(
     text: &str,
     line_index: &LineIndex,
@@ -861,59 +859,41 @@ fn walk_state_frm(
     }
 }
 
-/// As [`walk_state_frm`], for a modality's regular formula (`[a*]X`'s `a*`) — descends by hand for
-/// the same reason: `Traverse` stops at `RegFrmKind::Action` rather than crossing into the `ActFrm`
-/// it carries (see `merc_syntax::traverse`'s own tests).
+/// Walks a modality's regular formula (`[a*]X`'s `a*`) and the action formulas (`a(1) && !b`) it
+/// carries via [`Traverse::visit_mixed`], which crosses from `RegFrm` into `ActFrm` where
+/// `Traverse::visit` alone stops at `RegFrmKind::Action`.
 fn walk_reg_frm(
     formula: &RegFrm,
     symbols: &SymbolTable,
     current_params: &HashSet<&str>,
     builder: &mut Builder,
 ) {
-    match &formula.node {
-        RegFrmKind::Action(action) => walk_act_frm(action, symbols, current_params, builder),
-        RegFrmKind::Iteration(inner) | RegFrmKind::Plus(inner) => {
-            walk_reg_frm(inner, symbols, current_params, builder)
-        }
-        RegFrmKind::Sequence { lhs, rhs } | RegFrmKind::Choice { lhs, rhs } => {
-            walk_reg_frm(lhs, symbols, current_params, builder);
-            walk_reg_frm(rhs, symbols, current_params, builder);
-        }
-    }
-}
-
-/// As [`walk_reg_frm`], for an action formula (`a(1) && !b`).
-fn walk_act_frm(
-    formula: &ActFrm,
-    symbols: &SymbolTable,
-    current_params: &HashSet<&str>,
-    builder: &mut Builder,
-) {
-    match &formula.node {
-        ActFrmKind::True | ActFrmKind::False => {}
-        ActFrmKind::MultAct(multi_action) => {
-            walk_multi_action(multi_action, symbols, current_params, builder)
-        }
-        ActFrmKind::DataExprVal(expr) => walk_data_expr(expr, symbols, current_params, builder),
-        ActFrmKind::Negation(inner) => walk_act_frm(inner, symbols, current_params, builder),
-        ActFrmKind::Quantifier {
-            variables, body, ..
-        } => {
-            for variable in variables {
-                builder.push(&variable.identifier.span, TokenKind::Variable, true);
-                walk_sort_expression(&variable.sort, builder);
+    formula.visit_mixed::<()>(|node| {
+        if let MixedNode::ActFrm(node) = node {
+            match &node.node {
+                ActFrmKind::MultAct(multi_action) => {
+                    walk_multi_action(multi_action, symbols, current_params, builder)
+                }
+                ActFrmKind::DataExprVal(expr) => {
+                    walk_data_expr(expr, symbols, current_params, builder)
+                }
+                ActFrmKind::Quantifier { variables, .. } => {
+                    for variable in variables {
+                        builder.push(&variable.identifier.span, TokenKind::Variable, true);
+                        walk_sort_expression(&variable.sort, builder);
+                    }
+                }
+                ActFrmKind::At { operand, .. } => {
+                    walk_data_expr(operand, symbols, current_params, builder)
+                }
+                ActFrmKind::True
+                | ActFrmKind::False
+                | ActFrmKind::Negation(_)
+                | ActFrmKind::Binary { .. } => {}
             }
-            walk_act_frm(body, symbols, current_params, builder);
         }
-        ActFrmKind::Binary { lhs, rhs, .. } => {
-            walk_act_frm(lhs, symbols, current_params, builder);
-            walk_act_frm(rhs, symbols, current_params, builder);
-        }
-        ActFrmKind::At { expr, operand } => {
-            walk_act_frm(expr, symbols, current_params, builder);
-            walk_data_expr(operand, symbols, current_params, builder);
-        }
-    }
+        ControlFlow::Continue(())
+    });
 }
 
 /// Tags every action occurrence in a multi-action (`a(1)|b(2)`) directly as [`TokenKind::Event`].

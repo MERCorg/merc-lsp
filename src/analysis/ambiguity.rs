@@ -18,10 +18,10 @@
 
 use std::ops::ControlFlow;
 
-use merc_syntax::ActFrm;
 use merc_syntax::ActFrmKind;
 use merc_syntax::DataExpr;
 use merc_syntax::Fixity;
+use merc_syntax::MixedNode;
 use merc_syntax::Operator;
 use merc_syntax::PbesExpr;
 use merc_syntax::PbesExprKind;
@@ -29,13 +29,12 @@ use merc_syntax::PresExpr;
 use merc_syntax::PresExprKind;
 use merc_syntax::ProcessExpr;
 use merc_syntax::ProcessExprKind;
-use merc_syntax::RegFrm;
-use merc_syntax::RegFrmKind;
 use merc_syntax::SourceMap;
 use merc_syntax::Span;
 use merc_syntax::Spanned;
 use merc_syntax::StateFrm;
 use merc_syntax::StateFrmKind;
+use merc_syntax::TakeRecursiveChildren;
 use merc_syntax::Traverse;
 use merc_syntax::UntypedDataSpecification;
 use merc_syntax::UntypedPbes;
@@ -168,7 +167,7 @@ fn presexpr_is_infix(kind: &PresExprKind) -> bool {
 }
 
 /// Whether `node`'s subtree reaches a genuine infix application through prefix operators alone.
-fn swallows_infix<K>(
+fn swallows_infix<K: TakeRecursiveChildren>(
     node: &Spanned<K>,
     prefix_shape: PrefixShape<K>,
     is_infix: IsInfix<K>,
@@ -181,7 +180,7 @@ fn swallows_infix<K>(
 /// The one check shared by every node kind: is `node` a prefix application whose operand is also a
 /// strictly looser prefix application that swallows an infix operator, and isn't already
 /// parenthesized? If so, `hits` gets a new [`AmbiguousPrefixConflict`].
-fn check_prefix_shape<K>(
+fn check_prefix_shape<K: TakeRecursiveChildren>(
     node: &Spanned<K>,
     prefix_shape: PrefixShape<K>,
     is_infix: IsInfix<K>,
@@ -312,86 +311,55 @@ fn walk_pres_expr(
     });
 }
 
-/// As [`walk_pbes_expr`], for a modal (mu-calculus) state formula. Reaches into each node's
-/// non-`StateFrm` fields: a `DataExpr` (`Delay`/`Yaled`'s time, `Id`/`Resolved`'s arguments,
-/// `DataValExpr`/`DataValExprLeftMult`/`DataValExprRightMult`'s constant, a `FixedPoint` variable's
-/// initial values) or a `RegFrm` (a `Modality`'s own formula).
+/// As [`walk_pbes_expr`], for a modal (mu-calculus) state formula.
 fn walk_state_frm(
     formula: &StateFrm,
     text: &str,
     sources: &SourceMap,
     hits: &mut Vec<AmbiguousPrefixConflict>,
 ) {
-    formula.visit::<(), _>(|node| {
-        check_prefix_shape(node, prefix_shape, statefrm_is_infix, text, sources, hits);
-        match &node.node {
-            StateFrmKind::Delay(time) | StateFrmKind::Yaled(time) => {
-                if let Some(time) = time {
-                    find_in_dataexpr(time, text, sources, hits);
-                }
-            }
-            StateFrmKind::Id(_, arguments) | StateFrmKind::Resolved(_, arguments, _) => {
-                for argument in arguments {
-                    find_in_dataexpr(argument, text, sources, hits);
-                }
-            }
-            StateFrmKind::DataValExpr(expr) => find_in_dataexpr(expr, text, sources, hits),
-            StateFrmKind::DataValExprLeftMult(constant, _) => {
-                find_in_dataexpr(constant, text, sources, hits)
-            }
-            StateFrmKind::DataValExprRightMult(_, constant) => {
-                find_in_dataexpr(constant, text, sources, hits)
-            }
-            StateFrmKind::Modality { formula: reg, .. } => walk_reg_frm(reg, text, sources, hits),
-            StateFrmKind::FixedPoint { variable, .. } => {
-                for argument in &variable.arguments {
-                    find_in_dataexpr(&argument.expr, text, sources, hits);
-                }
-            }
-            _ => {}
-        }
-        ControlFlow::Continue(())
-    });
-}
-
-/// A modality's regular formula (`[a*]X`'s `a*`). No `check_prefix_shape` call: `RegFrmKind` has no
-/// prefix operator for `*`/`+`/`.`/`+` to compete with.
-fn walk_reg_frm(
-    formula: &RegFrm,
-    text: &str,
-    sources: &SourceMap,
-    hits: &mut Vec<AmbiguousPrefixConflict>,
-) {
-    match &formula.node {
-        RegFrmKind::Action(action) => walk_act_frm(action, text, sources, hits),
-        RegFrmKind::Iteration(inner) | RegFrmKind::Plus(inner) => {
-            walk_reg_frm(inner, text, sources, hits)
-        }
-        RegFrmKind::Sequence { lhs, rhs } | RegFrmKind::Choice { lhs, rhs } => {
-            walk_reg_frm(lhs, text, sources, hits);
-            walk_reg_frm(rhs, text, sources, hits);
-        }
-    }
-}
-
-/// As [`walk_pbes_expr`], for an action formula (`a(1) && !b`).
-fn walk_act_frm(
-    formula: &ActFrm,
-    text: &str,
-    sources: &SourceMap,
-    hits: &mut Vec<AmbiguousPrefixConflict>,
-) {
-    formula.visit::<(), _>(|node| {
-        check_prefix_shape(node, prefix_shape, is_infix, text, sources, hits);
-        match &node.node {
-            ActFrmKind::MultAct(multi_action) => {
-                for action in &multi_action.actions {
-                    for argument in &action.args {
-                        find_in_dataexpr(argument, text, sources, hits);
+    formula.visit_mixed::<()>(|node| {
+        match node {
+            MixedNode::StateFrm(node) => {
+                check_prefix_shape(node, prefix_shape, statefrm_is_infix, text, sources, hits);
+                match &node.node {
+                    StateFrmKind::Delay(time) | StateFrmKind::Yaled(time) => {
+                        if let Some(time) = time {
+                            find_in_dataexpr(time, text, sources, hits);
+                        }
                     }
+                    StateFrmKind::Id(_, arguments) | StateFrmKind::Resolved(_, arguments, _) => {
+                        for argument in arguments {
+                            find_in_dataexpr(argument, text, sources, hits);
+                        }
+                    }
+                    StateFrmKind::DataValExpr(expr) => find_in_dataexpr(expr, text, sources, hits),
+                    StateFrmKind::DataValExprLeftMult(constant, _)
+                    | StateFrmKind::DataValExprRightMult(_, constant) => {
+                        find_in_dataexpr(constant, text, sources, hits)
+                    }
+                    StateFrmKind::FixedPoint { variable, .. } => {
+                        for argument in &variable.arguments {
+                            find_in_dataexpr(&argument.expr, text, sources, hits);
+                        }
+                    }
+                    _ => {}
                 }
             }
-            ActFrmKind::DataExprVal(expr) => find_in_dataexpr(expr, text, sources, hits),
+            MixedNode::ActFrm(node) => {
+                check_prefix_shape(node, prefix_shape, is_infix, text, sources, hits);
+                match &node.node {
+                    ActFrmKind::MultAct(multi_action) => {
+                        for action in &multi_action.actions {
+                            for argument in &action.args {
+                                find_in_dataexpr(argument, text, sources, hits);
+                            }
+                        }
+                    }
+                    ActFrmKind::DataExprVal(expr) => find_in_dataexpr(expr, text, sources, hits),
+                    _ => {}
+                }
+            }
             _ => {}
         }
         ControlFlow::Continue(())

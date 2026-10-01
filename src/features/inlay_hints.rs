@@ -18,18 +18,16 @@ use lsp_types::InlayHintKind;
 use lsp_types::InlayHintLabel;
 use lsp_types::Position;
 use lsp_types::Range;
-use merc_syntax::ActFrm;
 use merc_syntax::ActFrmKind;
 use merc_syntax::DataExpr;
 use merc_syntax::DataExprKind;
+use merc_syntax::MixedNode;
 use merc_syntax::PbesExpr;
 use merc_syntax::PbesExprKind;
 use merc_syntax::PresExpr;
 use merc_syntax::PresExprKind;
 use merc_syntax::ProcessExpr;
 use merc_syntax::ProcessExprKind;
-use merc_syntax::RegFrm;
-use merc_syntax::RegFrmKind;
 use merc_syntax::SortDecl;
 use merc_syntax::SortExpression;
 use merc_syntax::SortExpressionKind;
@@ -317,88 +315,50 @@ fn walk_pres_expr(expr: &PresExpr, spec: &PresSpecification, ctx: &mut Ctx) {
     });
 }
 
-/// Walks a modal (mu-calculus) state formula's own tree by hand.
+/// Walks a modal (mu-calculus) state formula, following a modality's regular formula (`[a*]X`'s
+/// `a*`) and the action formulas (`a(1) && !b`) inside it via [`Traverse::visit_mixed`].
 fn walk_state_frm(formula: &StateFrm, spec: &ModalSpecification, ctx: &mut Ctx) {
-    match &formula.node {
-        StateFrmKind::True | StateFrmKind::False => {}
-        StateFrmKind::Delay(time) | StateFrmKind::Yaled(time) => {
-            if let Some(time) = time {
-                walk_struct_applications(time, ctx);
-            }
-        }
-        StateFrmKind::Id(_, arguments) | StateFrmKind::Resolved(_, arguments, _) => {
-            let param_names = resolved_state_var_param_names(spec, ctx, &formula.span);
-            emit_call_hints(arguments, param_names.as_deref(), false, ctx);
-        }
-        StateFrmKind::DataValExpr(expr) => walk_struct_applications(expr, ctx),
-        StateFrmKind::DataValExprLeftMult(constant, expr) => {
-            walk_struct_applications(constant, ctx);
-            walk_state_frm(expr, spec, ctx);
-        }
-        StateFrmKind::DataValExprRightMult(expr, constant) => {
-            walk_state_frm(expr, spec, ctx);
-            walk_struct_applications(constant, ctx);
-        }
-        StateFrmKind::Modality {
-            formula: reg, expr, ..
-        } => {
-            walk_reg_frm(reg, ctx);
-            walk_state_frm(expr, spec, ctx);
-        }
-        StateFrmKind::Unary { expr, .. } => walk_state_frm(expr, spec, ctx),
-        StateFrmKind::Binary { lhs, rhs, .. } => {
-            walk_state_frm(lhs, spec, ctx);
-            walk_state_frm(rhs, spec, ctx);
-        }
-        StateFrmKind::Quantifier { body, .. } | StateFrmKind::Bound { body, .. } => {
-            walk_state_frm(body, spec, ctx)
-        }
-        StateFrmKind::FixedPoint { variable, body, .. } => {
-            // Each parameter's own initial value is checked in the *outer* scope.
-            for argument in &variable.arguments {
-                walk_struct_applications(&argument.expr, ctx);
-            }
-
-            walk_state_frm(body, spec, ctx);
-        }
-    }
-}
-
-/// As [`walk_state_frm`], for a modality's regular formula (`[a*]X`'s `a*`).
-fn walk_reg_frm(formula: &RegFrm, ctx: &mut Ctx) {
-    match &formula.node {
-        RegFrmKind::Action(action) => walk_act_frm(action, ctx),
-        RegFrmKind::Iteration(inner) | RegFrmKind::Plus(inner) => walk_reg_frm(inner, ctx),
-        RegFrmKind::Sequence { lhs, rhs } | RegFrmKind::Choice { lhs, rhs } => {
-            walk_reg_frm(lhs, ctx);
-            walk_reg_frm(rhs, ctx);
-        }
-    }
-}
-
-/// As [`walk_reg_frm`], for an action formula (`a(1) && !b`).
-fn walk_act_frm(formula: &ActFrm, ctx: &mut Ctx) {
-    match &formula.node {
-        ActFrmKind::True | ActFrmKind::False => {}
-        ActFrmKind::MultAct(multi_action) => {
-            for action in &multi_action.actions {
-                for argument in &action.args {
-                    walk_struct_applications(argument, ctx);
+    formula.visit_mixed::<()>(|node| {
+        match node {
+            MixedNode::StateFrm(node) => match &node.node {
+                StateFrmKind::Delay(time) | StateFrmKind::Yaled(time) => {
+                    if let Some(time) = time {
+                        walk_struct_applications(time, ctx);
+                    }
                 }
-            }
+                StateFrmKind::Id(_, arguments) | StateFrmKind::Resolved(_, arguments, _) => {
+                    let param_names = resolved_state_var_param_names(spec, ctx, &node.span);
+                    emit_call_hints(arguments, param_names.as_deref(), false, ctx);
+                }
+                StateFrmKind::DataValExpr(expr) => walk_struct_applications(expr, ctx),
+                StateFrmKind::DataValExprLeftMult(constant, _)
+                | StateFrmKind::DataValExprRightMult(_, constant) => {
+                    walk_struct_applications(constant, ctx)
+                }
+                StateFrmKind::FixedPoint { variable, .. } => {
+                    // Each parameter's own initial value is checked in the *outer* scope.
+                    for argument in &variable.arguments {
+                        walk_struct_applications(&argument.expr, ctx);
+                    }
+                }
+                _ => {}
+            },
+            MixedNode::ActFrm(node) => match &node.node {
+                ActFrmKind::MultAct(multi_action) => {
+                    for action in &multi_action.actions {
+                        for argument in &action.args {
+                            walk_struct_applications(argument, ctx);
+                        }
+                    }
+                }
+                ActFrmKind::DataExprVal(expr) => walk_struct_applications(expr, ctx),
+                ActFrmKind::At { operand, .. } => walk_struct_applications(operand, ctx),
+                _ => {}
+            },
+            _ => {}
         }
-        ActFrmKind::DataExprVal(expr) => walk_struct_applications(expr, ctx),
-        ActFrmKind::Negation(inner) => walk_act_frm(inner, ctx),
-        ActFrmKind::Quantifier { body, .. } => walk_act_frm(body, ctx),
-        ActFrmKind::Binary { lhs, rhs, .. } => {
-            walk_act_frm(lhs, ctx);
-            walk_act_frm(rhs, ctx);
-        }
-        ActFrmKind::At { expr, operand } => {
-            walk_act_frm(expr, ctx);
-            walk_struct_applications(operand, ctx);
-        }
-    }
+        ControlFlow::Continue(())
+    });
 }
 
 /// Hints `args`, the positional arguments of an action instance, process instantiation, or PBES

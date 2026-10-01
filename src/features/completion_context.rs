@@ -22,6 +22,7 @@ use merc_syntax::RegFrmKind;
 use merc_syntax::Span;
 use merc_syntax::StateFrm;
 use merc_syntax::StateFrmKind;
+use merc_syntax::TakeRecursiveChildren;
 use merc_syntax::UntypedDataSpecification;
 use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
@@ -233,7 +234,7 @@ fn process_expr_category(expr: &ProcessExpr, offset: usize) -> CompletionCategor
 /// Descends into `child` (calling `recurse`) if `offset` sits within its span, otherwise `None` —
 /// the shared "is this even the right child to descend into" guard every process/PBES/PRES
 /// recursive step needs before recursing.
-fn recurse_or<K>(
+fn recurse_or<K: TakeRecursiveChildren>(
     child: &merc_syntax::Spanned<K>,
     offset: usize,
     recurse: impl Fn(&merc_syntax::Spanned<K>, usize) -> CompletionCategory,
