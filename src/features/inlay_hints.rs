@@ -315,8 +315,8 @@ fn walk_pres_expr(expr: &PresExpr, spec: &PresSpecification, ctx: &mut Ctx) {
     });
 }
 
-/// Walks a modal (mu-calculus) state formula, following a modality's regular formula (`[a*]X`'s
-/// `a*`) and the action formulas (`a(1) && !b`) inside it via [`Traverse::visit_mixed`].
+/// Walks a modal (mu-calculus) state formula, including a modality's regular formula (`[a*]X`'s
+/// `a*`) and the action formulas (`a(1) && !b`) inside it.
 fn walk_state_frm(formula: &StateFrm, spec: &ModalSpecification, ctx: &mut Ctx) {
     formula.visit_mixed::<()>(|node| {
         match node {
@@ -519,7 +519,7 @@ fn resolved_state_var_param_names<'a>(
 }
 
 /// The `StateVarDecl` whose own span is exactly `decl_span`, found by recursing through the
-/// formula tree by hand.
+/// formula tree.
 fn find_state_var_decl<'a>(formula: &'a StateFrm, decl_span: &Span) -> Option<&'a StateVarDecl> {
     match &formula.node {
         StateFrmKind::FixedPoint { variable, body, .. } => {

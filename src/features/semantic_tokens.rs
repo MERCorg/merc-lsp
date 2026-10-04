@@ -7,6 +7,7 @@
 //! can still tell it apart from a user's own `sort` declaration.
 
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::ops::ControlFlow;
 
 use lsp_types::SemanticToken;
@@ -37,6 +38,7 @@ use merc_syntax::UntypedPbes;
 use merc_syntax::UntypedPres;
 use merc_syntax::UntypedProcessSpecification;
 use merc_syntax::UntypedStateFrmSpec;
+use merc_utilities::Step;
 
 use crate::analysis::convert::LineIndex;
 use crate::analysis::convert::is_identifier_byte;
@@ -237,12 +239,9 @@ pub fn pres_semantic_tokens(
 ///
 /// Unlike every other tree this module walks, a state formula's fixpoint (`mu`/`nu`) variables
 /// genuinely nest arbitrarily deep, each introducing its own parameter scope — `mu X(n: Nat = 0) =
-/// nu Y(m: Nat = 0) . ...` has two, one inside the other — so [`walk_state_frm`] is a hand-written
-/// recursive descent rather than a `Traverse::visit` closure (which flattens the whole subtree into
-/// one callback with no way to change `current_params` partway through, the same limitation
-/// `completion_context.rs`'s module docs describe for its own cursor-context walk); the `RegFrm`/
-/// `ActFrm` a modality (`[...]`/`<...>`) carries are walked by [`walk_reg_frm`] with
-/// `Traverse::visit_mixed`, which unlike `Traverse::visit` crosses into the `ActFrm`.
+/// nu Y(m: Nat = 0) . ...` has two, one inside the other — so [`walk_state_frm`] changes
+/// `current_params` partway through the walk. The `RegFrm`/`ActFrm` a modality (`[...]`/`<...>`)
+/// carries are walked by [`walk_reg_frm`].
 pub fn modal_semantic_tokens(
     text: &str,
     line_index: &LineIndex,
@@ -608,8 +607,7 @@ fn walk_data_expr(
 
 /// Walks every identifier in `expr`'s subtree: process instantiations, action instantiations, and
 /// any `sum`/`dist` binder, descending into the data expressions each carries — arguments,
-/// assignments, distributions, and conditions — none of which `Traverse` crosses into on its own,
-/// since they're a different node type ([`DataExpr`], not [`ProcessExpr`]).
+/// assignments, distributions, and conditions.
 ///
 /// `current_params` is the enclosing `proc` declaration's own parameter names.
 fn walk_process_expr(
@@ -692,8 +690,7 @@ fn walk_process_expr(
 /// Walks every identifier in `expr`'s subtree: `PropVarInst`s (propositional-variable references,
 /// always [`TokenKind::Method`] — see [`pbes_semantic_tokens`]'s module note), `val(...)`-wrapped
 /// data expressions, and any `forall`/`exists` binder, descending into the data expressions each
-/// carries — none of which `Traverse` crosses into on its own, same reasoning as
-/// [`walk_process_expr`].
+/// carries.
 ///
 /// `current_params` is the enclosing PBES equation's own parameter names.
 fn walk_pbes_expr(
@@ -769,99 +766,100 @@ fn walk_prop_var_inst(
     }
 }
 
-/// Walks a state formula's own tree by hand rather than via `Traverse::visit` — see
-/// [`modal_semantic_tokens`]'s doc comment for why: a nested `mu`/`nu` genuinely shadows an outer
-/// one's own parameters, so `current_params` has to change partway through the walk, which
-/// `Traverse`'s flat callback cannot do.
-fn walk_state_frm(
-    formula: &StateFrm,
+/// Walks a state formula, tracking parameter scopes so a nested `mu`/`nu` can shadow an outer one's
+/// own parameters: entering a `FixedPoint` pushes its parameter names onto a scope stack that
+/// leaving it pops again, and `current_params` for every other node is whatever is on top.
+fn walk_state_frm<'a>(
+    formula: &'a StateFrm,
     symbols: &SymbolTable,
-    current_params: &HashSet<&str>,
+    current_params: &HashSet<&'a str>,
     builder: &mut Builder,
 ) {
-    match &formula.node {
-        StateFrmKind::True | StateFrmKind::False => {}
-        StateFrmKind::Delay(time) | StateFrmKind::Yaled(time) => {
-            if let Some(time) = time {
-                walk_data_expr(time, symbols, current_params, builder);
+    let mut scopes: Vec<HashSet<&'a str>> = vec![current_params.clone()];
+    let _ = formula.visit_scoped::<(), _, (), Infallible, _, _>(
+        (),
+        &mut scopes,
+        |node, (), scopes| {
+            let current_params = scopes.last().expect("the outermost scope is never popped");
+            match &node.node {
+                StateFrmKind::Delay(time) | StateFrmKind::Yaled(time) => {
+                    if let Some(time) = time {
+                        walk_data_expr(time, symbols, current_params, builder);
+                    }
+                }
+                StateFrmKind::Id(name, arguments) | StateFrmKind::Resolved(name, arguments, _) => {
+                    // A fixpoint-variable reference is this module's one "always Method" concept for a
+                    // state formula, the same way a PBES/PRES `PropVarInst` always is (see
+                    // `pbes_semantic_tokens`'s module note) — but unlike `PropVarInst`, neither `Id` nor
+                    // `Resolved` carries a span narrower than the whole `name`/`name(args)` occurrence
+                    // (see `merc_typecheck::ResolvedName::StateVariable`'s own doc comment), so the name's
+                    // own span is sliced from the front of it the same way `walk_sort_expression` slices
+                    // `SortExpressionKind::Complex`'s own keyword.
+                    let name_span = Span {
+                        start: node.span.start,
+                        end: node.span.start + name.len(),
+                    };
+                    builder.push(&name_span, TokenKind::Method, false);
+                    for argument in arguments {
+                        walk_data_expr(argument, symbols, current_params, builder);
+                    }
+                }
+                StateFrmKind::DataValExpr(expr) => {
+                    walk_data_expr(expr, symbols, current_params, builder)
+                }
+                StateFrmKind::DataValExprLeftMult(constant, _)
+                | StateFrmKind::DataValExprRightMult(_, constant) => {
+                    walk_data_expr(constant, symbols, current_params, builder)
+                }
+                StateFrmKind::Modality { formula: reg, .. } => {
+                    walk_reg_frm(reg, symbols, current_params, builder)
+                }
+                StateFrmKind::Quantifier { variables, .. }
+                | StateFrmKind::Bound { variables, .. } => {
+                    for variable in variables {
+                        builder.push(&variable.identifier.span, TokenKind::Variable, true);
+                        walk_sort_expression(&variable.sort, builder);
+                    }
+                }
+                StateFrmKind::FixedPoint { variable, .. } => {
+                    // As `Id`/`Resolved` above: `StateVarDecl` carries no span of its own narrower than
+                    // the whole `X(n: Nat = 0)` declaration, so the name's own span is sliced the same way.
+                    let name_span = Span {
+                        start: variable.span.start,
+                        end: variable.span.start + variable.identifier.len(),
+                    };
+                    builder.push(&name_span, TokenKind::Method, true);
+                    for argument in &variable.arguments {
+                        builder.push(&argument.identifier.span, TokenKind::Parameter, true);
+                        walk_sort_expression(&argument.sort, builder);
+                        // The initial value is checked in the *outer* scope.
+                        walk_data_expr(&argument.expr, symbols, current_params, builder);
+                    }
+                    scopes.push(
+                        variable
+                            .arguments
+                            .iter()
+                            .map(|argument| argument.identifier.as_str())
+                            .collect(),
+                    );
+                }
+                StateFrmKind::True
+                | StateFrmKind::False
+                | StateFrmKind::Unary { .. }
+                | StateFrmKind::Binary { .. } => {}
             }
-        }
-        StateFrmKind::Id(name, arguments) | StateFrmKind::Resolved(name, arguments, _) => {
-            // A fixpoint-variable reference is this module's one "always Method" concept for a
-            // state formula, the same way a PBES/PRES `PropVarInst` always is (see
-            // `pbes_semantic_tokens`'s module note) — but unlike `PropVarInst`, neither `Id` nor
-            // `Resolved` carries a span narrower than the whole `name`/`name(args)` occurrence
-            // (see `merc_typecheck::ResolvedName::StateVariable`'s own doc comment), so the name's
-            // own span is sliced from the front of it the same way `walk_sort_expression` slices
-            // `SortExpressionKind::Complex`'s own keyword.
-            let name_span = Span {
-                start: formula.span.start,
-                end: formula.span.start + name.len(),
-            };
-            builder.push(&name_span, TokenKind::Method, false);
-            for argument in arguments {
-                walk_data_expr(argument, symbols, current_params, builder);
+            Ok(ControlFlow::Continue(Step::Into(())))
+        },
+        |node, (), scopes| {
+            if matches!(node.node, StateFrmKind::FixedPoint { .. }) {
+                scopes.pop();
             }
-        }
-        StateFrmKind::DataValExpr(expr) => walk_data_expr(expr, symbols, current_params, builder),
-        StateFrmKind::DataValExprLeftMult(constant, expr) => {
-            walk_data_expr(constant, symbols, current_params, builder);
-            walk_state_frm(expr, symbols, current_params, builder);
-        }
-        StateFrmKind::DataValExprRightMult(expr, constant) => {
-            walk_state_frm(expr, symbols, current_params, builder);
-            walk_data_expr(constant, symbols, current_params, builder);
-        }
-        StateFrmKind::Modality {
-            formula: reg, expr, ..
-        } => {
-            walk_reg_frm(reg, symbols, current_params, builder);
-            walk_state_frm(expr, symbols, current_params, builder);
-        }
-        StateFrmKind::Unary { expr, .. } => walk_state_frm(expr, symbols, current_params, builder),
-        StateFrmKind::Binary { lhs, rhs, .. } => {
-            walk_state_frm(lhs, symbols, current_params, builder);
-            walk_state_frm(rhs, symbols, current_params, builder);
-        }
-        StateFrmKind::Quantifier {
-            variables, body, ..
-        }
-        | StateFrmKind::Bound {
-            variables, body, ..
-        } => {
-            for variable in variables {
-                builder.push(&variable.identifier.span, TokenKind::Variable, true);
-                walk_sort_expression(&variable.sort, builder);
-            }
-            walk_state_frm(body, symbols, current_params, builder);
-        }
-        StateFrmKind::FixedPoint { variable, body, .. } => {
-            // As `Id`/`Resolved` above: `StateVarDecl` carries no span of its own narrower than
-            // the whole `X(n: Nat = 0)` declaration, so the name's own span is sliced the same way.
-            let name_span = Span {
-                start: variable.span.start,
-                end: variable.span.start + variable.identifier.len(),
-            };
-            builder.push(&name_span, TokenKind::Method, true);
-            let params: HashSet<&str> = variable
-                .arguments
-                .iter()
-                .map(|argument| argument.identifier.as_str())
-                .collect();
-            for argument in &variable.arguments {
-                builder.push(&argument.identifier.span, TokenKind::Parameter, true);
-                walk_sort_expression(&argument.sort, builder);
-                // The initial value is checked in the *outer* scope.
-                walk_data_expr(&argument.expr, symbols, current_params, builder);
-            }
-            walk_state_frm(body, symbols, &params, builder);
-        }
-    }
+        },
+    );
 }
 
 /// Walks a modality's regular formula (`[a*]X`'s `a*`) and the action formulas (`a(1) && !b`) it
-/// carries via [`Traverse::visit_mixed`], which crosses from `RegFrm` into `ActFrm` where
-/// `Traverse::visit` alone stops at `RegFrmKind::Action`.
+/// carries.
 fn walk_reg_frm(
     formula: &RegFrm,
     symbols: &SymbolTable,
@@ -1719,8 +1717,8 @@ mod tests {
     #[tokio::test]
     async fn pres_constant_multiply_operand_is_walked_as_a_data_expression() {
         // `PresExprKind::RightConstantMultiply`/`LeftConstantMultiply`'s own `constant` field is a
-        // `DataExpr`, not a nested `PresExpr` — `Traverse` doesn't reach it on its own, so
-        // `walk_pres_expr` has to walk it explicitly (see its doc comment).
+        // `DataExpr`, not a nested `PresExpr`, so `walk_pres_expr` has to walk it explicitly
+        // (see its doc comment).
         let text = "pres mu X(n: Nat) = val(n) * X(n); init X(0);";
         let tokens = pres_tokens_for(text).await;
         let positions = absolute(&tokens);

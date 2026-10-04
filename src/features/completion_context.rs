@@ -166,7 +166,7 @@ fn data_specification_category(
 }
 
 /// The category expected at `offset` within `expr`, a process-algebra term (a `proc` body or
-/// `init`) — descends by hand into whichever child's span contains `offset`, falling back to
+/// `init`) — descends into whichever child's span contains `offset`, falling back to
 /// [`CompletionCategory::ActionOrProcess`] once no child does (an operator/keyword position, or a
 /// leaf like `delta`/`tau`).
 fn process_expr_category(expr: &ProcessExpr, offset: usize) -> CompletionCategory {
@@ -433,8 +433,7 @@ pub fn modal_category(spec: &UntypedStateFrmSpec, offset: usize) -> CompletionCa
 }
 
 /// The category expected at `offset` within `formula`, a modal state formula —
-/// descends by hand, falling back to [`CompletionCategory::StateVariable`] once
-/// no child accounts for `offset`.
+/// falling back to [`CompletionCategory::StateVariable`] once no child accounts for `offset`.
 fn state_frm_category(formula: &StateFrm, offset: usize) -> CompletionCategory {
     match &formula.node {
         StateFrmKind::True | StateFrmKind::False => CompletionCategory::StateVariable,

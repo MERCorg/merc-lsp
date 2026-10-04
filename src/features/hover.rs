@@ -116,7 +116,7 @@ fn find_prop_var_declaration<'a>(
 /// The `StateVarDecl` (a modal formula's own `mu`/`nu X(...)` declaration) whose own span is
 /// exactly `declaration_span` — the span a [`ResolvedName::StateVariable`] occurrence's own
 /// `declaration` carries (the whole `StateVarDecl`, not just its name — see that variant's own doc
-/// comment upstream). Recurses through the formula tree by hand: unlike a PBES/PRES's `equations`,
+/// comment upstream). Recurses through the formula tree: unlike a PBES/PRES's `equations`,
 /// a modal formula's fixpoint variables aren't listed anywhere flat (mirrors `symbols.rs`'s own
 /// `collect_fixed_points` walk). `None` for anything but a modal formula.
 fn find_state_var_declaration<'a>(
