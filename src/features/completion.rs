@@ -17,7 +17,10 @@ use lsp_types::Range;
 use lsp_types::TextEdit;
 use merc_syntax::ACT_FRM_KEYWORDS;
 use merc_syntax::DATA_EXPR_KEYWORDS;
+use merc_syntax::KEYWORDS;
 use merc_syntax::MODAL_KEYWORDS;
+use merc_syntax::PBES_EXPR_KEYWORDS;
+use merc_syntax::PRES_EXPR_KEYWORDS;
 use merc_syntax::PROC_EXPR_KEYWORDS;
 use merc_syntax::STATE_FRM_KEYWORDS;
 use merc_syntax::StateFrm;
@@ -94,20 +97,26 @@ pub fn import_path_completions(
     Some(items)
 }
 
-/// The keywords relevant to `category` — a subset of [`crate::features::semantic_tokens::KEYWORDS`], except
+/// The keywords relevant to `category` — a subset of [`KEYWORDS`] and [`MODAL_KEYWORDS`], except
 /// for [`CompletionCategory::Unscoped`], which offers all of them (matching this module's
 /// behavior before cursor context existed).
-fn keywords_for(category: CompletionCategory) -> &'static [&'static str] {
+///
+/// `formula_keywords` is what can lead a propositional-variable formula in the specification being
+/// completed (a PBES's and a PRES's differ), offered for [`CompletionCategory::PropositionalVariable`].
+fn keywords_for(
+    category: CompletionCategory,
+    formula_keywords: &'static [&'static str],
+) -> Vec<&'static str> {
     match category {
         // No keywords beyond the built-in sort names themselves, which are offered separately
         // (see `SYSTEM_SORTS`).
-        CompletionCategory::Sort => &[],
-        CompletionCategory::Data => DATA_EXPR_KEYWORDS,
-        CompletionCategory::ActionOrProcess => PROC_EXPR_KEYWORDS,
-        CompletionCategory::PropositionalVariable => MODAL_KEYWORDS,
-        CompletionCategory::Action => ACT_FRM_KEYWORDS,
-        CompletionCategory::StateVariable => STATE_FRM_KEYWORDS,
-        CompletionCategory::Unscoped => crate::features::semantic_tokens::KEYWORDS,
+        CompletionCategory::Sort => Vec::new(),
+        CompletionCategory::Data => DATA_EXPR_KEYWORDS.to_vec(),
+        CompletionCategory::ActionOrProcess => PROC_EXPR_KEYWORDS.to_vec(),
+        CompletionCategory::PropositionalVariable => formula_keywords.to_vec(),
+        CompletionCategory::Action => ACT_FRM_KEYWORDS.to_vec(),
+        CompletionCategory::StateVariable => STATE_FRM_KEYWORDS.to_vec(),
+        CompletionCategory::Unscoped => [KEYWORDS, MODAL_KEYWORDS].concat(),
     }
 }
 
@@ -130,7 +139,7 @@ pub fn completions(
     spec: &UntypedProcessSpecification,
     category: CompletionCategory,
 ) -> Vec<CompletionItem> {
-    let mut items = base_items(category);
+    let mut items = base_items(category, &[]);
 
     if matches!(
         category,
@@ -179,7 +188,7 @@ pub fn completions(
 /// same [`CompletionItemKind::METHOD`] treatment, offered for
 /// [`CompletionCategory::PropositionalVariable`] rather than [`CompletionCategory::ActionOrProcess`].
 pub fn pbes_completions(spec: &UntypedPbes, category: CompletionCategory) -> Vec<CompletionItem> {
-    let mut items = base_items(category);
+    let mut items = base_items(category, PBES_EXPR_KEYWORDS);
 
     if matches!(
         category,
@@ -201,7 +210,7 @@ pub fn pbes_completions(spec: &UntypedPbes, category: CompletionCategory) -> Vec
             ));
         }
     }
-    
+
     if matches!(
         category,
         CompletionCategory::PropositionalVariable | CompletionCategory::Unscoped
@@ -223,7 +232,7 @@ pub fn pbes_completions(spec: &UntypedPbes, category: CompletionCategory) -> Vec
 /// `formula` type differs, and completion never walks a formula at all), so this is the same
 /// function with a different parameter type, not merely similar code.
 pub fn pres_completions(spec: &UntypedPres, category: CompletionCategory) -> Vec<CompletionItem> {
-    let mut items = base_items(category);
+    let mut items = base_items(category, PRES_EXPR_KEYWORDS);
 
     if matches!(
         category,
@@ -271,7 +280,7 @@ pub fn modal_completions(
     spec: &UntypedStateFrmSpec,
     category: CompletionCategory,
 ) -> Vec<CompletionItem> {
-    let mut items = base_items(category);
+    let mut items = base_items(category, &[]);
 
     if matches!(
         category,
@@ -393,10 +402,13 @@ fn push_data_value_items(data: &UntypedDataSpecification, items: &mut Vec<Comple
 
 /// The keyword and built-in-sort items relevant to `category` — see [`keywords_for`]/
 /// [`system_sorts_for`].
-fn base_items(category: CompletionCategory) -> Vec<CompletionItem> {
-    let keywords = keywords_for(category)
-        .iter()
-        .map(|&keyword| item(keyword, CompletionItemKind::KEYWORD, None));
+fn base_items(
+    category: CompletionCategory,
+    formula_keywords: &'static [&'static str],
+) -> Vec<CompletionItem> {
+    let keywords = keywords_for(category, formula_keywords)
+        .into_iter()
+        .map(|keyword| item(keyword, CompletionItemKind::KEYWORD, None));
     let system_sorts = system_sorts_for(category).iter().map(|&sort| {
         item(
             sort,

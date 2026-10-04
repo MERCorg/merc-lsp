@@ -17,6 +17,8 @@ use lsp_types::SemanticTokensLegend;
 use merc_syntax::ActFrmKind;
 use merc_syntax::DataExpr;
 use merc_syntax::DataExprKind;
+use merc_syntax::KEYWORDS;
+use merc_syntax::MODAL_KEYWORDS;
 use merc_syntax::MixedNode;
 use merc_syntax::MultiAction;
 use merc_syntax::PbesExpr;
@@ -909,18 +911,7 @@ fn walk_multi_action(
     }
 }
 
-/// Every word-like mCRL2 keyword relevant to a process/data specification, for [`tag_keywords`]
-/// (and, `pub(crate)`, for [`crate::features::completion`]'s keyword completion items). Built-in sort names
-/// (`Bool`, `List`, …) are deliberately not here: [`walk_sort_expression`] already tags those.
-pub(crate) const KEYWORDS: &[&str] = &[
-    "sort", "cons", "map", "glob", "act", "proc", "init", "var", "eqn", "struct", "whr", "end",
-    "forall", "exists", "lambda", "sum", "dist", "val", "true", "false", "delta", "tau", "hide",
-    "block", "allow", "comm", "rename", "pbes", "pres", "mu", "nu",
-    // Modal (mu-calculus) formula-only keywords.
-    "form", "delay", "yaled", "inf", "sup",
-];
-
-/// Tags every occurrence of a reserved mCRL2 keyword (see [`KEYWORDS`]) as [`TokenKind::Keyword`].
+/// Tags every occurrence of a reserved mCRL2 keyword (see [`merc_syntax::KEYWORDS`] and [`merc_syntax::MODAL_KEYWORDS`]) as [`TokenKind::Keyword`].
 fn tag_keywords(text: &str, builder: &mut Builder) {
     let bytes = text.as_bytes();
     let mut in_comment = false;
@@ -947,7 +938,7 @@ fn tag_keywords(text: &str, builder: &mut Builder) {
             i += 1;
         }
         let word = &text[word_start..i];
-        if KEYWORDS.contains(&word) {
+        if KEYWORDS.contains(&word) || MODAL_KEYWORDS.contains(&word) {
             builder.push(
                 &Span {
                     start: word_start,
