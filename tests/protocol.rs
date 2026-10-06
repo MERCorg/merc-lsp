@@ -93,6 +93,8 @@ async fn start() -> (
     InitializeResult,
     UnboundedReceiver<PublishDiagnosticsParams>,
 ) {
+    let _ = env_logger::try_init();
+
     let (client_end, server_end) = tokio::io::duplex(1 << 16);
     let (client_read, client_write) = tokio::io::split(client_end);
     let (server_read, server_write) = tokio::io::split(server_end);
