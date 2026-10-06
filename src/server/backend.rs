@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_lsp::ClientSocket;
 use async_lsp::router::Router;
@@ -594,7 +595,16 @@ async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh
     // single-file parse for those.
     let kind = SpecKind::from_uri(&uri);
     let path = parse::path_of(&uri);
+    log::info!("analyzing {uri} (version {version}, {kind:?})");
+    let analysis_start = Instant::now();
     let (outcome, sources) = parse::parse(kind, text.clone(), path).await;
+    let parse_status = match &outcome {
+        ParseOutcome::Ok(_) => "ok",
+        ParseOutcome::ParseError(_) => "parse error",
+        ParseOutcome::Internal(_) => "internal error",
+    };
+    let parse_elapsed = analysis_start.elapsed();
+    log::info!("parsed {uri} in {parse_elapsed:?} ({parse_status})");
 
     // Only meaningful once parsing succeeded.
     let (checked, sources) = match &outcome {
@@ -622,6 +632,13 @@ async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh
         ParseOutcome::ParseError(_) | ParseOutcome::Internal(_) => (None, sources),
     };
 
+    if checked.is_some() {
+        log::info!(
+            "typechecked {uri} in {:?}",
+            analysis_start.elapsed().saturating_sub(parse_elapsed)
+        );
+    }
+
     // Registers this analysis's virtual (Appendix-B) content.
     #[cfg(feature = "lsp-extensions")]
     virtual_document::register(&virtual_documents, &sources);
@@ -633,6 +650,12 @@ async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh
     for (target_uri, diagnostic) in document.diagnostics(&uri) {
         diags_by_uri.entry(target_uri).or_default().push(diagnostic);
     }
+
+    log::info!(
+        "analysis of {uri} finished in {:?} ({} diagnostics)",
+        analysis_start.elapsed(),
+        diags_by_uri.values().map(Vec::len).sum::<usize>()
+    );
 
     // Always publish (even if empty) against `uri` itself.
     diags_by_uri.entry(uri.clone()).or_default();
