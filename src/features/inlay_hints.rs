@@ -11,6 +11,7 @@
 //! - A `: Sort` hint *after* an argument, whenever no name is available. Only
 //!   for top-level call arguments. Doesn't appear for infix operators.
 
+use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use lsp_types::InlayHint;
@@ -42,6 +43,7 @@ use merc_typecheck::PbesSpecification;
 use merc_typecheck::PresSpecification;
 use merc_typecheck::ProcessSpecification;
 use merc_typecheck::ResolvedName;
+use merc_typecheck::TypedNode;
 use merc_typecheck::TypingInfo;
 
 use crate::analysis::convert;
@@ -64,13 +66,49 @@ struct Ctx<'a> {
 
     sort_declarations: &'a [SortDecl],
 
-    typing_info: &'a TypingInfo,
+    /// Every typed node keyed by its exact span, in `typing_info` order. Looking nodes up through
+    /// this instead of scanning `typing_info.nodes()` keeps a request linear in the document
+    /// rather than quadratic (calls × nodes), which matters for large specifications.
+    nodes_by_span: HashMap<(usize, usize), Vec<&'a TypedNode>>,
 
     /// The document's whole-project [`SourceMap`], used only to keep [`push_hint`] from placing a
     /// hint against a span that belongs to an `%import`ed file.
     sources: &'a SourceMap,
 
     hints: Vec<InlayHint>,
+}
+
+impl<'a> Ctx<'a> {
+    fn new(
+        text: &'a str,
+        line_index: &'a LineIndex,
+        sort_declarations: &'a [SortDecl],
+        typing_info: &'a TypingInfo,
+        sources: &'a SourceMap,
+    ) -> Self {
+        let mut nodes_by_span: HashMap<(usize, usize), Vec<&TypedNode>> = HashMap::new();
+        for node in typing_info.nodes() {
+            nodes_by_span
+                .entry((node.span.start, node.span.end))
+                .or_default()
+                .push(node);
+        }
+        Ctx {
+            text,
+            line_index,
+            sort_declarations,
+            nodes_by_span,
+            sources,
+            hints: Vec::new(),
+        }
+    }
+
+    /// The nodes whose span is exactly `span`.
+    fn nodes_at(&self, span: &Span) -> &[&'a TypedNode] {
+        self.nodes_by_span
+            .get(&(span.start, span.end))
+            .map_or(&[], Vec::as_slice)
+    }
 }
 
 /// Builds every inlay hint for `spec` that falls within `range`. See [`Ctx`] for the other
@@ -84,14 +122,7 @@ pub fn inlay_hints(
     sources: &SourceMap,
     range: Range,
 ) -> Vec<InlayHint> {
-    let mut ctx = Ctx {
-        text,
-        line_index,
-        sort_declarations,
-        typing_info,
-        sources,
-        hints: Vec::new(),
-    };
+    let mut ctx = Ctx::new(text, line_index, sort_declarations, typing_info, sources);
 
     for decl in spec.process_declarations() {
         walk_process_expr(&decl.body, spec, &mut ctx);
@@ -126,14 +157,7 @@ pub fn pbes_inlay_hints(
     sources: &SourceMap,
     range: Range,
 ) -> Vec<InlayHint> {
-    let mut ctx = Ctx {
-        text,
-        line_index,
-        sort_declarations,
-        typing_info,
-        sources,
-        hints: Vec::new(),
-    };
+    let mut ctx = Ctx::new(text, line_index, sort_declarations, typing_info, sources);
 
     for eqn in spec.equations() {
         walk_pbes_expr(&eqn.formula, spec, &mut ctx);
@@ -176,14 +200,7 @@ pub fn pres_inlay_hints(
     sources: &SourceMap,
     range: Range,
 ) -> Vec<InlayHint> {
-    let mut ctx = Ctx {
-        text,
-        line_index,
-        sort_declarations,
-        typing_info,
-        sources,
-        hints: Vec::new(),
-    };
+    let mut ctx = Ctx::new(text, line_index, sort_declarations, typing_info, sources);
 
     for eqn in spec.equations() {
         walk_pres_expr(&eqn.formula, spec, &mut ctx);
@@ -224,14 +241,7 @@ pub fn modal_inlay_hints(
     sources: &SourceMap,
     range: Range,
 ) -> Vec<InlayHint> {
-    let mut ctx = Ctx {
-        text,
-        line_index,
-        sort_declarations,
-        typing_info,
-        sources,
-        hints: Vec::new(),
-    };
+    let mut ctx = Ctx::new(text, line_index, sort_declarations, typing_info, sources);
 
     walk_state_frm(spec.formula(), spec, &mut ctx);
 
@@ -374,12 +384,7 @@ fn emit_call_hints(
         let field_name = param_names.and_then(|names| names.get(i).copied());
 
         if field_name.is_some() || allow_sort_suffix {
-            push_hint(
-                argument,
-                field_name,
-                sort_of(ctx.typing_info, &argument.span),
-                ctx,
-            );
+            push_hint(argument, field_name, sort_of(ctx, &argument.span), ctx);
         }
 
         walk_struct_applications(argument, ctx);
@@ -416,7 +421,7 @@ fn walk_struct_applications(expr: &DataExpr, ctx: &mut Ctx) {
                 push_hint(
                     argument,
                     Some(field_name),
-                    sort_of(ctx.typing_info, &argument.span),
+                    sort_of(ctx, &argument.span),
                     ctx,
                 );
             }
@@ -432,11 +437,8 @@ fn resolved_process_param_names<'a>(
     ctx: &Ctx,
     callee_span: &Span,
 ) -> Option<Vec<&'a str>> {
-    let decl_span = ctx.typing_info.nodes().iter().find_map(|node| {
-        if node.span.start == callee_span.start
-            && node.span.end == callee_span.end
-            && let Some(ResolvedName::Process { declaration, .. }) = &node.name
-        {
+    let decl_span = ctx.nodes_at(callee_span).iter().find_map(|node| {
+        if let Some(ResolvedName::Process { declaration, .. }) = &node.name {
             declaration.clone()
         } else {
             None
@@ -500,11 +502,8 @@ fn resolved_state_var_param_names<'a>(
     ctx: &Ctx,
     occurrence_span: &Span,
 ) -> Option<Vec<&'a str>> {
-    let decl_span = ctx.typing_info.nodes().iter().find_map(|node| {
-        if node.span.start == occurrence_span.start
-            && node.span.end == occurrence_span.end
-            && let Some(ResolvedName::StateVariable { declaration, .. }) = &node.name
-        {
+    let decl_span = ctx.nodes_at(occurrence_span).iter().find_map(|node| {
+        if let Some(ResolvedName::StateVariable { declaration, .. }) = &node.name {
             declaration.clone()
         } else {
             None
@@ -577,11 +576,9 @@ fn struct_field_names<'a>(
 }
 
 /// The sort [`TypingInfo`] recorded for the node whose span is exactly `span`.
-fn sort_of<'a>(typing_info: &'a TypingInfo, span: &Span) -> Option<&'a SortExpression> {
-    typing_info
-        .nodes()
-        .iter()
-        .find(|node| node.span.start == span.start && node.span.end == span.end)
+fn sort_of<'a>(ctx: &Ctx<'a>, span: &Span) -> Option<&'a SortExpression> {
+    ctx.nodes_at(span)
+        .first()
         .and_then(|node| node.sort.as_ref())
 }
 
