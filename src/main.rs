@@ -1,5 +1,8 @@
 #[tokio::main]
 async fn main() {
-    merc_lsp::init_logging();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .init();
+    
     merc_lsp::run_stdio().await;
 }

@@ -119,7 +119,7 @@ impl Document {
     /// analyzed.
     pub fn is_stale(&self, own_path: Option<&Path>) -> bool {
         self.import_mtimes.iter().any(|(path, &snapshot)| {
-            /// Skip checking the document's own path; it is handled separately.
+            // Skip checking the document's own path; it is handled separately.
             if own_path.is_some_and(|own| Path::new(path) == own) {
                 return false;
             }

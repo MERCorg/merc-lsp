@@ -132,66 +132,146 @@
 			{
 				"language": "merc",
 				"scopes": {
-					"type": ["entity.name.type"],
-					"type.defaultLibrary": ["support.type"],
-					"variable": ["variable.other"],
-					"method": ["entity.name.function"],
-					"event": ["entity.name.tag"],
-					"enumMember": ["variable.other.enummember"],
-					"parameter": ["variable.parameter"],
-					"keyword": ["keyword.control"]
+					"type": [
+						"entity.name.type"
+					],
+					"type.defaultLibrary": [
+						"support.type"
+					],
+					"variable": [
+						"variable.other"
+					],
+					"method": [
+						"entity.name.function"
+					],
+					"event": [
+						"entity.name.tag"
+					],
+					"enumMember": [
+						"variable.other.enummember"
+					],
+					"parameter": [
+						"variable.parameter"
+					],
+					"keyword": [
+						"keyword.control"
+					]
 				}
 			},
 			{
 				"language": "merc-pbes",
 				"scopes": {
-					"type": ["entity.name.type"],
-					"type.defaultLibrary": ["support.type"],
-					"variable": ["variable.other"],
-					"method": ["entity.name.function"],
-					"event": ["entity.name.tag"],
-					"enumMember": ["variable.other.enummember"],
-					"parameter": ["variable.parameter"],
-					"keyword": ["keyword.control"]
+					"type": [
+						"entity.name.type"
+					],
+					"type.defaultLibrary": [
+						"support.type"
+					],
+					"variable": [
+						"variable.other"
+					],
+					"method": [
+						"entity.name.function"
+					],
+					"event": [
+						"entity.name.tag"
+					],
+					"enumMember": [
+						"variable.other.enummember"
+					],
+					"parameter": [
+						"variable.parameter"
+					],
+					"keyword": [
+						"keyword.control"
+					]
 				}
 			},
 			{
 				"language": "merc-pres",
 				"scopes": {
-					"type": ["entity.name.type"],
-					"type.defaultLibrary": ["support.type"],
-					"variable": ["variable.other"],
-					"method": ["entity.name.function"],
-					"event": ["entity.name.tag"],
-					"enumMember": ["variable.other.enummember"],
-					"parameter": ["variable.parameter"],
-					"keyword": ["keyword.control"]
+					"type": [
+						"entity.name.type"
+					],
+					"type.defaultLibrary": [
+						"support.type"
+					],
+					"variable": [
+						"variable.other"
+					],
+					"method": [
+						"entity.name.function"
+					],
+					"event": [
+						"entity.name.tag"
+					],
+					"enumMember": [
+						"variable.other.enummember"
+					],
+					"parameter": [
+						"variable.parameter"
+					],
+					"keyword": [
+						"keyword.control"
+					]
 				}
 			},
 			{
 				"language": "merc-mcf",
 				"scopes": {
-					"type": ["entity.name.type"],
-					"type.defaultLibrary": ["support.type"],
-					"variable": ["variable.other"],
-					"method": ["entity.name.function"],
-					"event": ["entity.name.tag"],
-					"enumMember": ["variable.other.enummember"],
-					"parameter": ["variable.parameter"],
-					"keyword": ["keyword.control"]
+					"type": [
+						"entity.name.type"
+					],
+					"type.defaultLibrary": [
+						"support.type"
+					],
+					"variable": [
+						"variable.other"
+					],
+					"method": [
+						"entity.name.function"
+					],
+					"event": [
+						"entity.name.tag"
+					],
+					"enumMember": [
+						"variable.other.enummember"
+					],
+					"parameter": [
+						"variable.parameter"
+					],
+					"keyword": [
+						"keyword.control"
+					]
 				}
 			},
 			{
 				"language": "merc-rmcf",
 				"scopes": {
-					"type": ["entity.name.type"],
-					"type.defaultLibrary": ["support.type"],
-					"variable": ["variable.other"],
-					"method": ["entity.name.function"],
-					"event": ["entity.name.tag"],
-					"enumMember": ["variable.other.enummember"],
-					"parameter": ["variable.parameter"],
-					"keyword": ["keyword.control"]
+					"type": [
+						"entity.name.type"
+					],
+					"type.defaultLibrary": [
+						"support.type"
+					],
+					"variable": [
+						"variable.other"
+					],
+					"method": [
+						"entity.name.function"
+					],
+					"event": [
+						"entity.name.tag"
+					],
+					"enumMember": [
+						"variable.other.enummember"
+					],
+					"parameter": [
+						"variable.parameter"
+					],
+					"keyword": [
+						"keyword.control"
+					]
 				}
 			}
 		],
@@ -218,19 +298,29 @@
 		},
 		"configurationDefaults": {
 			"[merc]": {
-				"editor.quickSuggestions": { "strings": true }
+				"editor.quickSuggestions": {
+					"strings": true
+				}
 			},
 			"[merc-pbes]": {
-				"editor.quickSuggestions": { "strings": true }
+				"editor.quickSuggestions": {
+					"strings": true
+				}
 			},
 			"[merc-pres]": {
-				"editor.quickSuggestions": { "strings": true }
+				"editor.quickSuggestions": {
+					"strings": true
+				}
 			},
 			"[merc-mcf]": {
-				"editor.quickSuggestions": { "strings": true }
+				"editor.quickSuggestions": {
+					"strings": true
+				}
 			},
 			"[merc-rmcf]": {
-				"editor.quickSuggestions": { "strings": true }
+				"editor.quickSuggestions": {
+					"strings": true
+				}
 			}
 		}
 	},
@@ -247,7 +337,7 @@
 		"@types/node": "^26.3",
 		"@types/vscode": "^1.134.0",
 		"@vscode/test-electron": "^3.1",
-		"@vscode/vsce": "^3.2",
+		"@vscode/vsce": "^4.0.0",
 		"typescript": "^5.7"
 	}
 }
