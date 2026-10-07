@@ -139,7 +139,7 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
                 .client
                 .notify::<notification::LogMessage>(LogMessageParams {
                     typ: MessageType::INFO,
-                    message: "merc-lsp initialized".to_string(),
+                    message: format!("merc-lsp initialized (version {})", merc_tools::Version),
                 })
             {
                 log::warn!("failed to send initialized log message: {error}");
