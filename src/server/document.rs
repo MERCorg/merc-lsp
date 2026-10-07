@@ -2,6 +2,8 @@
 //! [`LineIndex`] built from it.
 
 use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use dashmap::DashMap;
@@ -115,8 +117,13 @@ impl Document {
     /// Whether any file this document's own analysis pulled in now has a
     /// different on-disk modification time than it did when this snapshot was
     /// analyzed.
-    pub fn is_stale(&self) -> bool {
+    pub fn is_stale(&self, own_path: Option<&Path>) -> bool {
         self.import_mtimes.iter().any(|(path, &snapshot)| {
+            /// Skip checking the document's own path; it is handled separately.
+            if own_path.is_some_and(|own| Path::new(path) == own) {
+                return false;
+            }
+
             let current = std::fs::metadata(path)
                 .and_then(|metadata| metadata.modified())
                 .ok();
@@ -128,8 +135,8 @@ impl Document {
     /// resolved (and so isn't in [`Self::import_mtimes`]) at this document's last analysis.
     pub fn has_newly_available_import(
         &self,
-        own_path: Option<&std::path::Path>,
-        changed_paths: &[std::path::PathBuf],
+        own_path: Option<&Path>,
+        changed_paths: &[PathBuf],
     ) -> bool {
         let Some(own_path) = own_path else {
             return false;
@@ -141,7 +148,7 @@ impl Document {
 
         let dir = own_path
             .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
+            .unwrap_or_else(|| Path::new("."));
         merc_syntax::scan_imports(&self.text)
             .into_iter()
             .any(|directive| {
@@ -849,7 +856,7 @@ mod tests {
             crate::analysis::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let document = Document::new(text, 0, outcome, None, sources);
 
-        assert!(!document.is_stale());
+        assert!(!document.is_stale(None));
     }
 
     #[tokio::test]
@@ -868,7 +875,7 @@ mod tests {
         let (outcome, sources) =
             crate::analysis::parse::parse(SpecKind::Process, text.clone(), Some(main_path)).await;
         let document = Document::new(text, 0, outcome, None, sources);
-        assert!(!document.is_stale());
+        assert!(!document.is_stale(None));
 
         // Rewritten with a modification time set explicitly (rather than relying on the wall
         // clock having moved on since `Document::new` took its snapshot) so this doesn't flake on
@@ -880,6 +887,6 @@ mod tests {
             .set_modified(future)
             .unwrap();
 
-        assert!(document.is_stale());
+        assert!(document.is_stale(None));
     }
 }
