@@ -32,6 +32,7 @@ use lsp_types::notification;
 use lsp_types::request;
 use merc_typecheck::ModalSpecification;
 use merc_typecheck::ProcessSpecification;
+use tokio::task::AbortHandle;
 
 use crate::analysis::convert;
 use crate::analysis::convert::LineIndex;
@@ -80,6 +81,31 @@ pub struct Backend {
     #[cfg(feature = "lsp-extensions")]
     virtual_documents: Arc<VirtualDocumentStore>,
     foreign_diagnostics: Arc<ForeignDiagnostics>,
+    /// The in-flight analysis task of each document, so a newer analysis can cancel it.
+    running_analyses: Arc<DashMap<Url, AbortHandle>>,
+}
+
+impl Backend {
+    /// Spawns [`analyze`] for `uri`, first cancelling any analysis of the same document that is
+    /// still running: its result would be superseded (or discarded as stale) anyway, and
+    /// type checking a large specification takes seconds.
+    fn spawn_analysis(&self, uri: Url, text: String, version: i32, refresh_views: bool) {
+        let handle = tokio::spawn(analyze(
+            self.clone(),
+            uri.clone(),
+            text,
+            version,
+            refresh_views,
+        ));
+
+        if let Some(previous) = self
+            .running_analyses
+            .insert(uri.clone(), handle.abort_handle())
+        {
+            log::debug!("cancelling the previous analysis of {uri}");
+            previous.abort();
+        }
+    }
 }
 
 /// Builds the request/notification router for a single connection to `client`.
@@ -90,6 +116,7 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         #[cfg(feature = "lsp-extensions")]
         virtual_documents: Arc::new(VirtualDocumentStore::default()),
         foreign_diagnostics: Arc::new(ForeignDiagnostics::default()),
+        running_analyses: Arc::default(),
     });
 
     router
@@ -148,8 +175,9 @@ pub fn router(client: ClientSocket) -> Router<Backend> {
         })
         .notification::<notification::DidOpenTextDocument>(|state, params| {
             let doc = params.text_document;
-            // The document's first (and, until a save, only) analysis.
-            spawn_analyze(state, doc.uri, doc.text, doc.version, false);
+            // The document's first (and, until a save, only) analysis. Views are refreshed because the
+            // client typically requests tokens/hints before this finishes, and got nothing back.
+            spawn_analyze(state, doc.uri, doc.text, doc.version, true);
             ControlFlow::Continue(())
         })
         .notification::<notification::DidChangeTextDocument>(|state, params| {
@@ -536,7 +564,7 @@ async fn reanalyze_stale_documents(backend: Backend, changed_paths: Vec<std::pat
         .iter()
         .filter(|entry| {
             let document = entry.value();
-            document.is_stale()
+            document.is_stale(parse::path_of(entry.key()).as_deref())
                 || document.has_newly_available_import(
                     parse::path_of(entry.key()).as_deref(),
                     &changed_paths,
@@ -551,7 +579,7 @@ async fn reanalyze_stale_documents(backend: Backend, changed_paths: Vec<std::pat
         })
         .collect();
     for (uri, text, version) in stale {
-        tokio::spawn(analyze(backend.clone(), uri, text, version, true));
+        backend.spawn_analysis(uri, text, version, true);
     }
 }
 
@@ -570,7 +598,7 @@ fn spawn_analyze(state: &mut Backend, uri: Url, text: String, version: i32, refr
         return;
     }
 
-    tokio::spawn(analyze(state.clone(), uri, text, version, refresh_views));
+    state.spawn_analysis(uri, text, version, refresh_views);
 }
 
 /// Parses `text` at `version` for `uri` (as whichever [`SpecKind`] its
@@ -589,13 +617,14 @@ async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh
         #[cfg(feature = "lsp-extensions")]
         virtual_documents,
         foreign_diagnostics,
+        running_analyses: _,
     } = backend;
 
     // `path` is `None` for an untitled/unsaved buffer — `parse` falls back to a plain,
     // single-file parse for those.
     let kind = SpecKind::from_uri(&uri);
     let path = parse::path_of(&uri);
-    log::info!("analyzing {uri} (version {version}, {kind:?})");
+    log::debug!("analyzing {uri} (version {version}, {kind:?})");
     let analysis_start = Instant::now();
     let (outcome, sources) = parse::parse(kind, text.clone(), path).await;
     let parse_status = match &outcome {
@@ -652,7 +681,7 @@ async fn analyze(backend: Backend, uri: Url, text: String, version: i32, refresh
     }
 
     log::info!(
-        "analysis of {uri} finished in {:?} ({} diagnostics)",
+        "analysis of {uri} (version {version}) finished in {:?} ({} diagnostics)",
         analysis_start.elapsed(),
         diags_by_uri.values().map(Vec::len).sum::<usize>()
     );
