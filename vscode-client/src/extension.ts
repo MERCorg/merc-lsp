@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { CancellationToken, commands, ExtensionContext, OutputChannel, Uri, window, workspace } from 'vscode';
+import { CancellationToken, commands, ExtensionContext, Uri, window, workspace } from 'vscode';
 
 import {
 	LanguageClient,
@@ -11,7 +11,6 @@ import {
 } from 'vscode-languageclient/node';
 
 let client: LanguageClient | undefined;
-let output: OutputChannel | undefined;
 
 /**
  * The read-only scheme `merc-lsp` uses for a `Location` into content with no real file behind it.
@@ -140,7 +139,6 @@ function resolveServerCommand(context: ExtensionContext): string {
  */
 function startClient(context: ExtensionContext): LanguageClient {
 	const command = resolveServerCommand(context);
-	output?.appendLine(`Using merc-lsp binary: ${command}`);
 
 	// Both `run` and `debug` launch the same binary the same way: `merc-lsp` speaks LSP over
 	// stdio unconditionally, there's no separate debug mode to select (unlike the Node.js
@@ -176,12 +174,15 @@ function startClient(context: ExtensionContext): LanguageClient {
 		clientOptions
 	);
 
+	// The client's own output channel is shared with the server's logs.
+	newClient.outputChannel.appendLine(`Using merc-lsp binary: ${command}`);
+
 	newClient.start().then(
-		() => output?.appendLine('merc-lsp language server started.'),
+		() => newClient.outputChannel.appendLine('merc-lsp language server started.'),
 		(error: unknown) => {
 			const message = `Failed to start merc-lsp (looked for "${command}"): ${error instanceof Error ? error.message : error
 				}. Set "merc-lsp.serverPath" if it isn't on your PATH.`;
-			output?.appendLine(message);
+			newClient.outputChannel.appendLine(message);
 			window.showErrorMessage(message);
 		}
 	);
@@ -198,20 +199,14 @@ function startClient(context: ExtensionContext): LanguageClient {
  * discard the rest of the editor session to do it.
  */
 async function restartClient(context: ExtensionContext): Promise<void> {
-	output?.appendLine('Restarting merc-lsp language server...');
 	if (client) {
+		client.outputChannel.appendLine('Restarting merc-lsp language server...');
 		await client.stop();
 	}
 	client = startClient(context);
 }
 
 export function activate(context: ExtensionContext) {
-	output = window.createOutputChannel('merc-lsp');
-	context.subscriptions.push(output);
-
-	output.appendLine('merc extension activated.');
-	output.show(true);
-
 	context.subscriptions.push(
 		commands.registerCommand('merc-lsp.restartServer', () => restartClient(context))
 	);
