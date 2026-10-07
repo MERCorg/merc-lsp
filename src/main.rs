@@ -1,5 +1,5 @@
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    merc_lsp::init_logging();
     merc_lsp::run_stdio().await;
 }

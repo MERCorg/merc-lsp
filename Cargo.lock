@@ -113,25 +113,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "bindgen"
-version = "0.73.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "787ef8ef523575546b106a58213d6e6b06198a05c2f757258c68a74273670cfa"
-dependencies = [
- "bitflags 2.13.2",
- "cexpr",
- "clang-sys",
- "log",
- "prettyplease",
- "proc-macro2",
- "quote",
- "regex",
- "rustc-hash",
- "shlex",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -165,40 +146,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "bumpalo"
-version = "3.20.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
-
-[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
-name = "cargo-emit"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1582e1c9e755dd6ad6b224dcffb135d199399a4568d454bd89fe515ca8425695"
-
-[[package]]
 name = "cc"
-version = "1.4.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54413ede23c2daf518f35156dfde027feb2374004d63bd497f983c8db9c0e313"
+checksum = "f74872d07caf508b30a21f6836e7d7016a2eaf7d9ff4f48deaa58cd8a0407630"
 dependencies = [
  "find-msvc-tools",
  "shlex",
-]
-
-[[package]]
-name = "cexpr"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
-dependencies = [
- "nom",
 ]
 
 [[package]]
@@ -219,15 +179,44 @@ dependencies = [
 ]
 
 [[package]]
-name = "clang-sys"
-version = "1.9.1"
+name = "clap"
+version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "157a8ba7b480713b56f4c09fd13fc3e0a22a5dfab8097ba61cbc5feef950788a"
+checksum = "aa8876b300ab35ba921adea3dfd70157a46249b33f95c9084ae5709785478946"
 dependencies = [
- "glob",
- "libc",
- "libloading",
+ "clap_builder",
+ "clap_derive",
 ]
+
+[[package]]
+name = "clap_builder"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "clap_lex",
+ "strsim",
+]
+
+[[package]]
+name = "clap_derive"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9c751b79415d4e559e3d1fcf128e09e720eb673a06d26cf6f392d37d75b66e0"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
+name = "clap_lex"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "colorchoice"
@@ -333,9 +322,9 @@ dependencies = [
 
 [[package]]
 name = "either"
-version = "1.18.0"
+version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
+checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "ena"
@@ -393,9 +382,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef25905e51abafe4dcea6c15fec58c57b601cdbd0ee53d22ea1d3016c587d39b"
+checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
 name = "foldhash"
@@ -544,12 +533,6 @@ dependencies = [
  "r-efi 6.0.0",
  "rand_core",
 ]
-
-[[package]]
-name = "glob"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "hashbrown"
@@ -716,9 +699,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jiff"
-version = "0.2.37"
+version = "0.2.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ab1baf72f08796de0260609515130699b890ac25f30e610ad894bc5856cafdb"
+checksum = "b2b005715dcbeb0089a3c0dab99f2ff1cc3b2525323552703d648585d342a383"
 dependencies = [
  "defmt",
  "jiff-core",
@@ -741,9 +724,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "0.2.37"
+version = "0.2.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "378268a1116ad67ae6228701118ac9f491d78fda38a40a1f1a9e1348de6f7212"
+checksum = "2cc9817253cf7c7ee4684451bd327e88d6f3658014e54a29198625590650695c"
 dependencies = [
  "jiff-core",
  "proc-macro2",
@@ -783,25 +766,15 @@ dependencies = [
 
 [[package]]
 name = "lazy_static"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
-
-[[package]]
-name = "libloading"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
-dependencies = [
- "cfg-if",
- "windows-link",
-]
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "line-index"
@@ -896,6 +869,7 @@ dependencies = [
  "log",
  "lsp-types",
  "merc_syntax",
+ "merc_tools",
  "merc_typecheck",
  "merc_utilities",
  "percent-encoding",
@@ -912,7 +886,7 @@ dependencies = [
 [[package]]
 name = "merc_aterm"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
 dependencies = [
  "allocator-api2 0.4.0",
  "delegate",
@@ -938,7 +912,7 @@ dependencies = [
 [[package]]
 name = "merc_collections"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
 dependencies = [
  "bitvec",
  "delegate",
@@ -953,7 +927,7 @@ dependencies = [
 [[package]]
 name = "merc_data"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
 dependencies = [
  "ahash",
  "delegate",
@@ -968,7 +942,7 @@ dependencies = [
 [[package]]
 name = "merc_io"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
 dependencies = [
  "bitstream-io",
  "log",
@@ -982,33 +956,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "merc_lts"
-version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
-dependencies = [
- "bindgen",
- "bumpalo",
- "cargo-emit",
- "delegate",
- "itertools",
- "log",
- "merc_aterm",
- "merc_collections",
- "merc_data",
- "merc_io",
- "merc_macros",
- "merc_utilities",
- "rand",
- "regex",
- "rustc-hash",
- "streaming-iterator",
- "thiserror",
-]
-
-[[package]]
 name = "merc_macros"
 version = "2.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1018,7 +968,7 @@ dependencies = [
 [[package]]
 name = "merc_number"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
 dependencies = [
  "bitstream-io",
  "kani",
@@ -1049,45 +999,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "merc_reduction"
-version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
-dependencies = [
- "bitvec",
- "bumpalo",
- "delegate",
- "itertools",
- "log",
- "merc_collections",
- "merc_io",
- "merc_lts",
- "merc_utilities",
- "rand",
- "rustc-hash",
-]
-
-[[package]]
-name = "merc_refinement"
-version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
-dependencies = [
- "bitvec",
- "bumpalo",
- "itertools",
- "log",
- "merc_collections",
- "merc_io",
- "merc_lts",
- "merc_reduction",
- "merc_utilities",
- "rand",
- "rustc-hash",
-]
-
-[[package]]
 name = "merc_sharedmutex"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
 dependencies = [
  "crossbeam-utils",
  "delegate",
@@ -1098,14 +1012,11 @@ dependencies = [
 [[package]]
 name = "merc_syntax"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
 dependencies = [
  "itertools",
  "log",
- "merc_lts",
  "merc_pest_consume",
- "merc_reduction",
- "merc_refinement",
  "merc_utilities",
  "pest",
  "pest_derive",
@@ -1114,9 +1025,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "merc_tools"
+version = "2.0.0"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
+dependencies = [
+ "clap",
+ "env_logger",
+ "log",
+ "merc_utilities",
+ "which",
+ "winapi",
+]
+
+[[package]]
 name = "merc_typecheck"
 version = "2.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
 dependencies = [
  "ena",
  "indoc",
@@ -1132,7 +1056,7 @@ dependencies = [
 [[package]]
 name = "merc_unsafety"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
 dependencies = [
  "allocator-api2 0.4.0",
  "crossbeam-utils",
@@ -1154,7 +1078,7 @@ dependencies = [
 [[package]]
 name = "merc_utilities"
 version = "3.0.0"
-source = "git+https://github.com/MERCorg/merc?rev=f60299a04c1a5b6ce8d50f111df881ee7aede765#f60299a04c1a5b6ce8d50f111df881ee7aede765"
+source = "git+https://github.com/MERCorg/merc?rev=3e84d13a77e692f3fed72a145ca1b907a777770f#3e84d13a77e692f3fed72a145ca1b907a777770f"
 dependencies = [
  "crossbeam-utils",
  "env_logger",
@@ -1166,16 +1090,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "minimal-lexical"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
 name = "mio"
-version = "1.2.3"
+version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b18443e9c262bfe8fa82f51666e2642c53393f7e5c27b3e1aeab922cff5b9d8"
+checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
 dependencies = [
  "libc",
  "wasi",
@@ -1196,16 +1114,6 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
-
-[[package]]
-name = "nom"
-version = "7.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
-dependencies = [
- "memchr",
- "minimal-lexical",
-]
 
 [[package]]
 name = "nu-ansi-term"
@@ -1399,16 +1307,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d83eb9bc6d8e5cf568e7a1101d60ee05e81ed50ea106026f3d18deeb046d7661"
 dependencies = [
  "zerovec",
-]
-
-[[package]]
-name = "prettyplease"
-version = "0.2.37"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
-dependencies = [
- "proc-macro2",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -1628,9 +1526,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
-version = "1.16.1"
+version = "1.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
+checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 
 [[package]]
 name = "socket2"
@@ -1738,18 +1636,18 @@ checksum = "f18aa187839b2bdb1ad2fa35ead8c4c2976b64e4363c386d45ac0f7ee85c9233"
 
 [[package]]
 name = "thiserror"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1777,9 +1675,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
 dependencies = [
  "bytes",
  "libc",
@@ -1973,6 +1871,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "which"
+version = "8.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bae2f2b2b816647a1cab1acc91f5bd20812d53cb344382635ec2181940c8034f"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "winapi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+dependencies = [
+ "winapi-i686-pc-windows-gnu",
+ "winapi-x86_64-pc-windows-gnu",
+]
+
+[[package]]
+name = "winapi-i686-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
+name = "winapi-x86_64-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+
+[[package]]
 name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2103,9 +2032,9 @@ dependencies = [
 
 [[package]]
 name = "yoke-derive"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33811428bee40dbceb6d545e95754741d17a6aef9a4849f0fd62e2ba4f412a78"
+checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2115,18 +2044,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.57"
+version = "0.8.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d35102a9f36d089ccae9e4c6802bc118be4487b80aaffc0ab4e0cf5ce92d2873"
+checksum = "879fb705ce98c32e41ebdb970fbe1204f8492423b314c6ab0354c3e7b5542866"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.57"
+version = "0.8.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "146c01f5ab44258da43cf276c74a2763db2ff3969c9c652c3f2de07041d0b2bc"
+checksum = "708882a28301d604fa039cc7727607a98d04c4b86dc76ec9cc683f805d709759"
 dependencies = [
  "proc-macro2",
  "quote",
